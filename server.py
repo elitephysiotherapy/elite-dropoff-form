@@ -231,7 +231,8 @@ def _process_action_async(action_id, response_url, original_blocks, fallback_tex
                     "✅ *Non-clinical* — reception notified for reactivation",
                 )
             elif choice == "clinical":
-                update_classification(appt_id, clinical="clinical")
+                # Clear stale next_step in case they previously clicked Non-clinical.
+                update_classification(appt_id, clinical="clinical", next_step="")
                 new_block = actions_block_next_step(appt_id)
         elif kind == "next_step":
             if choice == "contact":
