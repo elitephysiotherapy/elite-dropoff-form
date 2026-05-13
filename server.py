@@ -16,8 +16,10 @@ import json
 import hmac
 import hashlib
 import time
+import threading
 from urllib.parse import urlencode
 
+import requests as http
 from flask import Flask, request, jsonify, make_response
 import gspread
 from google.oauth2.service_account import Credentials
@@ -206,6 +208,59 @@ def health():
     return jsonify({"ok": True})
 
 
+def _process_action_async(action_id, response_url, original_blocks, fallback_text):
+    """Heavy work runs in background. We POST the updated message back to Slack's
+    response_url when done — Slack waits up to ~30 min for this and updates the
+    user's message in place. Required because Sheet updates take >3s, exceeding
+    Slack's synchronous response window."""
+    try:
+        parts = action_id.split(":")
+        if len(parts) != 3:
+            return
+        kind, appt_id, choice = parts
+
+        new_block = None
+        if kind == "classify":
+            if choice == "non_clinical":
+                ctx = update_classification(appt_id, clinical="non clinical",
+                                            next_step="reactivate")
+                if ctx:
+                    notify_reception(ctx)
+                new_block = context_block_done(
+                    appt_id,
+                    "✅ *Non-clinical* — reception notified for reactivation",
+                )
+            elif choice == "clinical":
+                update_classification(appt_id, clinical="clinical")
+                new_block = actions_block_next_step(appt_id)
+        elif kind == "next_step":
+            if choice == "contact":
+                update_classification(appt_id,
+                                      next_step="physio contacting patient directly")
+                new_block = context_block_done(
+                    appt_id, "✅ *Clinical* → physio contacting directly"
+                )
+            elif choice == "tricky":
+                update_classification(appt_id, next_step="tricky patient form")
+                new_block = context_block_done(
+                    appt_id,
+                    f"✅ *Clinical* → completing "
+                    f"<{TRICKY_PATIENT_URL}|Tricky Patient Form>",
+                )
+
+        if new_block is None:
+            return
+
+        updated = replace_actions_block(original_blocks, appt_id, new_block)
+        http.post(response_url, json={
+            "replace_original": True,
+            "text": fallback_text,
+            "blocks": updated,
+        }, timeout=10)
+    except Exception as exc:
+        print(f"async-process error for {action_id}: {exc}")
+
+
 @app.route("/slack/interactive", methods=["POST"])
 def slack_interactive():
     if not verify_slack_request():
@@ -220,45 +275,17 @@ def slack_interactive():
     parts = action_id.split(":")
     if len(parts) != 3:
         return make_response("", 200)
-    kind, appt_id, choice = parts
 
+    response_url = payload.get("response_url")
     original_blocks = payload.get("message", {}).get("blocks", [])
+    fallback_text = payload.get("message", {}).get("text", "Drop-offs")
 
-    if kind == "classify":
-        if choice == "non_clinical":
-            ctx = update_classification(appt_id,
-                                        clinical="non clinical",
-                                        next_step="reactivate")
-            if ctx:
-                notify_reception(ctx)
-            new = context_block_done(
-                appt_id,
-                "✅ *Non-clinical* — reception notified for reactivation"
-            )
-        elif choice == "clinical":
-            update_classification(appt_id, clinical="clinical")
-            new = actions_block_next_step(appt_id)
-        else:
-            return make_response("", 200)
-        return jsonify({"replace_original": True,
-                        "text": payload.get("message", {}).get("text", "Drop-offs"),
-                        "blocks": replace_actions_block(original_blocks, appt_id, new)})
-
-    if kind == "next_step":
-        if choice == "contact":
-            update_classification(appt_id, next_step="physio contacting patient directly")
-            summary = "✅ *Clinical* → physio contacting directly"
-        elif choice == "tricky":
-            update_classification(appt_id, next_step="tricky patient form")
-            summary = (f"✅ *Clinical* → completing "
-                       f"<{TRICKY_PATIENT_URL}|Tricky Patient Form>")
-        else:
-            return make_response("", 200)
-        new = context_block_done(appt_id, summary)
-        return jsonify({"replace_original": True,
-                        "text": payload.get("message", {}).get("text", "Drop-offs"),
-                        "blocks": replace_actions_block(original_blocks, appt_id, new)})
-
+    # ACK Slack within 3s, do the heavy lifting in a background thread.
+    threading.Thread(
+        target=_process_action_async,
+        args=(action_id, response_url, original_blocks, fallback_text),
+        daemon=True,
+    ).start()
     return make_response("", 200)
 
 
