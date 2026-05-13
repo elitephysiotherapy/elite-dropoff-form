@@ -1,0 +1,1082 @@
+"""Phase 1 — pull yesterday's drop-offs from Cliniko.
+
+Default mode: preview only. Pass --write to append into the Google Sheet.
+
+Window: yesterday's calendar day in Europe/London.
+
+Drop-off categories (priority order):
+  - cancelled       cancelled_at set AND patient has no future booking
+                    (cancelled + future booking = reschedule, excluded)
+  - did_not_attend  did_not_arrive=true (always included)
+  - no_rebook       attended initial-assessment AND no future booking
+
+Sheet routing: one tab per week ('W/C DD Mon YYYY'), auto-created with headers
+and the two helper columns (appointment_id, pulled_at) hidden. Re-runs are
+idempotent — rows already present in the tab (matched by appointment_id) are
+skipped, so existing human edits to rows are never overwritten.
+"""
+
+import os
+import re
+import sys
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
+import requests
+
+import gspread
+from google.oauth2.service_account import Credentials
+
+load_dotenv(override=True)
+API_KEY = os.environ["CLINIKO_API_KEY"]
+SHARD = os.environ["CLINIKO_SHARD"]
+USER_AGENT = os.environ["CLINIKO_USER_AGENT"]
+
+BASE = f"https://api.{SHARD}.cliniko.com/v1"
+SESSION = requests.Session()
+SESSION.auth = (API_KEY, "")
+SESSION.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
+
+LONDON = ZoneInfo("Europe/London")
+ID_RE = re.compile(r"/(\d+)(?:/[^/]*)?/?$")
+
+# Used ONLY for no_rebook detection (a real IA that expects a follow-up).
+# Phase 2 uses a broader list for "find episode start to read notes".
+PHASE1_DROPOFF_IA_TYPE_IDS = {
+    "382563815654429852",   # 1. Initial Appointment
+    "392015278608749674",   # 3. Club Initial Assessment
+    "1558530673046721630",  # 5. Private Health Insurance Initial Assessment
+    "945551547020874765",   # 7. ACL Initial Assessment
+}
+
+SPREADSHEET_ID = "1RC7QkHGAa8dH5ShmwbFyswdrmMOo6HTgkcKZEvqoZbI"
+SERVICE_ACCOUNT_FILE = "service_account.json"
+SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+CLINIKO_WEB_DOMAIN = "elite-physiotherapy.uk1.cliniko.com"
+
+SHEET_COLUMNS = [
+    "appointment_date",        # A
+    "cancellation_date",       # B
+    "patient",                 # C
+    "physio",                  # D
+    "clinic",                  # E
+    "appointment_type",        # F
+    "dropoff_type",            # G
+    "session_number",          # H — moved here per Martin 2026-05-12
+    "notice",                  # I
+    "cancellation_reason",     # J
+    "body_area",               # K
+    "clinical_non_clinical",   # L (Phase 4)
+    "next_step_physio",        # M (Phase 4)
+    "reactivation_status",     # N
+    "reactivation_notes",      # O
+    "martys_comments",         # P
+    "actioned",                # Q
+    "appointment_id",          # R (hidden)
+    "pulled_at",               # S (hidden)
+]
+HIDDEN_COLUMNS = ("appointment_id", "pulled_at")
+
+HEADER_LABELS = {
+    "appointment_date": "Appointment Date",
+    "cancellation_date": "Cancellation Date",
+    "patient": "Patient Name",
+    "physio": "Physio",
+    "clinic": "Clinic",
+    "appointment_type": "Appointment Type",
+    "dropoff_type": "Drop-off Type",
+    "notice": "Notice Given",
+    "cancellation_reason": "Cancellation Reason",
+    "session_number": "Session #",
+    "body_area": "Body Area",
+    "clinical_non_clinical": "Clinical / Non-Clinical",
+    "next_step_physio": "Next Step (Physio)",
+    "reactivation_status": "Reactivation Status",
+    "reactivation_notes": "Reactivation Notes",
+    "martys_comments": "Marty's Comments",
+    "actioned": "Actioned",
+    "appointment_id": "appointment_id",
+    "pulled_at": "pulled_at",
+}
+
+
+# ---------- Cliniko helpers ----------
+
+def yesterday_london_window_utc():
+    now_london = datetime.now(LONDON)
+    today_local_start = now_london.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday_local_start = today_local_start - timedelta(days=1)
+    return (
+        yesterday_local_start.astimezone(timezone.utc),
+        today_local_start.astimezone(timezone.utc),
+    )
+
+
+def day_london_window_utc(yyyy_mm_dd):
+    """Window covering the given London-local calendar day."""
+    y, m, d = (int(x) for x in yyyy_mm_dd.split("-"))
+    day_start = datetime(y, m, d, tzinfo=LONDON)
+    day_end = day_start + timedelta(days=1)
+    return day_start.astimezone(timezone.utc), day_end.astimezone(timezone.utc)
+
+
+import time
+
+
+def fetch_all(path, params=None):
+    url = f"{BASE}{path}"
+    qp = list(params or []) + [("per_page", 100)]
+    first = True
+    while url:
+        for attempt in range(5):
+            r = SESSION.get(url, params=qp if first else None, timeout=30)
+            if r.status_code == 429:
+                wait = int(r.headers.get("Retry-After", "5"))
+                time.sleep(wait + 1)
+                continue
+            break
+        first = False
+        if r.status_code != 200:
+            print(f"ERROR {r.status_code} on {r.url}\n{r.text[:500]}")
+            sys.exit(1)
+        data = r.json()
+        coll_key = next(k for k, v in data.items() if isinstance(v, list))
+        for item in data[coll_key]:
+            yield item
+        url = (data.get("links") or {}).get("next")
+
+
+def parse_iso(ts):
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")) if ts else None
+
+
+def id_from_link(rel):
+    if not rel:
+        return None
+    self_url = (rel.get("links") or {}).get("self") or ""
+    m = ID_RE.search(self_url)
+    return m.group(1) if m else None
+
+
+def has_future_booking_in_history(appt, history):
+    """True if patient has any non-cancelled appointment with start > this appt's start."""
+    appt_id = str(appt.get("id"))
+    appt_start = appt.get("starts_at") or ""
+    return any(
+        (a.get("starts_at") or "") > appt_start
+        and not a.get("cancelled_at")
+        and str(a.get("id")) != appt_id
+        for a in history
+    )
+
+
+def is_ia_only_patient_at(appt, history):
+    """At the time of `appt`, has the patient attended only their IA in the current episode?"""
+    import phase2 as p2
+    _, episode, _ = p2.find_episode(history)
+    if not episode:
+        return False
+    appt_start = appt.get("starts_at") or ""
+    attended_before = sum(
+        1 for a in episode
+        if (a.get("starts_at") or "") < appt_start
+        and not a.get("cancelled_at")
+        and not a.get("did_not_arrive")
+    )
+    return attended_before <= 1
+
+
+def classify_dropoff(appt, type_id, history):
+    """Returns one of: 'iacna', 'iadna', 'iadnr', 'cancelled', 'did_not_attend', None."""
+    is_ia = type_id in PHASE1_DROPOFF_IA_TYPE_IDS
+    is_cancelled = bool(appt.get("cancelled_at"))
+    is_dna = bool(appt.get("did_not_arrive"))
+
+    if is_ia:
+        if is_cancelled:
+            # Reschedule rule applies uniformly: if patient has another future booking
+            # (incl. another IA), it's a reschedule, not IACNA. Anna Carberry case.
+            if has_future_booking_in_history(appt, history):
+                return None
+            return "iacna"
+        if is_dna:
+            return "iadna"
+        # Attended IA — IADNR if no future booking
+        return None if has_future_booking_in_history(appt, history) else "iadnr"
+
+    # Non-IA appointment
+    if is_cancelled:
+        if has_future_booking_in_history(appt, history):
+            return None  # reschedule
+        return "iadnr" if is_ia_only_patient_at(appt, history) else "cancelled"
+
+    if is_dna:
+        return "iadnr" if is_ia_only_patient_at(appt, history) else "did_not_attend"
+
+    return None  # attended non-IA — not a drop-off
+
+
+# ---------- Formatting helpers ----------
+
+def humanise_notice(hours):
+    if hours is None or hours == "":
+        return ""
+    if hours <= 0:
+        return "0"
+    if hours < 1:
+        m = int(round(hours * 60))
+        return f"{m} minute{'s' if m != 1 else ''}"
+    if hours < 24:
+        h = int(round(hours))
+        return f"{h} hour{'s' if h != 1 else ''}"
+    d = int(round(hours / 24))
+    return f"{d} day{'s' if d != 1 else ''}"
+
+
+def full_patient_name(name):
+    return (name or "?").strip()
+
+
+def fmt_local_dt(ts):
+    dt = parse_iso(ts)
+    return dt.astimezone(LONDON).strftime("%Y-%m-%d %H:%M") if dt else ""
+
+
+def business_name(biz):
+    if not biz:
+        return ""
+    for k in ("business_name", "label", "name", "display_name"):
+        v = biz.get(k)
+        if v:
+            return v
+    return f"business#{biz.get('id', '?')}"
+
+
+def week_tab_name(appointment_date_str):
+    """E.g. '2026-05-08 14:30' → 'W/C 04 May 2026'."""
+    dt = datetime.strptime(appointment_date_str, "%Y-%m-%d %H:%M")
+    monday = dt - timedelta(days=dt.weekday())
+    return f"W/C {monday.strftime('%d %b %Y')}"
+
+
+def dropoff_event_dt(row):
+    """When the drop-off event happened — used for sorting AND W/C tab grouping.
+
+    Use cancellation_date if set (covers cancelled, iacna, and iadnr-via-cancellation
+    — all three are 'patient cancelled, reception sees today'). Otherwise use
+    appointment_date (covers DNAs and attended-IA-with-no-rebook).
+    """
+    s = row.get("cancellation_date") or row.get("appointment_date") or ""
+    return datetime.strptime(s, "%Y-%m-%d %H:%M") if s else datetime.min
+
+
+# ---------- Core pipeline ----------
+
+def collect_dropoffs(date_override=None):
+    if date_override:
+        start_utc, end_utc = day_london_window_utc(date_override)
+    else:
+        start_utc, end_utc = yesterday_london_window_utc()
+    s_iso = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    e_iso = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    pulled_at = datetime.now(LONDON).strftime("%Y-%m-%d %H:%M")
+
+    print(f"Window: yesterday Europe/London  "
+          f"({start_utc.astimezone(LONDON).strftime('%Y-%m-%d')} → "
+          f"{end_utc.astimezone(LONDON).strftime('%Y-%m-%d')})")
+
+    types_by_id = {str(t["id"]): t for t in fetch_all("/appointment_types")}
+    pracs_by_id = {str(p["id"]): p for p in fetch_all("/practitioners")}
+    biz_by_id = {str(b["id"]): b for b in fetch_all("/businesses")}
+
+    # Two queries:
+    #   A) cancellations MADE in window (any appointment date) — drives reactivation workflow
+    #   B) appointments STARTING in window (default excludes cancelled) — for DNAs + attended IAs
+    cancelled = list(fetch_all("/individual_appointments", [
+        ("q[]", f"cancelled_at:>={s_iso}"),
+        ("q[]", f"cancelled_at:<{e_iso}"),
+    ]))
+    in_window = list(fetch_all("/individual_appointments", [
+        ("q[]", f"starts_at:>={s_iso}"),
+        ("q[]", f"starts_at:<{e_iso}"),
+    ]))
+    by_id = {a["id"]: a for a in in_window}
+    for a in cancelled:
+        by_id[a["id"]] = a  # cancelled record takes priority (has cancelled_at set)
+    appts = list(by_id.values())
+    print(f"Cliniko: cancellations_in_window={len(cancelled)}  "
+          f"appts_starting_in_window={len(in_window)}  unique={len(appts)}")
+
+    import phase2 as p2
+    history_cache = {}
+
+    rows = []
+    excluded_reschedules = []
+    for a in appts:
+        type_id = id_from_link(a.get("appointment_type"))
+        prac_id = id_from_link(a.get("practitioner"))
+        biz_id = id_from_link(a.get("business"))
+        patient_id = id_from_link(a.get("patient"))
+
+        type_name = (types_by_id.get(type_id) or {}).get("name", "?")
+        prac = pracs_by_id.get(prac_id) or {}
+        clinic = business_name(biz_by_id.get(biz_id) or {})
+        patient = full_patient_name(a.get("patient_name"))
+        appt_date = fmt_local_dt(a.get("starts_at"))
+
+        is_cancelled = bool(a.get("cancelled_at"))
+        is_dna = bool(a.get("did_not_arrive"))
+
+        notice_hours_val = ""
+        if is_cancelled:
+            c = parse_iso(a["cancelled_at"])
+            s = parse_iso(a.get("starts_at"))
+            if c and s:
+                notice_hours_val = max((s - c).total_seconds() / 3600, 0.0)
+        elif is_dna:
+            notice_hours_val = 0
+
+        # Fetch patient history once (cached) — needed for classification
+        if patient_id and patient_id not in history_cache:
+            try:
+                history_cache[patient_id] = p2.fetch_patient_full_history(patient_id)
+            except Exception as e:
+                print(f"  WARN history fetch failed for {patient}: {e}")
+                history_cache[patient_id] = []
+        history = history_cache.get(patient_id, [])
+
+        # Quick attended-IA check (not a drop-off candidate unless it has no future booking)
+        if not is_cancelled and not is_dna and type_id not in PHASE1_DROPOFF_IA_TYPE_IDS:
+            continue  # attended non-IA appointment, never a drop-off
+
+        kind = classify_dropoff(a, type_id, history)
+        if kind is None:
+            # Either: reschedule (cancelled + future booking) OR attended IA with future booking
+            if is_cancelled:
+                excluded_reschedules.append((patient, appt_date, type_name))
+            continue
+
+        rows.append({
+            "appointment_date": appt_date,
+            "cancellation_date": fmt_local_dt(a.get("cancelled_at")) if is_cancelled else "",
+            "patient": patient,
+            "physio": f"{prac.get('first_name','?')} {prac.get('last_name','')}".strip(),
+            "clinic": clinic,
+            "appointment_type": type_name,
+            "dropoff_type": kind,
+            "notice": humanise_notice(notice_hours_val),
+            "cancellation_reason": a.get("cancellation_reason_description") or "" if is_cancelled else "",
+            "session_number": "",
+            "body_area": "",
+            "clinical_non_clinical": "",
+            "next_step_physio": "",
+            "reactivation_status": "pending",
+            "reactivation_notes": "",
+            "martys_comments": "",
+            "actioned": "",
+            "appointment_id": str(a.get("id")),
+            "pulled_at": pulled_at,
+            # internal-only (not written to sheet):
+            "_patient_id": patient_id,
+            "_appointment_type_id": type_id,
+        })
+
+    # Same-day bulk-cancel dedup — if one patient cancels multiple future appts in a single
+    # call, keep only the row for the EARLIEST upcoming appointment. Reception calls them once.
+    rows = _dedup_same_day_cancellations(rows)
+    return rows, excluded_reschedules
+
+
+def _dedup_same_day_cancellations(rows):
+    """Keep one row per (patient_id, cancellation date) — the one for the earliest appt."""
+    by_key = {}
+    others = []
+    for r in rows:
+        canc_date = r.get("cancellation_date") or ""
+        pid = r.get("_patient_id")
+        if not canc_date or not pid:
+            others.append(r)
+            continue
+        key = (pid, canc_date[:10])  # group by patient + cancellation calendar day
+        existing = by_key.get(key)
+        if existing is None or r["appointment_date"] < existing["appointment_date"]:
+            by_key[key] = r
+    return list(by_key.values()) + others
+
+
+def enrich_phase2(rows):
+    """Fill session_number and body_area on each row using the phase2 module.
+    Idempotent — safe to call multiple times. Skips rows that already have values."""
+    import phase2 as p2
+    for r in rows:
+        pid = r.get("_patient_id")
+        if not pid:
+            continue
+        try:
+            history = p2.fetch_patient_full_history(pid)
+            anchor, episode, _ = p2.find_episode(history)
+        except Exception as e:
+            print(f"  WARN history fetch failed for {r['patient']}: {e}")
+            continue
+
+        # Session count
+        if not r.get("session_number"):
+            r["session_number"] = p2.session_number_for(r["appointment_id"], episode) or ""
+
+        # Body area — IACNA / IADNA: patient never attended their IA, no notes to read
+        appt_type_id = r.get("_appointment_type_id")
+        is_pre_ia = (r["dropoff_type"] in ("cancelled", "did_not_attend")
+                     and appt_type_id in PHASE1_DROPOFF_IA_TYPE_IDS)
+        if is_pre_ia:
+            r["body_area"] = "n/a (pre-IA)"
+            continue
+
+        if not r.get("body_area") and anchor:
+            anchor_dt = p2.parse_iso(anchor["starts_at"])
+            notes_text, n_notes, fallback = p2.build_episode_notes_text(pid, anchor_dt)
+            if n_notes > 0 and notes_text.strip():
+                try:
+                    body_area, _path, _usage = p2.categorise_episode_notes(notes_text)
+                    if body_area:
+                        r["body_area"] = (
+                            f"{body_area} (legacy notes)" if fallback else body_area
+                        )
+                    else:
+                        r["body_area"] = "(uncategorised)"
+                except Exception as e:
+                    print(f"  WARN AI call failed for {r['patient']}: {e}")
+                    r["body_area"] = "(ai error)"
+            else:
+                r["body_area"] = "n/a (no notes)"
+
+
+def print_preview(rows, excluded_reschedules):
+    types = ("iacna", "iadna", "iadnr", "cancelled", "did_not_attend")
+    counts = {k: sum(1 for r in rows if r["dropoff_type"] == k) for k in types}
+    print("Drop-offs: " + "  ".join(f"{k}={counts[k]}" for k in types) + f"  total={len(rows)}")
+    if excluded_reschedules:
+        print("Excluded as reschedules (cancelled + has future booking):")
+        for patient, when, type_name in excluded_reschedules:
+            print(f"  - {patient} | {when} | {type_name}")
+    if not rows:
+        return
+    visible = [c for c in SHEET_COLUMNS if c not in HIDDEN_COLUMNS]
+    widths = {h: max(len(h), max(len(str(r[h])) for r in rows)) for h in visible}
+    sep = "  "
+    print()
+    print("  " + sep.join(h.ljust(widths[h]) for h in visible))
+    print("  " + sep.join("-" * widths[h] for h in visible))
+    for r in sorted(rows, key=dropoff_event_dt):
+        print("  " + sep.join(str(r[h]).ljust(widths[h]) for h in visible))
+
+
+# ---------- Sheets writer ----------
+
+def open_spreadsheet():
+    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SHEETS_SCOPES)
+    gc = gspread.authorize(creds)
+    return gc.open_by_key(SPREADSHEET_ID)
+
+
+def get_or_create_tab(sh, tab_name):
+    try:
+        ws = sh.worksheet(tab_name)
+        return ws, False
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=tab_name, rows=200, cols=len(SHEET_COLUMNS))
+        ws.append_row([HEADER_LABELS[c] for c in SHEET_COLUMNS], value_input_option="RAW")
+        first_hidden_idx = SHEET_COLUMNS.index(HIDDEN_COLUMNS[0])
+        ws.hide_columns(first_hidden_idx, len(SHEET_COLUMNS))
+        return ws, True
+
+
+def cell_for(row, col):
+    val = row.get(col, "") or ""
+    if col == "patient":
+        pid = row.get("_patient_id")
+        name = str(val).replace('"', '""')
+        if pid:
+            return f'=HYPERLINK("https://{CLINIKO_WEB_DOMAIN}/patients/{pid}", "{name}")'
+    return str(val)
+
+
+def write_ia_rebook_rate_tab(months_back=3):
+    """Refresh IA Rebook Rate tab — current MTD + previous N full months, stacked top-down."""
+    import phase2 as p2
+    now = datetime.now(LONDON)
+    sh = open_spreadsheet()
+    try:
+        ws = sh.worksheet("IA Rebook Rate")
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="IA Rebook Rate", rows=300, cols=6)
+
+    # Build periods: current MTD + previous N full months
+    periods = []
+    mtd_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    periods.append((mtd_start, now,
+                    f"{mtd_start.strftime('%B %Y')} — month-to-date as of {now.strftime('%d %b')}"))
+    y, m = now.year, now.month
+    for _ in range(months_back):
+        m -= 1
+        if m < 1:
+            m = 12; y -= 1
+        start = datetime(y, m, 1, tzinfo=LONDON)
+        if m == 12:
+            end = datetime(y + 1, 1, 1, tzinfo=LONDON)
+        else:
+            end = datetime(y, m + 1, 1, tzinfo=LONDON)
+        periods.append((start, end, f"{start.strftime('%B %Y')} (settled)"))
+
+    out = []
+    out.append(["IA Rebook Rate"])
+    out.append([f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"])
+    out.append([])
+
+    for start, end, label in periods:
+        try:
+            result = p2.ia_rebook_rate_for_window(
+                start.astimezone(timezone.utc), end.astimezone(timezone.utc))
+        except Exception as e:
+            print(f"  WARN rebook rate calc failed for {label}: {e}")
+            continue
+
+        out.append([f"=== {label} ==="])
+        out.append(["Physio", "IAs", "Rebooked", "Rate"])
+        if not result["per_physio"]:
+            out.append(["(no IAs in this window)", "", "", ""])
+        else:
+            for _, s in sorted(result["per_physio"].items(), key=lambda x: -x[1]["ias"]):
+                rate_pct = f"{s['rate'] * 100:.0f}%" if s["rate"] is not None else "—"
+                out.append([s["name"], s["ias"], s["rebooked"], rate_pct])
+            c = result["clinic"]
+            crate = f"{c['rate'] * 100:.0f}%" if c["rate"] is not None else "—"
+            out.append(["CLINIC TOTAL", c["ias"], c["rebooked"], crate])
+        out.append([f"Pre-IA drop-offs (excluded): "
+                    f"{result['iacna_count']} IACNA, {result['iadna_count']} IADNA"])
+        out.append([])
+
+    out.append(["Definitions:"])
+    out.append(["  Rebooked = patient has attended a follow-up OR has an active future booking after the IA."])
+    out.append(["  IACNA = IA cancelled before attending.  IADNA = IA did-not-attend."])
+    out.append(["  IACNAs and IADNAs are excluded from numerator AND denominator (physio never saw patient)."])
+
+    ws.update(values=out, range_name="A1", value_input_option="RAW")
+    return ws
+
+
+GREEN_RGB = {"red": 0.74, "green": 0.93, "blue": 0.78}
+YELLOW_RGB = {"red": 1.0, "green": 0.95, "blue": 0.7}
+RED_RGB = {"red": 0.96, "green": 0.78, "blue": 0.78}
+
+
+def _colour_for(metric, value):
+    """Return GREEN / YELLOW / RED RGB dict (or None) for a metric value vs. standard."""
+    if value is None or value == "":
+        return None
+    if metric == "utilization_pct":
+        if 75 <= value <= 85:
+            return GREEN_RGB
+        if 67.5 <= value <= 93.5:
+            return YELLOW_RGB
+        return RED_RGB
+    if metric in ("pva", "gen_pop_pva"):
+        if value >= 6:
+            return GREEN_RGB
+        if value >= 5.4:
+            return YELLOW_RGB
+        return RED_RGB
+    if metric == "nps_clinic":
+        if value >= 192:
+            return GREEN_RGB
+        if value >= 172.8:
+            return YELLOW_RGB
+        return RED_RGB
+    if metric == "dna_pct":
+        if value < 2:
+            return GREEN_RGB
+        if value <= 2.2:
+            return YELLOW_RGB
+        return RED_RGB
+    if metric == "cna_pct":
+        if value < 8:
+            return GREEN_RGB
+        if value <= 8.8:
+            return YELLOW_RGB
+        return RED_RGB
+    if metric == "combined_pct":
+        if value < 10:
+            return GREEN_RGB
+        if value <= 11:
+            return YELLOW_RGB
+        return RED_RGB
+    if metric == "cna_dna_1st_pct":
+        if value < 2:
+            return GREEN_RGB
+        if value <= 2.2:
+            return YELLOW_RGB
+        return RED_RGB
+    return None
+
+
+def write_performance_dashboard_tab():
+    """Build the Performance Dashboard tab: per-physio monthly KPIs stacked top-down.
+
+    Replicates Martin's existing manual tracker layout. Rolls April + May 2026
+    (only data available currently) with most recent on top.
+    """
+    import phase2 as p2
+    import config
+    now = datetime.now(LONDON)
+
+    # Build month list: April + May 2026
+    # (more months will accrue as time passes; defaults to current + last month for now)
+    def month_window(y, m):
+        s = datetime(y, m, 1, tzinfo=LONDON)
+        if m == 12:
+            e = datetime(y + 1, 1, 1, tzinfo=LONDON)
+        else:
+            e = datetime(y, m + 1, 1, tzinfo=LONDON)
+        return s, e
+
+    months = []
+    if now.month > 1:
+        months.append(month_window(now.year, now.month - 1))
+    months.append(month_window(now.year, now.month))
+    months.reverse()  # most recent first
+
+    sh = open_spreadsheet()
+    try:
+        ws = sh.worksheet("Performance Dashboard")
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Performance Dashboard", rows=400, cols=12)
+
+    # Standards row values (display strings)
+    headers = ["Practitioner", "Utilization", "NPs", "DNA %", "CNA %", "DNA+CNA %",
+               "PVA", "CNA/DNA 1st %", "Net Promoter", "Gen Pop PVA", "Total Apts"]
+    standard_vals = ["Standard", "75–85%", "≥192", "<2%", "<8%", "<10%",
+                     "≥6", "<2%", "≥85%", "≥6", "—"]
+
+    out = []
+    out.append(["Performance Dashboard"])
+    out.append([f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"])
+    out.append([])
+
+    # We'll collect formatting requests as (row_index, col_index, rgb) and apply once
+    format_cells = []
+
+    def fmt_pct(v):
+        return f"{v:.1f}%" if v is not None else "—"
+    def fmt_num(v, places=1):
+        return f"{v:.{places}f}" if v is not None else "—"
+    def fmt_int(v):
+        return v if v is not None else "—"
+
+    def row_with_colours(row_idx, kpi_values_by_metric, label):
+        """Append a row and stage cell colours."""
+        cols = {
+            "utilization_pct": 2,    # col B
+            "nps_clinic": 3,         # col C — only coloured on clinic rows
+            "dna_pct": 4,
+            "cna_pct": 5,
+            "combined_pct": 6,
+            "pva": 7,
+            "cna_dna_1st_pct": 8,
+            # NPS col 9 — left blank
+            "gen_pop_pva": 10,
+        }
+        for metric, col in cols.items():
+            v = kpi_values_by_metric.get(metric)
+            if metric == "nps_clinic":
+                # NPs column is coloured only on the clinic-wide rows (Clinic Avg / w/o M&J)
+                if label not in ("Clinic Average", "w/o M&J"):
+                    continue
+            rgb = _colour_for(metric, v)
+            if rgb is not None:
+                format_cells.append((row_idx, col, rgb))
+
+    for start_local, end_local in months:
+        month_label = start_local.strftime("%b-%y")
+        out.append([month_label])
+
+        # Header + Standards
+        out.append(headers)
+        out.append(standard_vals)
+
+        # Compute per-physio stats
+        stats_by_display = p2.monthly_stats_per_physio(
+            start_local.astimezone(timezone.utc),
+            end_local.astimezone(timezone.utc),
+        )
+
+        # Compute Clinic Average and w/o M&J aggregates
+        def aggregate(displays):
+            agg = {"total_apts": 0, "nps": 0, "cnas_review": 0, "dnas_review": 0,
+                   "iacnas": 0, "iadnas": 0, "used_minutes_total": 0,
+                   "available_hours": 0,
+                   "gen_pop_initial": 0, "gen_pop_review": 0}
+            for d in displays:
+                s = stats_by_display.get(d)
+                if not s:
+                    continue
+                agg["total_apts"] += s["total_apts"]
+                agg["nps"] += s["nps"]
+                agg["cnas_review"] += s["cnas_review"]
+                agg["dnas_review"] += s["dnas_review"]
+                agg["iacnas"] += s["iacnas"]
+                agg["iadnas"] += s["iadnas"]
+                agg["used_minutes_total"] += s["used_minutes"]
+                if s.get("available_hours"):
+                    agg["available_hours"] += s["available_hours"]
+                agg["gen_pop_initial"] += s["gen_pop_initial"]
+                agg["gen_pop_review"] += s["gen_pop_review"]
+            # Derived
+            review = agg["total_apts"] - agg["nps"]
+            agg["review_appts"] = review
+            agg["dna_pct"] = (agg["dnas_review"] / review * 100) if review else None
+            agg["cna_pct"] = (agg["cnas_review"] / review * 100) if review else None
+            agg["combined_pct"] = ((agg["dnas_review"] + agg["cnas_review"]) / review * 100) if review else None
+            agg["cna_dna_1st_pct"] = ((agg["iacnas"] + agg["iadnas"]) / agg["nps"] * 100) if agg["nps"] else None
+            agg["pva"] = (agg["total_apts"] / agg["nps"]) if agg["nps"] else None
+            agg["gen_pop_pva"] = ((agg["gen_pop_initial"] + agg["gen_pop_review"]) / agg["gen_pop_initial"]) if agg["gen_pop_initial"] else None
+            used_hrs = agg["used_minutes_total"] / 60
+            agg["used_hours"] = round(used_hrs, 2)
+            agg["util_pct"] = (used_hrs / agg["available_hours"] * 100) if agg["available_hours"] else None
+            return agg
+
+        clinic_avg = aggregate(config.PRACTITIONER_DISPLAY_ORDER)
+        main_team = aggregate([d for d in config.PRACTITIONER_DISPLAY_ORDER
+                              if d not in config.EXCLUDE_FROM_MAIN_TEAM])
+
+        # Write clinic-wide rows
+        def stat_row(label, s):
+            row_idx = len(out) + 1  # 1-indexed sheet row
+            out.append([
+                label,
+                fmt_pct(s["util_pct"]),
+                fmt_int(s["nps"]),
+                fmt_pct(s["dna_pct"]),
+                fmt_pct(s["cna_pct"]),
+                fmt_pct(s["combined_pct"]),
+                fmt_num(s["pva"], 1),
+                fmt_pct(s["cna_dna_1st_pct"]),
+                "",  # Net Promoter — blank for now
+                fmt_num(s["gen_pop_pva"], 1),
+                fmt_int(s["total_apts"]),
+            ])
+            colour_vals = {
+                "utilization_pct": s["util_pct"],
+                "nps_clinic": s["nps"],
+                "dna_pct": s["dna_pct"],
+                "cna_pct": s["cna_pct"],
+                "combined_pct": s["combined_pct"],
+                "pva": s["pva"],
+                "cna_dna_1st_pct": s["cna_dna_1st_pct"],
+                "gen_pop_pva": s["gen_pop_pva"],
+            }
+            row_with_colours(row_idx, colour_vals, label)
+
+        stat_row("Clinic Average", clinic_avg)
+        stat_row("w/o M&J", main_team)
+
+        # Per-physio rows in configured display order
+        for display_name in config.PRACTITIONER_DISPLAY_ORDER:
+            s = stats_by_display.get(display_name)
+            if not s:
+                # No data this month — still show row with zeros for clarity
+                s = {
+                    "util_pct": None, "nps": 0, "dna_pct": None, "cna_pct": None,
+                    "combined_pct": None, "pva": None, "cna_dna_1st_pct": None,
+                    "gen_pop_pva": None, "total_apts": 0,
+                }
+            stat_row(display_name, s)
+
+        out.append([])  # spacer between months
+
+    out.append([])
+    out.append(["Definitions:"])
+    out.append(["  NPs = New Patients (broader 13 IA types incl Sports & MSK Consult, Mummy MOT, Pelvic Health, Ultrasound Assessment, Injury Update Testing, etc.)"])
+    out.append(["  PVA = Total Appts ÷ NPs (per physio). Gold standard ≥ 6."])
+    out.append(["  Gen Pop PVA = (1. Initial Appt attended + 2. Review Appt attended) ÷ 1. Initial Appt attended. Gold standard ≥ 6."])
+    out.append(["  DNA % / CNA % = non-IA no-shows / cancellations ÷ Review Appointments (= Total Appts − NPs)."])
+    out.append(["  CNA/DNA 1st % = (IACNA + IADNA) ÷ NPs = pre-IA drop-off rate. Gold standard < 2%."])
+    out.append(["  Utilization % = (attended + DNA + group session hours) ÷ available hours per physio."])
+    out.append([])
+    out.append(["Colour key: green = meets standard, yellow = within 10% of standard, red = below."])
+
+    ws.update(values=out, range_name="A1", value_input_option="RAW")
+
+    # Apply colour formatting in one batch_format call
+    if format_cells:
+        def col_letter(idx):
+            return chr(ord("A") + idx - 1)
+        batch = []
+        for row_idx, col_idx, rgb in format_cells:
+            cell_range = f"{col_letter(col_idx)}{row_idx}"
+            batch.append({"range": cell_range, "format": {"backgroundColor": rgb}})
+        ws.batch_format(batch)
+
+    return ws
+
+
+def write_weekly_snapshot_tab(weeks_back=1):
+    """Refresh Weekly Snapshot tab — last N completed weeks, most recent first."""
+    import phase2 as p2
+    import config
+    now = datetime.now(LONDON)
+    sh = open_spreadsheet()
+    try:
+        ws = sh.worksheet("Weekly Snapshot")
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Weekly Snapshot", rows=200, cols=12)
+
+    # Most recent completed week = the Monday-to-Sunday block ending most recently
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Find last Sunday (or today if today is Sunday)
+    days_since_sunday = (today.weekday() + 1) % 7  # Sunday=0 in this scheme
+    last_sunday = today - timedelta(days=days_since_sunday)
+    last_monday = last_sunday - timedelta(days=6)
+    # Build list of completed weeks, most recent first
+    periods = []
+    monday = last_monday
+    for _ in range(weeks_back):
+        sunday = monday + timedelta(days=6)
+        week_end_exclusive = sunday + timedelta(days=1)  # Mon 00:00 next week
+        label = f"W/C {monday.strftime('%d %b %Y')}"
+        periods.append((monday, week_end_exclusive, label))
+        monday = monday - timedelta(days=7)
+
+    out = []
+    out.append(["Weekly Snapshot — clinic-wide"])
+    out.append([f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}  |  "
+                f"Clinic capacity: {config.CLINIC_WEEKLY_HOURS} hrs/wk"])
+    out.append([])
+    headers = [
+        "Week", "IAs Performed", "IA Rebook %", "Total Appts", "Review Appts",
+        "DNAs", "DNA %", "CNAs", "CNA %", "DNA+CNA %",
+        "CNA/DNA 1st %", "Clinic Rebook %",
+        "Used Hours", "Capacity", "Utilization %",
+    ]
+    out.append(headers)
+    out.append([
+        "Gold Standard", "—", "≥80%", "—", "—",
+        "—", "—", "—", "—", "<10%",
+        "<2%", "≥85%",
+        "—", "—", "75-85%",
+    ])
+
+    def pct(v):
+        return f"{v:.1f}%" if v is not None else "—"
+
+    for week_start_local, week_end_local, label in periods:
+        start_utc = week_start_local.astimezone(timezone.utc)
+        end_utc = week_end_local.astimezone(timezone.utc)
+        s = p2.weekly_clinic_stats(start_utc, end_utc)
+        out.append([
+            label,
+            s["ias_performed"],
+            pct(s["ia_rebook_pct"]),
+            s["total_appts_seen"],
+            s["review_appts"],
+            s["dnas_review"],
+            pct(s["dna_pct"]),
+            s["cnas_review"],
+            pct(s["cna_pct"]),
+            pct(s["combined_pct"]),
+            pct(s["cna_dna_1st_pct"]),
+            pct(s["clinic_rebook_pct"]),
+            s["used_hours"],
+            s["capacity_hours"],
+            pct(s["utilization_pct"]),
+        ])
+
+    out.append([])
+    out.append(["Definitions:"])
+    out.append(["  IAs Performed = all attended IA-type appointments (broader 8: Initial Appt, Club IA, PHI IA, ACL IA, Sports & MSK Consult, Mummy MOT, Pelvic Health, Club Consultation)."])
+    out.append(["  IA Rebook % = of IAs Performed, how many have any non-cancelled appointment booked afterwards."])
+    out.append(["  Review Appts = Total Appts Seen − IAs Performed (the denominator for DNA/CNA rates)."])
+    out.append(["  DNA % / CNA % = non-IA no-shows / cancellations, as % of Review Appts."])
+    out.append(["  DNA+CNA % = combined rate (target <10%)."])
+    out.append(["  CNA/DNA 1st % = (IACNA + IADNA) / IAs Performed = pre-IA drop-off rate (target <2%)."])
+    out.append(["  Clinic Rebook % = of unique patients seen this week, % with any future booking in the diary."])
+    out.append(["  Utilization % = (attended + DNA appointment hours, excl. cancelled & classes) / weekly capacity."])
+    ws.update(values=out, range_name="A1", value_input_option="RAW")
+    return ws
+
+
+def write_monthly_summary_tab():
+    """Refresh Monthly Summary tab — multi-month stacked, current month first,
+    aggregated from all W/C tabs in the sheet."""
+    now = datetime.now(LONDON)
+    sh = open_spreadsheet()
+    types = ("iacna", "iadna", "iadnr", "cancelled", "did_not_attend")
+
+    # Collect rows grouped by YYYY-MM
+    rows_by_month = {}
+    for ws in sh.worksheets():
+        if not ws.title.startswith("W/C "):
+            continue
+        try:
+            records = ws.get_all_records()
+        except Exception as e:
+            print(f"  WARN couldn't read {ws.title}: {e}")
+            continue
+        for row in records:
+            appt_date = str(row.get("Appointment Date") or row.get("appointment_date") or "")
+            canc_date = str(row.get("Cancellation Date") or row.get("cancellation_date") or "")
+            # Event date: cancellation_date if set (cancellations), else appointment_date.
+            # Matches the W/C tab grouping convention.
+            event_date = canc_date if canc_date else appt_date
+            if len(event_date) < 7:
+                continue
+            month_key = event_date[:7]
+            rows_by_month.setdefault(month_key, []).append(row)
+
+    try:
+        ws = sh.worksheet("Monthly Summary")
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Monthly Summary", rows=400, cols=8)
+
+    out = []
+    out.append(["Monthly Summary"])
+    out.append([f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"])
+    out.append([])
+
+    current_month_key = now.strftime("%Y-%m")
+    for month_key in sorted(rows_by_month.keys(), reverse=True):
+        month_label = datetime.strptime(month_key + "-01", "%Y-%m-%d").strftime("%B %Y")
+        suffix = " (month-to-date)" if month_key == current_month_key else " (settled)"
+        out.append([f"=== {month_label}{suffix} ==="])
+        out.append(["Physio", "IACNA", "IADNA", "IADNR", "Cancelled", "DNA", "Total"])
+
+        counts = {}
+        for row in rows_by_month[month_key]:
+            physio = row.get("Physio") or row.get("physio") or "?"
+            kind = row.get("Drop-off Type") or row.get("dropoff_type") or ""
+            counts.setdefault(physio, {k: 0 for k in types})
+            if kind in counts[physio]:
+                counts[physio][kind] += 1
+
+        grand = {k: 0 for k in types}
+        for physio in sorted(counts.keys()):
+            c = counts[physio]
+            total = sum(c.values())
+            out.append([physio, c["iacna"], c["iadna"], c["iadnr"], c["cancelled"],
+                        c["did_not_attend"], total])
+            for k in types:
+                grand[k] += c[k]
+        out.append(["CLINIC TOTAL", grand["iacna"], grand["iadna"], grand["iadnr"],
+                    grand["cancelled"], grand["did_not_attend"], sum(grand.values())])
+        out.append([])
+
+    out.append(["Definitions:"])
+    out.append(["  IACNA = IA cancelled before attending. Physio not responsible."])
+    out.append(["  IADNA = IA did-not-attend. Physio not responsible."])
+    out.append(["  IADNR = Attended IA but never returned (no-rebook + cancelled/DNA'd first follow-up)."])
+    out.append(["  Cancelled / DNA = established patient drop-offs (≥2 attended sessions in current episode)."])
+    ws.update(values=out, range_name="A1", value_input_option="RAW")
+    return ws
+
+
+def write_to_sheet(rows):
+    if not rows:
+        print("No rows to write.")
+        return
+    sh = open_spreadsheet()
+    by_tab = {}
+    for r in rows:
+        # W/C tab keyed to the drop-off event date (cancellation date for cancellations,
+        # appointment date for DNAs / IADNRs), so reception sees the cancellation in the
+        # same week it actually occurred — not the week of the original appointment.
+        event_dt = dropoff_event_dt(r)
+        monday = event_dt - timedelta(days=event_dt.weekday())
+        tab_name = f"W/C {monday.strftime('%d %b %Y')}"
+        by_tab.setdefault(tab_name, []).append(r)
+
+    appt_id_col_index = SHEET_COLUMNS.index("appointment_id") + 1  # 1-indexed for gspread
+    for tab_name, tab_rows in by_tab.items():
+        ws, created = get_or_create_tab(sh, tab_name)
+        existing_ids = set(ws.col_values(appt_id_col_index)) if not created else set()
+        new_rows = [r for r in tab_rows if r["appointment_id"] not in existing_ids]
+        new_rows.sort(key=dropoff_event_dt)
+        if new_rows:
+            payload = [[cell_for(r, c) for c in SHEET_COLUMNS] for r in new_rows]
+            ws.append_rows(payload, value_input_option="USER_ENTERED")
+        flag = "(NEW TAB)" if created else "(existing)"
+        skipped = len(tab_rows) - len(new_rows)
+        print(f"  Tab '{tab_name}' {flag}: appended {len(new_rows)} of {len(tab_rows)} rows"
+              + (f" ({skipped} skipped as duplicates)" if skipped else ""))
+
+
+def main():
+    write_mode = "--write" in sys.argv
+    skip_phase2 = "--no-phase2" in sys.argv
+    date_override = None
+    for i, a in enumerate(sys.argv):
+        if a == "--date" and i + 1 < len(sys.argv):
+            date_override = sys.argv[i + 1]
+            break
+    rows, excluded = collect_dropoffs(date_override=date_override)
+    if rows and not skip_phase2:
+        print()
+        print(f"Enriching {len(rows)} row(s) with Phase 2 (session # + body area)…")
+        enrich_phase2(rows)
+    print()
+    print_preview(rows, excluded)
+    print()
+    if write_mode:
+        print("Writing drop-off rows to Google Sheet…")
+        write_to_sheet(rows)
+        print("Refreshing IA Rebook Rate tab…")
+        write_ia_rebook_rate_tab()
+        print("Refreshing Monthly Summary tab…")
+        write_monthly_summary_tab()
+        print("Refreshing Weekly Snapshot tab…")
+        write_weekly_snapshot_tab(weeks_back=4)
+        print("Refreshing Performance Dashboard tab…")
+        write_performance_dashboard_tab()
+        print("Sending Slack notifications…")
+        try:
+            import slack_notifier
+            mtd_pct = read_mtd_rebook_pct_from_sheet()
+            slack_notifier.send_all(rows, ia_rebook_mtd_pct=mtd_pct)
+        except Exception as e:
+            print(f"  WARN Slack notifications failed: {e}")
+            # Don't let Slack failure abort the daily run — the sheet is already updated.
+        print("Done.")
+    else:
+        print("(Preview only. Re-run with --write to append to the Sheet.)")
+
+
+def read_mtd_rebook_pct_from_sheet():
+    """Read the current-month clinic IA Rebook % from the freshly-refreshed
+    IA Rebook Rate tab. Returns None if not parseable."""
+    sh = open_spreadsheet()
+    try:
+        ws = sh.worksheet("IA Rebook Rate")
+    except gspread.exceptions.WorksheetNotFound:
+        return None
+    in_mtd_section = False
+    for row in ws.get_all_values():
+        head = row[0] if row else ""
+        if "month-to-date" in head:
+            in_mtd_section = True
+            continue
+        if head.startswith("===") and "settled" in head:
+            in_mtd_section = False
+        if in_mtd_section and row and row[0] == "CLINIC TOTAL" and len(row) >= 4:
+            rate = (row[3] or "").rstrip("%").strip()
+            if rate and rate != "—":
+                try:
+                    return float(rate)
+                except ValueError:
+                    pass
+            return None
+    return None
+
+
+if __name__ == "__main__":
+    main()

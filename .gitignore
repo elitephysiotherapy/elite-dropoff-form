@@ -1,0 +1,20 @@
+# Secrets — never commit
+.env
+service_account.json
+*.pem
+
+# Operational logs (contain patient info)
+logs/
+*.log
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Local-only sample data
+sample_*.xlsx
+manual_*.xlsx

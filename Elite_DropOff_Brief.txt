@@ -1,0 +1,325 @@
+ELITE PHYSIOTHERAPY LIMITED
+Patient Drop-Off Automation System
+Claude Code Briefing Document — Build Ready
+Prepared for: Marty Loughran, CEO  |  May 2026
+PURPOSE OF THIS DOCUMENT
+This document is your complete briefing for Claude Code. Hand it over at the start of
+your first Claude Code session. It contains everything Claude Code needs to understand
+what to build, in what order, and why — without you having to re-explain the context.
+
+You do not need any coding experience. Your job is to direct. Claude Code builds.
+
+1. WHAT WE ARE BUILDING
+
+Elite Physiotherapy currently spends 5–7 hours per week manually managing patient drop-off data — pulling it from Cliniko, entering it into Google Sheets, distributing it to physios, and producing weekly and monthly trend reports. This system automates the entire workflow.
+
+The system will run automatically every morning at 7am and will:
+
+	•	Pull all cancellations, Did Not Attends (DNAs), and did-not-rebook patients from the previous 24 hours directly from Cliniko via its API
+	•	Categorise each patient by body area, pathology, session number, and physio
+	•	Write all data to a central Google Sheet with weekly tabs and a live monthly summary
+	•	Send each physio a private Slack message listing only their own patients
+	•	Send the reception team a Slack message with their reactivation call list for the day
+	•	Send Marty a CEO summary Slack message with clinic-wide drop-off stats
+	•	Provide each physio a link to a simple web form to classify each drop-off as clinical or non-clinical
+	•	Calculate the Initial Assessment Rebook Rate automatically, per physio and clinic-wide
+
+KEY OUTCOME
+Sinead's 2-3 hour Monday task: ELIMINATED
+Admin reactivation calls: same day instead of following Monday
+Marty's weekly/monthly reporting: automated
+Patient data stays within Elite's own systems — no AI reads patient data during daily operation
+
+2. HOW THE SYSTEM WORKS
+
+2.1 Daily Automated Flow
+
+Every morning at 7am, the script runs automatically on Marty's MacBook Air (M3). The sequence is:
+
+	•	Connect to Cliniko API and pull all appointments from the previous 24 hours that were cancelled, DNA'd, or not rebooked
+	•	For each patient: retrieve their full appointment history to determine which session number they dropped off at (anchored to their most recent Initial Assessment)
+	•	Retrieve the presenting complaint and body area from the patient's clinical notes in Cliniko
+	•	Categorise the body area into Elite's standard categories (see Section 4)
+	•	Write all data as new rows into the current week's tab in the Google Sheet
+	•	Update the live monthly summary tab automatically
+	•	Recalculate the Initial Assessment Rebook Rate for each physio and the clinic as a whole
+	•	Send individual Slack DMs to each physio with their patients only
+	•	Send the reception Slack channel their reactivation call list
+	•	Send Marty a CEO summary Slack DM
+
+2.2 Physio Feedback Form Flow
+
+Each Slack message sent to a physio includes a unique link per patient. When clicked, a simple web form opens in their browser (phone or desktop). The form logic is:
+
+STEP
+DETAIL
+Question 1
+Was this drop-off clinical or non-clinical?
+If Non-Clinical
+Form submits. Sheet updates. Done.
+If Clinical
+A second question appears: What is the next step?
+Option A
+I will contact the patient directly — form submits, sheet logs it, done.
+Option B
+Fill out Tricky Patient Form — the form displays the direct link to the Tricky Patient Form on the Elite hub. Physio completes it there and forwards to Marty in Slack manually.
+
+3. DATA FIELDS — GOOGLE SHEET COLUMNS
+
+The following columns will be populated automatically for every drop-off patient. These map directly to what Sinead and Marty currently collect manually.
+
+COLUMN
+SOURCE
+METHOD
+Patient first name + last initial
+Cliniko
+Automatic
+Physio name
+Cliniko
+Automatic
+Appointment date
+Cliniko
+Automatic
+Drop-off type (Cancel / DNA / No Rebook)
+Cliniko
+Automatic
+Notice given (hours)
+Cliniko
+Calculated automatically
+Session number dropped off at
+Cliniko history
+Calculated automatically
+Body area (standard category)
+Cliniko notes
+AI categorisation + physio confirms
+Pathology / presenting complaint
+Cliniko notes
+Extracted automatically
+Clinical or non-clinical
+Physio
+Via feedback form
+Next step
+Physio
+Via feedback form
+Week tab
+System
+Automatic
+Date added to sheet
+System
+Automatic
+
+4. BODY AREA CATEGORIES
+
+The system will categorise all presenting complaints into Elite's standard body area list. Marty has defined the following categories and what falls under each. The AI categorisation uses this list. Physios can confirm or correct via the feedback form.
+
+CATEGORY
+INCLUDES
+Foot & Ankle
+Foot, ankle, toe, calf injuries, shin splints, tibial stress syndrome
+Knee
+All knee-related injuries including ACL (post-op or otherwise)
+Quadriceps
+Quadriceps injuries and tears
+Hamstring
+Hamstring injuries and tears
+Hip & Groin
+OA hip, pubic pain, pubic stress, inguinal pain, adductor pain and tears, FAI, CAM hip, plaque injuries, hernias, femoral acetabular impingement
+Lumbar Spine
+Low back pain, lumbar spine, back pain, stiff back — all lower back related
+Thoracic Spine
+Thoracic spine, rib cage related
+Neck
+Cervical spine, neck pain, cervical nerve root issues
+Shoulder
+Shoulder, scapular, rotator cuff, glenohumeral, AC joint, long head of biceps
+Elbow
+Elbow and forearm related
+Wrist & Hand
+Wrist, hand, finger, thumb, MCP joint
+
+NOTE: Post-operative patients are categorised by body area — not flagged separately. ACL sits under Knee.
+
+5. SLACK MESSAGES — EXACT FORMAT
+
+5.1 Individual Physio DM (sent to each physio privately)
+
+EXAMPLE — PHYSIO SLACK DM
+Good morning Erin 👋 Here are yesterday's drop-offs from your caseload:
+
+1. John S. | Knee | Session 3 | Cancelled — 4 hrs notice
+   → Classify this patient: [LINK]
+
+2. Mary T. | Lumbar Spine | Session 1 (never attended) | DNA
+   → Classify this patient: [LINK]
+
+Full sheet: [Google Sheet link]
+
+5.2 Reception Channel Message
+
+EXAMPLE — RECEPTION SLACK MESSAGE
+📞 Reactivation calls for today — [X] patients to contact:
+
+1. John S. (Erin's patient) | Knee | Dropped after session 3
+2. Mary T. (Erin's patient) | Lumbar Spine | Never attended
+3. [etc.]
+
+Full details and contact info: [Google Sheet link]
+
+5.3 CEO Summary DM to Marty
+
+EXAMPLE — CEO SUMMARY SLACK DM
+📊 Drop-off summary for yesterday — [date]
+
+Total: [X] | Cancellations: [X] | DNAs: [X] | No rebook: [X]
+
+By physio:
+  Erin: 2  |  Sinead McG: 1  |  Daire: 2  |  Aoife: 0
+
+IA Rebook Rate (month to date):
+  Clinic: 82%  |  Erin: 85%  |  Sinead McG: 78%  |  Daire: 80%
+
+Full trend sheet: [Google Sheet link]
+
+6. GOOGLE SHEET STRUCTURE
+
+The Google Sheet will be structured as follows:
+
+	•	Week tab (auto-created each Monday, named by date range e.g. W/C 05 May 2026) — all drop-offs for that week added daily as new rows
+	•	Monthly Summary tab — automatically pulls from all weekly tabs, updates in real time, sorted by physio
+	•	IA Rebook Rate tab — live calculation updated daily, showing rate per physio and clinic-wide for the current month
+	•	No manual copying, no manual tab creation — all handled by the script
+
+7. INITIAL ASSESSMENT REBOOK RATE
+
+This is one of Elite's most important clinical performance metrics. The system will calculate it automatically.
+
+Definition
+A patient counts as REBOOKED only if they attended a follow-up session — not just if they booked one.
+
+Calculation
+IA Rebook Rate = (Number of IA patients who attended at least one follow-up) divided by (Total number of Initial Assessments performed) expressed as a percentage.
+
+Example: 100 Initial Assessments in a month. 20 patients did not attend a follow-up. IA Rebook Rate = 80%.
+
+Reporting
+	•	Calculated per physio and clinic-wide
+	•	Reported in Marty's daily CEO Slack DM (month-to-date figure)
+	•	Full breakdown in the IA Rebook Rate tab in Google Sheets
+	•	Monthly figure locked at end of each month for historical comparison
+
+8. SESSION COUNT LOGIC
+
+Correctly identifying which session a patient dropped off at is critical for trend analysis. Many patients attend for multiple separate complaints over several years. The rule is:
+
+SESSION COUNT RULE
+Find the patient's most recent Initial Assessment date.
+Count all appointments from that date forward — including the Initial Assessment itself.
+That total = the session number the patient dropped off at.
+
+Example: Patient had an IA in 2023 (old episode). New IA in March 2026.
+Two follow-ups in April 2026, then cancelled. Session count = 3.
+The 2023 episode is ignored entirely.
+
+9. BUILD PHASES — DO THESE IN ORDER
+
+IMPORTANT: Build one phase at a time. Each phase works and delivers value independently. Do not attempt to build everything at once.
+
+PHASE
+WHAT IT BUILDS
+VALUE DELIVERED
+Phase 1
+Cliniko API pull + Google Sheet writing
+Sinead's manual data entry eliminated immediately
+Phase 2
+Intelligence layer: session count, body area categorisation, IA Rebook Rate
+Marty's manual trend analysis automated
+Phase 3
+Slack notifications: physio DMs, reception channel, CEO summary
+Reactivation calls start same day. Each physio gets their own list automatically.
+Phase 4
+Physio feedback form with conditional logic and Tricky Patient hub link
+Clinical/non-clinical classification captured without Sinead chasing the team
+Phase 5
+Daily automation — scheduled 7am run on MacBook, no manual trigger
+Full hands-off operation. System runs itself every morning.
+
+10. WHAT YOU NEED BEFORE STARTING
+
+Have these ready before your first Claude Code session. Phase 1 cannot start without items 1 and 2.
+
+#
+ITEM NEEDED
+HOW TO GET IT
+1
+Cliniko API key
+Cliniko Settings → Integrations → API Keys → Generate new key
+2
+Google Sheet created with column headers
+Create a new Google Sheet. Column headers from Section 3 of this document.
+3
+Google Cloud account + Sheets API enabled
+Free. go to console.cloud.google.com. Claude Code will walk you through this step by step.
+4
+Slack workspace admin access or bot creation permission
+Ask Sinead or confirm you have admin rights in your Elite Slack workspace.
+5
+Your Tricky Patient Form URL from the hub
+Copy the direct link to the form from your hub. Paste it into Claude Code when prompted.
+
+11. YOUR FIRST CLAUDE CODE PROMPT
+
+Copy and paste this exactly as your very first message when you open Claude Code. Do not change anything except inserting your Cliniko API key where indicated.
+
+PASTE THIS INTO CLAUDE CODE TO START
+I am building a patient drop-off automation system for my physiotherapy clinic.
+I have a full briefing document but here is what I need you to build first.
+
+PHASE 1 ONLY — do not build anything else yet.
+
+I need a Python script that:
+1. Connects to the Cliniko API using my API key: [PASTE YOUR KEY HERE]
+2. Pulls all appointments from the previous 24 hours that were either
+   cancelled, marked as Did Not Attend, or where the patient did not rebook
+3. For each appointment retrieves: patient first name and last initial,
+   physio name, appointment date, drop-off type, and notice given in hours
+4. Writes these as new rows into a Google Sheet
+   (I will give you the Sheet ID once you tell me what format you need it in)
+
+Start by confirming you can connect to Cliniko and show me what data
+comes back before we write anything to the sheet.
+
+My Cliniko subdomain is: [your-clinic-name].cliniko.com
+My computer is an M3 MacBook Air running macOS.
+
+12. GDPR — CHECKPOINT BEFORE GO-LIVE
+
+ACTION REQUIRED BEFORE SWITCHING ON WITH REAL PATIENT DATA
+The system moves patient data between systems Elite already uses (Cliniko,
+Google Sheets, Slack) for purposes already covered in Elite's existing privacy
+notice. No new patient consent is required.
+
+Before going live, complete these two steps:
+
+1. Add one line to your Record of Processing Activities (ROPA) noting that
+   automated scripts are used for internal operational data processing.
+
+2. Confirm Data Processing Agreements are in place with Google and Slack.
+   Both provide standard DPAs — check your account admin settings.
+
+Patient data does NOT pass through any AI model during daily operation.
+The script is a Python program, not an AI. It moves data. It does not read it.
+
+13. TECHNOLOGY BEING USED
+
+You do not need to understand any of this. It is here so Claude Code knows exactly what the target environment is.
+
+	•	Language: Python 3 (Claude Code will install all required libraries)
+	•	Computer: Apple M3 MacBook Air, macOS
+	•	Cliniko: API v1 — REST-based, JSON responses, API key authentication
+	•	Google Sheets: Google Sheets API v4 via Google Cloud service account
+	•	Slack: Slack Bot API — sends DMs and channel messages
+	•	Web form: Lightweight Python Flask web app hosted locally on the MacBook
+	•	Automation: macOS launchd scheduler (runs the script at 7am daily without manual trigger)
+	•	No external AI services used in daily operation — patient data stays within Elite's systems
+
+Elite Physiotherapy Limited  |  Patient Drop-Off Automation  |  Claude Code Briefing  |  May 2026
