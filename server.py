@@ -240,7 +240,8 @@ def slack_interactive():
             new = actions_block_next_step(appt_id)
         else:
             return make_response("", 200)
-        return jsonify({"replace_original": "true",
+        return jsonify({"replace_original": True,
+                        "text": payload.get("message", {}).get("text", "Drop-offs"),
                         "blocks": replace_actions_block(original_blocks, appt_id, new)})
 
     if kind == "next_step":
@@ -254,7 +255,8 @@ def slack_interactive():
         else:
             return make_response("", 200)
         new = context_block_done(appt_id, summary)
-        return jsonify({"replace_original": "true",
+        return jsonify({"replace_original": True,
+                        "text": payload.get("message", {}).get("text", "Drop-offs"),
                         "blocks": replace_actions_block(original_blocks, appt_id, new)})
 
     return make_response("", 200)
