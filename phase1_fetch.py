@@ -1054,6 +1054,91 @@ def existing_appointment_ids():
 # late-logged cancellations that weren't visible when first processed.
 DAILY_LOOKBACK_DAYS = 10
 
+# How far back to re-check pending drop-offs for auto-detected rebookings.
+REBOOKING_RECHECK_WEEKS = 8
+
+
+def detect_rebookings():
+    """Auto-promote drop-off rows to 'rebooked' once the patient is back in the diary.
+
+    Scans W/C tabs from the last REBOOKING_RECHECK_WEEKS weeks. For each row still
+    marked 'pending' or 'contact_attempted', checks Cliniko: does the patient now
+    have a non-cancelled, non-DNA appointment AFTER the drop-off date? If so, the
+    row's Reactivation Status flips to 'rebooked' — no manual sheet editing needed.
+    """
+    import phase2 as p2
+    sh = open_spreadsheet()
+    now = datetime.now(LONDON)
+    cutoff_week = (now - timedelta(weeks=REBOOKING_RECHECK_WEEKS)).replace(tzinfo=None)
+    status_col = SHEET_COLUMNS.index("reactivation_status") + 1  # 1-indexed
+
+    checked = 0
+    promoted = 0
+    for ws in sh.worksheets():
+        if not ws.title.startswith("W/C "):
+            continue
+        try:
+            week_start = datetime.strptime(ws.title.replace("W/C ", ""), "%d %b %Y")
+        except ValueError:
+            continue
+        if week_start < cutoff_week:
+            continue  # too old to keep re-checking
+
+        try:
+            records = ws.get_all_records()
+        except Exception as e:
+            print(f"  WARN couldn't read {ws.title} for rebooking check: {e}")
+            continue
+
+        for sheet_row, row in enumerate(records, start=2):  # row 1 = header
+            status = str(row.get("Reactivation Status") or "").strip().lower()
+            if status not in ("pending", "contact_attempted"):
+                continue
+            appt_id = str(row.get("appointment_id") or "")
+            appt_date = str(row.get("Appointment Date") or "")
+            if not appt_id or not appt_date:
+                continue
+            checked += 1
+
+            # appointment_id → patient_id
+            try:
+                r = p2.SESSION.get(f"{p2.BASE}/individual_appointments/{appt_id}", timeout=30)
+                if r.status_code != 200:
+                    continue
+                patient_id = id_from_link(r.json().get("patient"))
+            except Exception:
+                continue
+            if not patient_id:
+                continue
+
+            # Reference point = the drop-off appointment's start
+            try:
+                ref = datetime.strptime(appt_date, "%Y-%m-%d %H:%M").replace(tzinfo=LONDON)
+            except ValueError:
+                continue
+            ref_iso = ref.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            # Any non-cancelled, non-DNA appointment after the drop-off = re-engaged
+            rebooked = False
+            try:
+                for appt in p2.fetch_all("/individual_appointments", [
+                    ("q[]", f"patient_id:={patient_id}"),
+                    ("q[]", f"starts_at:>{ref_iso}"),
+                ]):
+                    if not appt.get("did_not_arrive"):
+                        rebooked = True
+                        break
+            except Exception as e:
+                print(f"  WARN rebooking check failed for appt {appt_id}: {e}")
+                continue
+
+            if rebooked:
+                ws.update_cell(sheet_row, status_col, "rebooked")
+                promoted += 1
+
+    print(f"  Rebooking check: {checked} pending rows checked, "
+          f"{promoted} auto-promoted to 'rebooked'")
+
 
 def main():
     write_mode = "--write" in sys.argv
@@ -1082,6 +1167,11 @@ def main():
     if write_mode:
         print("Writing drop-off rows to Google Sheet…")
         write_to_sheet(rows)
+        print("Checking for auto-detected rebookings…")
+        try:
+            detect_rebookings()
+        except Exception as e:
+            print(f"  WARN rebooking detection failed: {e}")
         print("Refreshing IA Rebook Rate tab…")
         write_ia_rebook_rate_tab()
         print("Refreshing Monthly Summary tab…")
