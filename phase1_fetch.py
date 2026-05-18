@@ -272,18 +272,33 @@ def dropoff_event_dt(row):
 
 # ---------- Core pipeline ----------
 
-def collect_dropoffs(date_override=None):
+def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_ids=None):
+    """Collect drop-off rows.
+
+    - date_override="YYYY-MM-DD": just that calendar day (manual runs / backfill)
+    - lookback_days=N: rolling window of the last N days (the daily cron uses this,
+      so late-marked DNAs / late-logged cancellations get picked up on a later run)
+    - skip_appointment_ids: appointment IDs already in the sheet — skipped before any
+      history fetch / AI call, so re-scanning is cheap.
+    """
+    skip_appointment_ids = skip_appointment_ids or set()
     if date_override:
         start_utc, end_utc = day_london_window_utc(date_override)
+    elif lookback_days:
+        now_london = datetime.now(LONDON)
+        today_start = now_london.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_utc = (today_start - timedelta(days=lookback_days)).astimezone(timezone.utc)
+        end_utc = today_start.astimezone(timezone.utc)
     else:
         start_utc, end_utc = yesterday_london_window_utc()
     s_iso = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     e_iso = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     pulled_at = datetime.now(LONDON).strftime("%Y-%m-%d %H:%M")
 
-    print(f"Window: yesterday Europe/London  "
+    print(f"Window: Europe/London  "
           f"({start_utc.astimezone(LONDON).strftime('%Y-%m-%d')} → "
-          f"{end_utc.astimezone(LONDON).strftime('%Y-%m-%d')})")
+          f"{end_utc.astimezone(LONDON).strftime('%Y-%m-%d')})  "
+          f"already-in-sheet to skip: {len(skip_appointment_ids)}")
 
     types_by_id = {str(t["id"]): t for t in fetch_all("/appointment_types")}
     pracs_by_id = {str(p["id"]): p for p in fetch_all("/practitioners")}
@@ -313,7 +328,18 @@ def collect_dropoffs(date_override=None):
     rows = []
     excluded_reschedules = []
     for a in appts:
+        # Already captured in a previous run — skip before any expensive work
+        if str(a.get("id")) in skip_appointment_ids:
+            continue
+
         type_id = id_from_link(a.get("appointment_type"))
+        is_cancelled = bool(a.get("cancelled_at"))
+        is_dna = bool(a.get("did_not_arrive"))
+
+        # Attended non-IA appointment is never a drop-off — skip before history fetch
+        if not is_cancelled and not is_dna and type_id not in PHASE1_DROPOFF_IA_TYPE_IDS:
+            continue
+
         prac_id = id_from_link(a.get("practitioner"))
         biz_id = id_from_link(a.get("business"))
         patient_id = id_from_link(a.get("patient"))
@@ -324,9 +350,6 @@ def collect_dropoffs(date_override=None):
         patient = full_patient_name(a.get("patient_name"))
         appt_date = fmt_local_dt(a.get("starts_at"))
 
-        is_cancelled = bool(a.get("cancelled_at"))
-        is_dna = bool(a.get("did_not_arrive"))
-
         notice_hours_val = ""
         if is_cancelled:
             c = parse_iso(a["cancelled_at"])
@@ -336,18 +359,18 @@ def collect_dropoffs(date_override=None):
         elif is_dna:
             notice_hours_val = 0
 
-        # Fetch patient history once (cached) — needed for classification
+        # Fetch patient history once (cached) — needed for classification.
+        # None (not []) marks a FAILED fetch so we skip rather than misclassify.
         if patient_id and patient_id not in history_cache:
             try:
                 history_cache[patient_id] = p2.fetch_patient_full_history(patient_id)
             except Exception as e:
-                print(f"  WARN history fetch failed for {patient}: {e}")
-                history_cache[patient_id] = []
-        history = history_cache.get(patient_id, [])
-
-        # Quick attended-IA check (not a drop-off candidate unless it has no future booking)
-        if not is_cancelled and not is_dna and type_id not in PHASE1_DROPOFF_IA_TYPE_IDS:
-            continue  # attended non-IA appointment, never a drop-off
+                print(f"  WARN history fetch failed for {patient}: {e} "
+                      f"— skipping, next run's re-scan will retry")
+                history_cache[patient_id] = None
+        history = history_cache.get(patient_id)
+        if history is None:
+            continue  # fetch failed — leave for the next run's rolling re-scan
 
         kind = classify_dropoff(a, type_id, history)
         if kind is None:
@@ -1011,6 +1034,27 @@ def write_to_sheet(rows):
               + (f" ({skipped} skipped as duplicates)" if skipped else ""))
 
 
+def existing_appointment_ids():
+    """Set of all appointment_ids already written to any W/C tab.
+    Lets the daily re-scan skip already-captured drop-offs cheaply."""
+    sh = open_spreadsheet()
+    appt_id_col = SHEET_COLUMNS.index("appointment_id") + 1
+    ids = set()
+    for ws in sh.worksheets():
+        if not ws.title.startswith("W/C "):
+            continue
+        try:
+            ids.update(v for v in ws.col_values(appt_id_col) if v and v != "appointment_id")
+        except Exception as e:
+            print(f"  WARN couldn't read appointment_ids from {ws.title}: {e}")
+    return ids
+
+
+# How many days back the daily cron re-scans, to catch late-marked DNAs and
+# late-logged cancellations that weren't visible when first processed.
+DAILY_LOOKBACK_DAYS = 10
+
+
 def main():
     write_mode = "--write" in sys.argv
     skip_phase2 = "--no-phase2" in sys.argv
@@ -1019,10 +1063,18 @@ def main():
         if a == "--date" and i + 1 < len(sys.argv):
             date_override = sys.argv[i + 1]
             break
-    rows, excluded = collect_dropoffs(date_override=date_override)
+
+    if date_override:
+        rows, excluded = collect_dropoffs(date_override=date_override)
+    else:
+        # Daily cron: rolling re-scan, skipping anything already in the sheet
+        already = existing_appointment_ids()
+        rows, excluded = collect_dropoffs(lookback_days=DAILY_LOOKBACK_DAYS,
+                                          skip_appointment_ids=already)
+
     if rows and not skip_phase2:
         print()
-        print(f"Enriching {len(rows)} row(s) with Phase 2 (session # + body area)…")
+        print(f"Enriching {len(rows)} NEW row(s) with Phase 2 (session # + body area)…")
         enrich_phase2(rows)
     print()
     print_preview(rows, excluded)
