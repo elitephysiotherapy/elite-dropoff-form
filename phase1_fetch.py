@@ -510,7 +510,77 @@ def get_or_create_tab(sh, tab_name):
         ws.append_row([HEADER_LABELS[c] for c in SHEET_COLUMNS], value_input_option="RAW")
         first_hidden_idx = SHEET_COLUMNS.index(HIDDEN_COLUMNS[0])
         ws.hide_columns(first_hidden_idx, len(SHEET_COLUMNS))
+        apply_dropoff_tab_formatting(ws)
         return ws, True
+
+
+def apply_dropoff_tab_formatting(ws):
+    """Apply Reactivation Status dropdown + row colour rules to a W/C drop-off tab.
+
+    Colours (whole row, based on column N — Reactivation Status):
+      • reactivated → green   (auto-set by detect_rebookings)
+      • contact_attempted → orange  (reception sets manually)
+      • leave → red  (reception sets manually OR physio via 'Not Appropriate' button)
+      • pending → no colour (default)
+    """
+    sh = ws.spreadsheet
+    sheet_id = ws.id
+    num_cols = len(SHEET_COLUMNS)
+    status_col_idx = SHEET_COLUMNS.index("reactivation_status")
+    status_letter = chr(ord("A") + status_col_idx)
+
+    full_row_range = {
+        "sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 500,
+        "startColumnIndex": 0, "endColumnIndex": num_cols,
+    }
+    status_col_range = {
+        "sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 500,
+        "startColumnIndex": status_col_idx, "endColumnIndex": status_col_idx + 1,
+    }
+
+    rules = [
+        ("reactivated",       {"red": 0.74, "green": 0.93, "blue": 0.78}),  # green
+        ("contact_attempted", {"red": 1.00, "green": 0.87, "blue": 0.70}),  # orange
+        ("leave",             {"red": 0.96, "green": 0.78, "blue": 0.78}),  # red
+    ]
+
+    requests = []
+    for i, (value, color) in enumerate(rules):
+        requests.append({
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [full_row_range],
+                    "booleanRule": {
+                        "condition": {
+                            "type": "CUSTOM_FORMULA",
+                            "values": [{"userEnteredValue": f'=${status_letter}2="{value}"'}],
+                        },
+                        "format": {"backgroundColor": color},
+                    },
+                },
+                "index": i,
+            }
+        })
+    # Dropdown for the status column — keeps reception's values typo-free
+    requests.append({
+        "setDataValidation": {
+            "range": status_col_range,
+            "rule": {
+                "condition": {
+                    "type": "ONE_OF_LIST",
+                    "values": [
+                        {"userEnteredValue": "pending"},
+                        {"userEnteredValue": "contact_attempted"},
+                        {"userEnteredValue": "leave"},
+                        {"userEnteredValue": "reactivated"},
+                    ],
+                },
+                "showCustomUi": True,
+                "strict": False,
+            }
+        }
+    })
+    sh.batch_update({"requests": requests})
 
 
 def cell_for(row, col):
@@ -1004,6 +1074,145 @@ def write_monthly_summary_tab():
     return ws
 
 
+def write_weekly_dropoff_analysis_tab():
+    """Weekly Drop-off Analysis tab — per-practitioner tally + stage-of-rehab
+    breakdown, one section per week, most recent at the top.
+
+    Reproduces Martin's manual weekly analysis. The current week always sits at
+    fixed rows (practitioner tally A5:E14, stage breakdown G5:H10) so any charts
+    pointed there redraw themselves on every daily run.
+    """
+    import config
+    now = datetime.now(LONDON)
+    sh = open_spreadsheet()
+
+    weeks = {}
+    for ws in sh.worksheets():
+        if not ws.title.startswith("W/C "):
+            continue
+        try:
+            weeks[ws.title] = ws.get_all_records()
+        except Exception as e:
+            print(f"  WARN couldn't read {ws.title}: {e}")
+
+    def week_date(title):
+        try:
+            return datetime.strptime(title.replace("W/C ", ""), "%d %b %Y")
+        except ValueError:
+            return datetime.min
+    ordered = sorted(weeks.keys(), key=week_date, reverse=True)
+
+    # Physio-responsible drop-off types (IACNA / IADNA are pre-IA — excluded
+    # from the practitioner tally; the physio never saw the patient).
+    PHYS_RESP = ("iadnr", "cancelled", "did_not_attend")
+    STAGE_ROWS = ["IACNA/DNA", "IADNR", "Before Session 3",
+                  "Before Session 6", "After Session 6"]
+    BODY_MAX = 14   # fixed body-area block height so the pie-chart range is stable
+
+    def analyse(rows):
+        per = {}
+        stage = {k: 0 for k in STAGE_ROWS}
+        body = {}
+        clinical = {"Clinical": 0, "Non-Clinical": 0}
+        for r in rows:
+            kind = str(r.get("Drop-off Type") or r.get("dropoff_type")
+                       or "").strip().lower()
+            physio_full = str(r.get("Physio") or r.get("physio") or "?").strip()
+            display = config.PRACTITIONER_DISPLAY_NAME.get(physio_full, physio_full)
+            if kind in ("iacna", "iadna"):
+                stage["IACNA/DNA"] += 1
+            elif kind in PHYS_RESP:
+                if kind == "iadnr":
+                    stage["IADNR"] += 1
+                sn_raw = str(r.get("Session #") or r.get("session_number") or "").strip()
+                try:
+                    sn = int(float(sn_raw))
+                except ValueError:
+                    sn = 1
+                if sn <= 3:
+                    stage["Before Session 3"] += 1
+                elif sn <= 6:
+                    stage["Before Session 6"] += 1
+                else:
+                    stage["After Session 6"] += 1
+            if kind in PHYS_RESP:
+                d = per.setdefault(display, {"iadnr": 0, "cancelled": 0,
+                                             "did_not_attend": 0})
+                d[kind] += 1
+            # Body area — pre-IA drop-offs (IACNA/IADNA) excluded: the patient
+            # never attended, so there is no assessed body area.
+            if kind not in ("iacna", "iadna"):
+                area = str(r.get("Body Area") or "").strip()
+                if area:
+                    body[area] = body.get(area, 0) + 1
+            # Clinical vs non-clinical reason. Pre-IA drop-offs (IACNA/IADNA)
+            # are always counted Non-Clinical — the patient never attended, so
+            # there is no clinical reason behind them.
+            if kind in ("iacna", "iadna"):
+                clinical["Non-Clinical"] += 1
+            else:
+                cv = str(r.get("Clinical / Non-Clinical") or "").strip().lower()
+                if cv.startswith("non"):
+                    clinical["Non-Clinical"] += 1
+                elif cv.startswith("clin"):
+                    clinical["Clinical"] += 1
+        return per, stage, body, clinical
+
+    out = [["Weekly Drop-off Analysis"],
+           [f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"],
+           []]
+
+    for idx, title in enumerate(ordered):
+        per, stage, body_counts, clinical = analyse(weeks[title])
+        out.append(["CURRENT WEEK — " + title if idx == 0 else title])
+        out.append(["Practitioner", "IADNR", "CNA", "DNA", "Total", "",
+                    "Stage Drop-off", "Count", "",
+                    "Body Area", "Count", "",
+                    "Clinical Split", "Count"])
+
+        prac_rows, tot = [], {"iadnr": 0, "cancelled": 0, "did_not_attend": 0}
+        for d in config.PRACTITIONER_DISPLAY_ORDER:
+            c = per.get(d, {"iadnr": 0, "cancelled": 0, "did_not_attend": 0})
+            for k in tot:
+                tot[k] += c[k]
+            prac_rows.append([d, c["iadnr"], c["cancelled"], c["did_not_attend"],
+                              c["iadnr"] + c["cancelled"] + c["did_not_attend"]])
+        prac_rows.append(["Total", tot["iadnr"], tot["cancelled"],
+                          tot["did_not_attend"], sum(tot.values())])
+
+        stage_rows = [[s, stage[s]] for s in STAGE_ROWS]
+        body_rows = [[a, n] for a, n in
+                     sorted(body_counts.items(), key=lambda kv: -kv[1])]
+        clin_rows = [["Clinical", clinical["Clinical"]],
+                     ["Non-Clinical", clinical["Non-Clinical"]]]
+
+        height = max(len(prac_rows), len(stage_rows), BODY_MAX, len(clin_rows))
+        for i in range(height):
+            p = prac_rows[i] if i < len(prac_rows) else ["", "", "", "", ""]
+            s = stage_rows[i] if i < len(stage_rows) else ["", ""]
+            b = body_rows[i] if i < len(body_rows) else ["", ""]
+            cl = clin_rows[i] if i < len(clin_rows) else ["", ""]
+            out.append(p + [""] + s + [""] + b + [""] + cl)
+        out.append([])
+
+    out.append(["Definitions:"])
+    out.append(["  Practitioner tally = physio-responsible drop-offs only: "
+                "IADNR, CNA (established-patient cancellation), DNA."])
+    out.append(["  IACNA/DNA = pre-IA drop-offs (patient never attended the "
+                "assessment) — not attributed to a physio."])
+    out.append(["  Before Session 3 / Before Session 6 = dropped off at session "
+                "1-3 / 4-6 (attended a max of 2 / a max of 5). "
+                "After Session 6 = session 7+."])
+
+    try:
+        ws = sh.worksheet("Weekly Drop-off Analysis")
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Weekly Drop-off Analysis", rows=600, cols=26)
+    ws.update(values=out, range_name="A1", value_input_option="RAW")
+    return ws
+
+
 def write_to_sheet(rows):
     if not rows:
         print("No rows to write.")
@@ -1133,11 +1342,11 @@ def detect_rebookings():
                 continue
 
             if rebooked:
-                ws.update_cell(sheet_row, status_col, "rebooked")
+                ws.update_cell(sheet_row, status_col, "reactivated")
                 promoted += 1
 
-    print(f"  Rebooking check: {checked} pending rows checked, "
-          f"{promoted} auto-promoted to 'rebooked'")
+    print(f"  Reactivation check: {checked} pending rows checked, "
+          f"{promoted} auto-promoted to 'reactivated'")
 
 
 def main():
@@ -1180,6 +1389,8 @@ def main():
         write_weekly_snapshot_tab(weeks_back=4)
         print("Refreshing Performance Dashboard tab…")
         write_performance_dashboard_tab()
+        print("Refreshing Weekly Drop-off Analysis tab…")
+        write_weekly_dropoff_analysis_tab()
         print("Sending Slack notifications…")
         try:
             import slack_notifier
