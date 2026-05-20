@@ -15,6 +15,7 @@ import os
 import json
 import hmac
 import hashlib
+import base64
 import time
 import threading
 from urllib.parse import urlencode
@@ -41,6 +42,7 @@ RECEPTION_EMAILS = os.environ.get(
 TRICKY_PATIENT_URL = (
     "https://app.thegotoclinichub.com/tools/the-difficult-patient-problem-solver.php"
 )
+TALLY_SIGNING_SECRET = os.environ.get("TALLY_SIGNING_SECRET", "")
 
 # Column positions in W/C tabs (1-indexed for gspread):
 COL_PATIENT = 3              # C
@@ -48,6 +50,7 @@ COL_PHYSIO = 4               # D
 COL_BODY_AREA = 11           # K
 COL_CLINICAL_NON_CLINICAL = 12  # L
 COL_NEXT_STEP = 13              # M
+COL_REACTIVATION_STATUS = 14    # N
 COL_APPOINTMENT_ID = 18         # R
 
 # ---------------- Lazy-init clients ----------------
@@ -110,7 +113,7 @@ def find_row_by_appt_id(sh, appt_id):
     return None, None
 
 
-def update_classification(appt_id, clinical=None, next_step=None):
+def update_classification(appt_id, clinical=None, next_step=None, reactivation_status=None):
     sh = get_sheet()
     ws, row = find_row_by_appt_id(sh, appt_id)
     if not ws:
@@ -122,6 +125,9 @@ def update_classification(appt_id, clinical=None, next_step=None):
     if next_step is not None:
         updates.append({"range": gspread.utils.rowcol_to_a1(row, COL_NEXT_STEP),
                         "values": [[next_step]]})
+    if reactivation_status is not None:
+        updates.append({"range": gspread.utils.rowcol_to_a1(row, COL_REACTIVATION_STATUS),
+                        "values": [[reactivation_status]]})
     if updates:
         ws.batch_update(updates, value_input_option="RAW")
     values = ws.row_values(row)
@@ -134,10 +140,17 @@ def update_classification(appt_id, clinical=None, next_step=None):
     }
 
 
-def notify_reception(ctx):
-    """DM reception + Sinéad Rocks when a non-clinical drop-off is confirmed."""
-    text = (f"🟢 *{ctx['physio']}* marked *{ctx['patient']}* ({ctx['body_area']}) "
-            f"as *non-clinical* → please reactivate")
+def notify_reception(ctx, decision="reactivate"):
+    """DM reception + Sinéad Rocks with the physio's decision on a non-clinical drop-off."""
+    if decision == "reactivate":
+        text = (f"🟢 *{ctx['physio']}* marked *{ctx['patient']}* ({ctx['body_area']}) "
+                f"as *non-clinical* → please reactivate")
+    elif decision == "not_appropriate":
+        text = (f"⚠️ *{ctx['physio']}* marked *{ctx['patient']}* ({ctx['body_area']}) "
+                f"as *non-clinical / not appropriate for physio* — "
+                f"no reactivation call needed")
+    else:
+        return
     slack = get_slack()
     for email in RECEPTION_EMAILS:
         email = email.strip()
@@ -184,6 +197,23 @@ def actions_block_next_step(appt_id):
     }
 
 
+def actions_block_non_clinical_next_step(appt_id):
+    """Second-stage buttons after Non-clinical is clicked."""
+    return {
+        "type": "actions",
+        "block_id": f"actions_{appt_id}",
+        "elements": [
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "📞 Reactivate"},
+             "style": "primary",
+             "action_id": f"non_clinical_next:{appt_id}:reactivate"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "⚠️ Not Appropriate for Physio"},
+             "action_id": f"non_clinical_next:{appt_id}:not_appropriate"},
+        ],
+    }
+
+
 def context_block_done(appt_id, summary_md):
     return {
         "type": "context",
@@ -222,18 +252,37 @@ def _process_action_async(action_id, response_url, original_blocks, fallback_tex
         new_block = None
         if kind == "classify":
             if choice == "non_clinical":
-                ctx = update_classification(appt_id, clinical="non clinical",
-                                            next_step="reactivate")
-                if ctx:
-                    notify_reception(ctx)
-                new_block = context_block_done(
-                    appt_id,
-                    "✅ *Non-clinical* — reception notified for reactivation",
-                )
+                # Mark Non-clinical, then ask: reactivate or not appropriate?
+                # Clear any stale next_step in case they previously clicked Clinical.
+                update_classification(appt_id, clinical="non clinical", next_step="")
+                new_block = actions_block_non_clinical_next_step(appt_id)
             elif choice == "clinical":
                 # Clear stale next_step in case they previously clicked Non-clinical.
                 update_classification(appt_id, clinical="clinical", next_step="")
                 new_block = actions_block_next_step(appt_id)
+        elif kind == "non_clinical_next":
+            if choice == "reactivate":
+                ctx = update_classification(appt_id, next_step="reactivate")
+                if ctx:
+                    notify_reception(ctx, decision="reactivate")
+                new_block = context_block_done(
+                    appt_id,
+                    "✅ *Non-clinical → Reactivate* — reception notified",
+                )
+            elif choice == "not_appropriate":
+                # Final state — no reception call needed. Auto-close the reactivation
+                # workflow by marking reactivation_status='leave' (red in the manual sheet).
+                ctx = update_classification(
+                    appt_id,
+                    next_step="not appropriate",
+                    reactivation_status="leave",
+                )
+                if ctx:
+                    notify_reception(ctx, decision="not_appropriate")
+                new_block = context_block_done(
+                    appt_id,
+                    "✅ *Non-clinical → Not appropriate for physio* — reception notified, no call needed",
+                )
         elif kind == "next_step":
             if choice == "contact":
                 update_classification(appt_id,
@@ -287,6 +336,100 @@ def slack_interactive():
         args=(action_id, response_url, original_blocks, fallback_text),
         daemon=True,
     ).start()
+    return make_response("", 200)
+
+
+# ---------------- Tally NPS survey webhook ----------------
+def verify_tally_request(raw_body):
+    """Verify Tally's HMAC-SHA256 signature. If no secret is configured the
+    check is skipped (with a warning) so the endpoint still works in testing."""
+    if not TALLY_SIGNING_SECRET:
+        print("WARN: TALLY_SIGNING_SECRET not set — skipping Tally signature check")
+        return True
+    sig = request.headers.get("Tally-Signature", "")
+    digest = hmac.new(TALLY_SIGNING_SECRET.encode(), raw_body, hashlib.sha256).digest()
+    expected = base64.b64encode(digest).decode()
+    return hmac.compare_digest(expected, sig)
+
+
+def _tally_fields(payload):
+    """Flatten Tally's data.fields list into {lowercased label: value}."""
+    out = {}
+    for f in (payload.get("data") or {}).get("fields", []) or []:
+        label = (f.get("label") or "").strip().lower()
+        if label:
+            out[label] = f.get("value")
+    return out
+
+
+def _tally_find(fields, *exact, contains=None):
+    for name in exact:
+        if name.lower() in fields:
+            return fields[name.lower()]
+    if contains:
+        for label, val in fields.items():
+            if contains.lower() in label:
+                return val
+    return None
+
+
+def _normalise_tally(payload):
+    """Tally webhook payload -> the dict marketing.detractor.handle_response wants.
+
+    Hidden fields are matched by exact label; the score and branch questions by
+    keyword (confirm the form's question labels match when the Tally form is built).
+    """
+    f = _tally_fields(payload)
+    raw_score = _tally_find(f, "nps_score", contains="recommend")
+    try:
+        score = int(float(raw_score)) if raw_score not in (None, "") else None
+    except (ValueError, TypeError):
+        score = None
+    callback_raw = _tally_find(f, "callback_wanted", contains="call you")
+    callback_wanted = "yes" in str(callback_raw or "").lower()
+    open_text = (_tally_find(f, "detractor_feedback", contains="went wrong")
+                 or _tally_find(f, "passive_feedback", contains="9 or 10") or "")
+    return {
+        "patient_id": _tally_find(f, "patient_id") or "",
+        "patient_name": _tally_find(f, "patient_name") or "",
+        "patient_email": _tally_find(f, "patient_email") or "",
+        "patient_phone": _tally_find(f, "patient_phone") or "",
+        "physio_name": _tally_find(f, "physio_name") or "",
+        "clinic_name": _tally_find(f, "clinic_name") or "",
+        "trigger_type": _tally_find(f, "trigger_type") or "",
+        "appointment_date": _tally_find(f, "appointment_date") or "",
+        "nps_score": score,
+        "open_text": open_text or "",
+        "callback_wanted": callback_wanted,
+        "callback_number": _tally_find(f, "callback_number",
+                                       contains="number to reach") or "",
+    }
+
+
+def _process_tally_async(resp):
+    """Heavy work (sheet writes, sends) runs off the request thread."""
+    try:
+        from marketing import detractor
+        status = detractor.handle_response(resp)
+        print(f"tally webhook: {status} (patient {resp.get('patient_id')})")
+    except Exception as exc:
+        print(f"tally webhook error: {exc}")
+
+
+@app.route("/tally/webhook", methods=["POST"])
+def tally_webhook():
+    raw = request.get_data()
+    if not verify_tally_request(raw):
+        return make_response("Bad signature", 401)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return make_response("Bad payload", 400)
+    resp = _normalise_tally(payload)
+    if resp.get("nps_score") is None:
+        print("tally webhook: no score in payload — ignoring")
+        return make_response("", 200)
+    threading.Thread(target=_process_tally_async, args=(resp,), daemon=True).start()
     return make_response("", 200)
 
 
