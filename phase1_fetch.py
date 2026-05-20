@@ -514,6 +514,269 @@ def get_or_create_tab(sh, tab_name):
         return ws, True
 
 
+# ---------- Leads sheet (separate spreadsheet) ----------
+
+LEADS_STATUS_COL_LETTER = "I"   # column we add to the Leads tab
+LEADS_STATUS_VALUES = ["pending", "booked", "declined", "lost"]
+
+
+def open_leads_spreadsheet():
+    import config
+    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SHEETS_SCOPES)
+    return gspread.authorize(creds).open_by_key(config.LEADS_SPREADSHEET_ID)
+
+
+def apply_leads_tab_formatting(ws):
+    """Dropdown + colour rules for the Status column on the Leads tab.
+      booked → green, lost → orange, declined → red, pending → no colour.
+    """
+    sh = ws.spreadsheet
+    sheet_id = ws.id
+    status_col_idx = ord(LEADS_STATUS_COL_LETTER) - ord("A")  # 8 (0-indexed)
+    num_cols = status_col_idx + 1  # A..I
+
+    full_row_range = {
+        "sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+        "startColumnIndex": 0, "endColumnIndex": num_cols,
+    }
+    status_col_range = {
+        "sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 1000,
+        "startColumnIndex": status_col_idx, "endColumnIndex": status_col_idx + 1,
+    }
+
+    rules = [
+        ("booked",   {"red": 0.74, "green": 0.93, "blue": 0.78}),  # green
+        ("lost",     {"red": 1.00, "green": 0.87, "blue": 0.70}),  # orange
+        ("declined", {"red": 0.96, "green": 0.78, "blue": 0.78}),  # red
+    ]
+    requests = []
+    for i, (value, color) in enumerate(rules):
+        requests.append({
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [full_row_range],
+                    "booleanRule": {
+                        "condition": {
+                            "type": "CUSTOM_FORMULA",
+                            "values": [{"userEnteredValue":
+                                       f'=${LEADS_STATUS_COL_LETTER}2="{value}"'}],
+                        },
+                        "format": {"backgroundColor": color},
+                    },
+                },
+                "index": i,
+            }
+        })
+    requests.append({
+        "setDataValidation": {
+            "range": status_col_range,
+            "rule": {
+                "condition": {
+                    "type": "ONE_OF_LIST",
+                    "values": [{"userEnteredValue": v} for v in LEADS_STATUS_VALUES],
+                },
+                "showCustomUi": True,
+                "strict": False,
+            }
+        }
+    })
+    sh.batch_update({"requests": requests})
+
+
+def leads_pipeline_summary():
+    """Return per-status counts of leads currently in the Leads tab.
+    Returns {pending, booked, declined, lost, total, not_booked}."""
+    sh = open_leads_spreadsheet()
+    try:
+        ws = sh.worksheet("Leads")
+    except gspread.exceptions.WorksheetNotFound:
+        return None
+    records = ws.get_all_records()
+    counts = {"pending": 0, "booked": 0, "declined": 0, "lost": 0}
+    for r in records:
+        # Skip fully-empty rows
+        if not any(str(v).strip() for v in r.values()):
+            continue
+        status = str(r.get("Status") or "").strip().lower() or "pending"
+        if status in counts:
+            counts[status] += 1
+    total = sum(counts.values())
+    counts["total"] = total
+    counts["not_booked"] = total - counts["booked"]
+    return counts
+
+
+def weekly_leads_wipe():
+    """Archive the current Leads tab content into a 'Leads Archive' tab, then
+    clear the Leads tab so a fresh week starts. Runs every Sunday."""
+    sh = open_leads_spreadsheet()
+    try:
+        leads_ws = sh.worksheet("Leads")
+    except gspread.exceptions.WorksheetNotFound:
+        print("  Leads tab not found — skipping wipe")
+        return
+
+    all_rows = leads_ws.get_all_values()
+    if len(all_rows) <= 1:
+        print("  Leads tab empty — nothing to archive")
+        return
+
+    header = all_rows[0]
+    data_rows = [row for row in all_rows[1:] if any(c.strip() for c in row)]
+    if not data_rows:
+        print("  Leads tab empty — nothing to archive")
+        return
+
+    # Get or create archive tab
+    try:
+        archive_ws = sh.worksheet("Leads Archive")
+        archive_existing_count = len(archive_ws.col_values(1)) - 1  # minus header
+    except gspread.exceptions.WorksheetNotFound:
+        # Create with header (original cols + Week Archived)
+        archive_ws = sh.add_worksheet(title="Leads Archive",
+                                      rows=2000, cols=len(header) + 1)
+        archive_ws.update(values=[header + ["Week Archived"]],
+                          range_name="A1", value_input_option="RAW")
+        archive_existing_count = 0
+
+    today_str = datetime.now(LONDON).strftime("%Y-%m-%d")
+    # Pad rows to header length, then append Week Archived
+    padded = [row + [""] * (len(header) - len(row)) + [today_str] for row in data_rows]
+    archive_ws.append_rows(padded, value_input_option="RAW")
+
+    # Clear the Leads tab (keep header + formatting)
+    last_row = len(all_rows)
+    leads_ws.batch_clear([f"A2:Z{last_row}"])
+    print(f"  Archived {len(padded)} leads (total in archive: "
+          f"{archive_existing_count + len(padded)}); cleared Leads tab")
+
+
+def write_dashboard_lead_conversion(months_back=12):
+    """Write a per-month lead conversion table to the Dashboard tab.
+
+    For each month: Total IAs booked (from Cliniko NPs), Leads Not Booked
+    (from archive: pending + declined + lost), Total Inquiries (sum),
+    Conversion %. Direct bookings (most NPs) are correctly included since
+    NPs come from Cliniko (all IAs booked), not from the leads tab.
+    """
+    import phase2 as p2
+    sh = open_leads_spreadsheet()
+    # Pull leads archive grouped by month (use Week Archived as the bucket)
+    archive_by_month = {}  # 'YYYY-MM' -> list of status strings
+    try:
+        archive_ws = sh.worksheet("Leads Archive")
+        for r in archive_ws.get_all_records():
+            week_arch = str(r.get("Week Archived") or "")
+            if len(week_arch) < 7:
+                continue
+            ym = week_arch[:7]
+            status = str(r.get("Status") or "pending").strip().lower()
+            archive_by_month.setdefault(ym, []).append(status)
+    except gspread.exceptions.WorksheetNotFound:
+        pass
+
+    # Get or create Dashboard tab
+    try:
+        dash = sh.worksheet("Dashboard")
+    except gspread.exceptions.WorksheetNotFound:
+        dash = sh.add_worksheet(title="Dashboard", rows=200, cols=10)
+
+    # Build last N months
+    now = datetime.now(LONDON)
+    months = []
+    y, m = now.year, now.month
+    for _ in range(months_back):
+        months.append((y, m))
+        m -= 1
+        if m < 1:
+            m = 12; y -= 1
+
+    out = []
+    out.append(["Lead Conversion (rolling)"])
+    out.append([f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"])
+    out.append([])
+    out.append(["Month", "IAs Booked (clinic)", "Leads Not Booked",
+                "Total Inquiries", "Conversion %"])
+    for y, m in months:
+        ym = f"{y:04d}-{m:02d}"
+        # NPs (IAs booked) for this month from Cliniko
+        start = datetime(y, m, 1, tzinfo=LONDON)
+        end = (datetime(y + 1, 1, 1, tzinfo=LONDON) if m == 12
+               else datetime(y, m + 1, 1, tzinfo=LONDON))
+        try:
+            physio_stats = p2.monthly_stats_per_physio(
+                start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+            )
+            ias_booked = sum(s["nps"] for s in physio_stats.values())
+        except Exception as e:
+            print(f"  WARN couldn't fetch NPs for {ym}: {e}")
+            ias_booked = 0
+        archived = archive_by_month.get(ym, [])
+        not_booked = sum(1 for s in archived if s != "booked")
+        total = ias_booked + not_booked
+        rate = f"{(ias_booked / total * 100):.0f}%" if total else "—"
+        out.append([f"{start.strftime('%b %Y')}", ias_booked, not_booked, total, rate])
+
+    out.append([])
+    out.append(["Definitions:"])
+    out.append(["  IAs Booked = total New Patient appointments attended in the month (from Cliniko — includes both direct bookings and leads that converted)."])
+    out.append(["  Leads Not Booked = leads logged in the Leads tab that week and ended the week as pending / declined / lost (from Leads Archive)."])
+    out.append(["  Total Inquiries = IAs Booked + Leads Not Booked."])
+    out.append(["  Conversion % = IAs Booked / Total Inquiries."])
+
+    dash.batch_clear(["A1:Z200"])
+    dash.update(values=out, range_name="A1", value_input_option="RAW")
+    print(f"  Dashboard 'Lead Conversion' updated ({len(months)} months)")
+
+
+def setup_leads_tab():
+    """One-off setup of the Leads tab: ensure Status column exists, migrate any
+    existing rows where Notes contains BOOKED → Status=booked, apply colours +
+    dropdown. Idempotent — safe to re-run."""
+    sh = open_leads_spreadsheet()
+    try:
+        ws = sh.worksheet("Leads")
+    except gspread.exceptions.WorksheetNotFound:
+        print("  Leads tab not found")
+        return
+    header = ws.row_values(1)
+    status_col_1based = ord(LEADS_STATUS_COL_LETTER) - ord("A") + 1
+    # Ensure the sheet is wide enough for the Status column
+    if ws.col_count < status_col_1based:
+        ws.add_cols(status_col_1based - ws.col_count)
+    if len(header) < status_col_1based or header[status_col_1based - 1] != "Status":
+        ws.update(values=[["Status"]],
+                  range_name=f"{LEADS_STATUS_COL_LETTER}1",
+                  value_input_option="RAW")
+        print(f"  Added 'Status' header at column {LEADS_STATUS_COL_LETTER}")
+
+    notes_col = ws.col_values(8)  # H = Notes
+    status_col_vals = ws.col_values(status_col_1based)
+    pending_set = 0
+    booked_set = 0
+    for row_idx, notes in enumerate(notes_col, start=1):
+        if row_idx == 1:
+            continue
+        existing_status = (status_col_vals[row_idx - 1]
+                           if row_idx - 1 < len(status_col_vals) else "")
+        if existing_status:
+            continue
+        # Only set status on rows that have any data (skip blank rows)
+        row_vals = ws.row_values(row_idx)
+        if not any(v.strip() for v in row_vals):
+            continue
+        if "BOOKED" in (notes or "").upper():
+            ws.update_cell(row_idx, status_col_1based, "booked")
+            booked_set += 1
+        else:
+            ws.update_cell(row_idx, status_col_1based, "pending")
+            pending_set += 1
+    print(f"  Set Status on {booked_set + pending_set} rows "
+          f"({booked_set} booked, {pending_set} pending)")
+    apply_leads_tab_formatting(ws)
+    print(f"  Applied colour rules + dropdown to Leads tab")
+
+
 def apply_dropoff_tab_formatting(ws):
     """Apply Reactivation Status dropdown + row colour rules to a W/C drop-off tab.
 
@@ -1374,6 +1637,14 @@ def main():
     print_preview(rows, excluded)
     print()
     if write_mode:
+        # Sunday-only: wipe the Leads tab for a fresh week (archives first)
+        if datetime.now(LONDON).weekday() == 6:
+            print("It's Sunday — running weekly leads wipe…")
+            try:
+                weekly_leads_wipe()
+            except Exception as e:
+                print(f"  WARN weekly leads wipe failed: {e}")
+
         print("Writing drop-off rows to Google Sheet…")
         write_to_sheet(rows)
         print("Checking for auto-detected rebookings…")
@@ -1391,11 +1662,22 @@ def main():
         write_performance_dashboard_tab()
         print("Refreshing Weekly Drop-off Analysis tab…")
         write_weekly_dropoff_analysis_tab()
+        print("Refreshing Lead Conversion table on Dashboard tab…")
+        try:
+            write_dashboard_lead_conversion()
+        except Exception as e:
+            print(f"  WARN lead-conversion update failed: {e}")
         print("Sending Slack notifications…")
         try:
             import slack_notifier
             mtd_pct = read_mtd_rebook_pct_from_sheet()
-            slack_notifier.send_all(rows, ia_rebook_mtd_pct=mtd_pct)
+            leads = None
+            try:
+                leads = leads_pipeline_summary()
+            except Exception as e:
+                print(f"  WARN leads pipeline summary failed: {e}")
+            slack_notifier.send_all(rows, ia_rebook_mtd_pct=mtd_pct,
+                                    leads_summary=leads)
         except Exception as e:
             print(f"  WARN Slack notifications failed: {e}")
             # Don't let Slack failure abort the daily run — the sheet is already updated.

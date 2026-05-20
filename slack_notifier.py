@@ -199,7 +199,7 @@ def _reception_dm_text(rows):
     return "\n".join(lines)
 
 
-def _ops_manager_dm_text(rows, ia_rebook_mtd_pct=None):
+def _ops_manager_dm_text(rows, ia_rebook_mtd_pct=None, leads_summary=None):
     yesterday = (datetime.now(LONDON) - timedelta(days=1)).strftime("%a %d %b")
     by_type = {k: 0 for k in ("cancelled", "did_not_attend", "iadnr", "iacna", "iadna")}
     for r in rows:
@@ -230,6 +230,17 @@ def _ops_manager_dm_text(rows, ia_rebook_mtd_pct=None):
     if ia_rebook_mtd_pct is not None:
         month_label = datetime.now(LONDON).strftime("%B")
         lines.append(f"IA Rebook Rate ({month_label} MTD): {ia_rebook_mtd_pct:.0f}%")
+        lines.append("")
+    if leads_summary:
+        not_booked = leads_summary.get("not_booked", 0)
+        parts = []
+        for k in ("pending", "lost", "declined"):
+            n = leads_summary.get(k, 0)
+            if n:
+                parts.append(f"{n} {k}")
+        breakdown = " (" + ", ".join(parts) + ")" if parts else ""
+        lines.append(f"Leads this week: {not_booked} not booked{breakdown}, "
+                     f"{leads_summary.get('booked', 0)} booked")
         lines.append("")
     lines.append(f"Full trend sheet: {config.SPREADSHEET_URL}")
     return "\n".join(lines)
@@ -265,9 +276,10 @@ def notify_reception(rows):
     )
 
 
-def notify_ops_manager(rows, ia_rebook_mtd_pct=None):
+def notify_ops_manager(rows, ia_rebook_mtd_pct=None, leads_summary=None):
     """Send the daily Ops Manager Summary to CEO + Sinéad Rocks."""
-    text = _ops_manager_dm_text(rows, ia_rebook_mtd_pct=ia_rebook_mtd_pct)
+    text = _ops_manager_dm_text(rows, ia_rebook_mtd_pct=ia_rebook_mtd_pct,
+                                leads_summary=leads_summary)
     _send_dm_to_recipients(
         config.OPS_MANAGER_SLACK_EMAILS,
         text,
@@ -275,11 +287,12 @@ def notify_ops_manager(rows, ia_rebook_mtd_pct=None):
     )
 
 
-def send_all(rows, ia_rebook_mtd_pct=None):
+def send_all(rows, ia_rebook_mtd_pct=None, leads_summary=None):
     if config.SLACK_SAFE_MODE:
         print(f"Slack SAFE_MODE is ON — all messages will go to {config.CEO_SLACK_EMAIL}")
     if not rows:
         print("  No drop-offs to notify about today. Still sending Ops Manager summary.")
     notify_physios(rows)
     notify_reception(rows)
-    notify_ops_manager(rows, ia_rebook_mtd_pct=ia_rebook_mtd_pct)
+    notify_ops_manager(rows, ia_rebook_mtd_pct=ia_rebook_mtd_pct,
+                       leads_summary=leads_summary)

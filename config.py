@@ -163,9 +163,18 @@ RECEPTION_LIST_SLACK_EMAILS = [
 # Spreadsheet URL used in DM links
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1RC7QkHGAa8dH5ShmwbFyswdrmMOo6HTgkcKZEvqoZbI/edit"
 
+# ===========================================================================
+# LEADS SHEET (separate spreadsheet — "Elite Physio — New Patient Bookings")
+# ===========================================================================
+LEADS_SPREADSHEET_ID = "1zoFhXPGzDnrCVTgTYs-YRm8EUzx91LL5Q_8L5Bd7_iU"
+LEADS_SPREADSHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/1zoFhXPGzDnrCVTgTYs-YRm8EUzx91LL5Q_8L5Bd7_iU/edit"
+)
+
 # SAFE MODE: when True, every Slack message gets redirected to the CEO's DM
 # (with a "[TEST]" prefix) instead of being sent to physios / reception.
 # Flipped LIVE 2026-05-12 after Martin approved the message formats.
+# Phase 4 (interactive buttons) verified working 2026-05-13.
 # Set to True temporarily if you need to test prompt/format changes without the team being pinged.
 SLACK_SAFE_MODE = False
 
@@ -190,3 +199,159 @@ STANDARDS = {
 # Cliniko appointment type IDs used in Gen Pop PVA = (Initial + Review) / Initial.
 GENPOP_INITIAL_TYPE_ID = "382563815654429852"  # 1. Initial Appointment
 GENPOP_REVIEW_TYPE_ID = "382563815511823515"   # 2. Review Appointment
+
+
+# ===========================================================================
+# MARKETING / NPS SYSTEM
+# ===========================================================================
+# Replaces Cliniq Apps. See Elite_Marketing_Replacement_Plan.md,
+# patient_communication_system.md and tally_nps_form.md for the design.
+
+# Master switch. While False, the poller runs and logs what it WOULD send but
+# sends nothing real. Flip True only at go-live.
+MARKETING_LIVE = False
+
+# Safe mode: when True, every email/SMS is rerouted to the test contacts below
+# (subject/body prefixed "[TEST → real_recipient]"). Use for channel testing.
+MARKETING_SAFE_MODE = True
+MARKETING_TEST_EMAIL = "martin@elitephysiocookstown.co.uk"
+MARKETING_TEST_PHONE = "+447740280274"   # Martin's mobile, E.164 format
+
+# The "Elite Physio — NPS & Marketing" Google Sheet (built by nps_sheet_setup.gs).
+MARKETING_SPREADSHEET_ID = "1LYqkrOgwYUQR2AsU03y7h4G97BgMsROJiaeaVUfFuX8"
+
+# Tally NPS survey form — the code from the published form URL (tally.so/r/XXXXX).
+TALLY_FORM_ID = "lbYWjk"        # tally.so/r/lbYWjk — Elite Physiotherapy Feedback
+
+# ---- Email (Resend) ----
+EMAIL_FROM_NAME = "Elite Physiotherapy"
+EMAIL_FROM_ADDRESS = "info@elitephysiocookstown.co.uk"   # front desk monitors this
+# Named senders for the personal templates (name, address).
+EMAIL_SINEAD = ("Sinead Rocks", "sinead@elitephysiocookstown.co.uk")
+EMAIL_MARTIN = ("Martin Loughran", "martin@elitephysiocookstown.co.uk")
+
+# ---- SMS (Twilio) ----
+SMS_SENDER_ID = "ElitePhysio"   # alphanumeric sender — ONE-WAY, patients can't reply
+
+# ---- Detractor / passive internal alert recipient ----
+NPS_ALERT_EMAIL = "sinead@elitephysiocookstown.co.uk"   # Sinead Rocks, Ops Manager
+
+# ---- Per-clinic details (used to fill template variables) ----
+CLINICS = {
+    "Cookstown": {
+        "phone": "028 8644 0995",
+        "address": "133 Moneymore Road, Cookstown, BT80 9UU",
+        "google_review_url": "https://g.page/r/CfpgA6cxZez1EAE/review",
+    },
+    "Maghera": {
+        # Cliniko has the Cookstown number against both sites — confirm whether
+        # Maghera has its own line; update here if so.
+        "phone": "028 8644 0995",
+        "address": "86 Main Street, Maghera, BT46 5AF",
+        "google_review_url": "https://g.page/r/Cccza5z-M6UtEAE/review",
+    },
+}
+DEFAULT_CLINIC = "Cookstown"
+
+# Shared links (same for every clinic).
+BOOKING_LINK = "https://linktr.ee/ElitePhysiotherapy"
+EXERCISE_LIBRARY_LINK = "https://patient.thegotoclinichub.com/index.php"
+PRE_ASSESSMENT_FORM_LINK = ""   # Not needed — Cliniko auto-attaches the pre-assessment
+                                # form to new-patient appointment confirmation emails.
+
+# Maps Cliniko business (location) ID → clinic key in CLINICS above.
+CLINIKO_BUSINESS_TO_CLINIC = {
+    "382563815931253999": "Cookstown",
+    "1751489684669732550": "Maghera",
+}
+
+# ===========================================================================
+# NEW PATIENT BOOKINGS TRACKER
+# ===========================================================================
+# bookings_fetch.py trawls Cliniko 6x/day for newly-booked initial assessments
+# and logs them to a dedicated Google Sheet (weekly Sun-Sat tabs + Dashboard +
+# manual Leads tab). See bookings_build_status.md.
+
+# The "Elite Physio — New Patient Bookings" Google Sheet.
+BOOKINGS_SPREADSHEET_ID = "1zoFhXPGzDnrCVTgTYs-YRm8EUzx91LL5Q_8L5Bd7_iU"
+
+# The reception Slack profile that gets the "new bookings" DM after each trawl.
+# This is the profile's MEMBER ID (a "U…" code), not an email — in Slack:
+# open the reception profile → ⋮ (more) → Copy member ID.
+BOOKINGS_SLACK_USER_ID = "U02LWFA64J3"   # reception Slack profile
+
+# Insurers recognised when parsing "Auth:" in the booking note (so the insurer
+# name and the auth code land in separate columns).
+KNOWN_INSURERS = ["AXA", "Aviva", "WPA", "Bupa", "Vitality", "Healix",
+                  "Cigna", "VHI", "Laya", "Irish Life"]
+
+# A booking counts as an "initial assessment" for the tracker if its appointment
+# type is in this set — reuse the broad new-patient list the stats already use.
+BOOKINGS_IA_TYPE_IDS = NEW_PATIENT_TYPE_IDS
+
+
+# ---- Poller behaviour ----
+# Hour (clinic local time) at which the daily lifecycle flows run (30/90/180-day,
+# birthday). The poller runs these once per day, in the first 10-min slot.
+MARKETING_LIFECYCLE_HOUR = 9
+# No patient messages are sent between QUIET_START and QUIET_END (24h clock).
+MARKETING_QUIET_START = 21
+MARKETING_QUIET_END = 8
+# Birthday flow scans the whole patient base — leave off until volume is known.
+MARKETING_BIRTHDAY_ENABLED = False
+
+
+# ===========================================================================
+# END-OF-DAY STATS REPORT
+# ===========================================================================
+# eod_stats.py posts a ready-to-paste stats table to a Slack channel several
+# times a day (see EOD_REPORT_TIMES) for the end-of-shift handover email.
+# All figures are aggregate counts — no patient data, no AI.
+
+# Bookwhen private iCal feed — Pilates class bookings. No API key needed: each
+# class event's title carries a [booked/capacity] count.
+BOOKWHEN_ICAL_URL = ("https://feeds.bookwhen.com/ical/bcfxa253kavk/"
+                     "12mt81u2cm5oflmppthrkiy0spj1/private.ics")
+
+# Slack channel the EOD report posts to (the bot must be invited to it).
+EOD_SLACK_CHANNEL = "#eod-claude"
+
+# Fixed weekly targets — may change in future; edit here.
+EOD_TARGETS = {
+    "total_appts_Cookstown": 225,
+    "total_appts_Maghera": 50,
+    "ias_Cookstown": 40,
+    "ias_Maghera": 10,
+    "pilates_matwork_cookstown": 31,
+    "pilates_matwork_maghera": 44,
+    "pilates_reformer_cookstown": 34,
+}
+
+# Reactivation target = this fraction of the PREVIOUS week's drop-off count.
+REACTIVATION_TARGET_FRACTION = 0.40
+# Drop-off types excluded from that base — the pre-IA drop-offs where the
+# patient never attended (IACNA = cancelled IA, IADNA = did-not-attend IA).
+REACTIVATION_TARGET_EXCLUDE = {"iacna", "iadna"}
+
+# Manual Pilates corrections added to the "this week" Bookwhen count. A
+# booking-sheet error in the CURRENT block means Bookwhen under-counts
+# Cookstown Matwork by 4 — set this back to 0 once the block ends.
+EOD_PILATES_ADJUSTMENTS = {
+    "pilates_matwork_cookstown": 4,
+}
+
+# IA appointment types counted as "expected IAs" in the report.
+EOD_IA_TYPE_IDS = PHASE1_DROPOFF_IA_TYPE_IDS
+
+# Times the EOD report is generated/posted (clinic-local, 24h) by weekday
+# (Mon=0 … Sun=6). These mirror the cron times in server.crontab. The LAST
+# entry of a day is that day's final stat collection: the Reschedules/CDNR
+# window runs from the previous working day's final collection up to the
+# moment the report is built.
+EOD_REPORT_TIMES = {
+    0: ["12:00", "16:00", "20:00"],            # Monday
+    1: ["12:00", "16:00", "20:00"],            # Tuesday
+    2: ["10:00", "12:00", "16:00", "20:00"],   # Wednesday
+    3: ["12:00", "16:00", "20:00"],            # Thursday
+    4: ["15:30"],                              # Friday
+}
