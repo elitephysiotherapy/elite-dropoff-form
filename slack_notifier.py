@@ -239,8 +239,7 @@ def _ops_manager_dm_text(rows, ia_rebook_mtd_pct=None, leads_summary=None):
             if n:
                 parts.append(f"{n} {k}")
         breakdown = " (" + ", ".join(parts) + ")" if parts else ""
-        lines.append(f"Leads this week: {not_booked} not booked{breakdown}, "
-                     f"{leads_summary.get('booked', 0)} booked")
+        lines.append(f"Leads this week: {not_booked} not booked{breakdown}")
         lines.append("")
     lines.append(f"Full trend sheet: {config.SPREADSHEET_URL}")
     return "\n".join(lines)
