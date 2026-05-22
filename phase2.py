@@ -72,15 +72,27 @@ def fetch_all(path, params=None):
         elapsed = time.time() - _LAST_REQ_TIME[0]
         if elapsed < MIN_INTERVAL_S:
             time.sleep(MIN_INTERVAL_S - elapsed)
-        for attempt in range(10):
+        r = None
+        for attempt in range(12):
             _LAST_REQ_TIME[0] = time.time()
-            r = SESSION.get(url, params=qp if first else None, timeout=30)
+            try:
+                r = SESSION.get(url, params=qp if first else None, timeout=30)
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as e:
+                # Transient network/DNS blip (e.g. wifi just woke) — back off and retry
+                wait = min(5 * (attempt + 1), 60)
+                print(f"  network error ({type(e).__name__}) on {path}, "
+                      f"retry {attempt + 1}/12 in {wait}s")
+                time.sleep(wait)
+                continue
             if r.status_code == 429:
                 wait = int(r.headers.get("Retry-After", "10"))
                 time.sleep(wait + 2)
                 continue
             break
         first = False
+        if r is None:
+            raise RuntimeError(f"Network failed after 12 retries on {url}")
         if r.status_code != 200:
             raise RuntimeError(f"HTTP {r.status_code} on {r.url}: {r.text[:200]}")
         data = r.json()

@@ -128,14 +128,26 @@ def fetch_all(path, params=None):
     qp = list(params or []) + [("per_page", 100)]
     first = True
     while url:
-        for attempt in range(5):
-            r = SESSION.get(url, params=qp if first else None, timeout=30)
+        r = None
+        for attempt in range(12):
+            try:
+                r = SESSION.get(url, params=qp if first else None, timeout=30)
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as e:
+                wait = min(5 * (attempt + 1), 60)
+                print(f"  network error ({type(e).__name__}) on {path}, "
+                      f"retry {attempt + 1}/12 in {wait}s")
+                time.sleep(wait)
+                continue
             if r.status_code == 429:
                 wait = int(r.headers.get("Retry-After", "5"))
                 time.sleep(wait + 1)
                 continue
             break
         first = False
+        if r is None:
+            print(f"ERROR network failed after 12 retries on {url}")
+            sys.exit(1)
         if r.status_code != 200:
             print(f"ERROR {r.status_code} on {r.url}\n{r.text[:500]}")
             sys.exit(1)
@@ -860,12 +872,6 @@ def write_ia_rebook_rate_tab(months_back=3):
     """Refresh IA Rebook Rate tab — current MTD + previous N full months, stacked top-down."""
     import phase2 as p2
     now = datetime.now(LONDON)
-    sh = open_spreadsheet()
-    try:
-        ws = sh.worksheet("IA Rebook Rate")
-        ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="IA Rebook Rate", rows=300, cols=6)
 
     # Build periods: current MTD + previous N full months
     periods = []
@@ -916,6 +922,14 @@ def write_ia_rebook_rate_tab(months_back=3):
     out.append(["  Rebooked = patient has attended a follow-up OR has an active future booking after the IA."])
     out.append(["  IACNA = IA cancelled before attending.  IADNA = IA did-not-attend."])
     out.append(["  IACNAs and IADNAs are excluded from numerator AND denominator (physio never saw patient)."])
+
+    # All compute succeeded — now touch the sheet atomically.
+    sh = open_spreadsheet()
+    try:
+        ws = sh.worksheet("IA Rebook Rate")
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="IA Rebook Rate", rows=300, cols=6)
 
     ws.update(values=out, range_name="A1", value_input_option="RAW")
     return ws
@@ -1001,12 +1015,10 @@ def write_performance_dashboard_tab():
     months.append(month_window(now.year, now.month))
     months.reverse()  # most recent first
 
-    sh = open_spreadsheet()
-    try:
-        ws = sh.worksheet("Performance Dashboard")
-        ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Performance Dashboard", rows=400, cols=12)
+    # NOTE: we compute the full `out`/`format_cells` payload BELOW before
+    # touching the sheet. The tab is only cleared+rewritten once all Cliniko
+    # queries have succeeded, so a transient network/DNS failure can never
+    # blank the tab (it just keeps yesterday's data and retries next run).
 
     # Standards row values (display strings)
     headers = ["Practitioner", "Utilization", "NPs", "DNA %", "CNA %", "DNA+CNA %",
@@ -1161,6 +1173,14 @@ def write_performance_dashboard_tab():
     out.append([])
     out.append(["Colour key: green = meets standard, yellow = within 10% of standard, red = below."])
 
+    # All compute succeeded — now (and only now) touch the sheet atomically.
+    sh = open_spreadsheet()
+    try:
+        ws = sh.worksheet("Performance Dashboard")
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Performance Dashboard", rows=400, cols=12)
+
     ws.update(values=out, range_name="A1", value_input_option="RAW")
 
     # Apply colour formatting in one batch_format call
@@ -1181,12 +1201,6 @@ def write_weekly_snapshot_tab(weeks_back=1):
     import phase2 as p2
     import config
     now = datetime.now(LONDON)
-    sh = open_spreadsheet()
-    try:
-        ws = sh.worksheet("Weekly Snapshot")
-        ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Weekly Snapshot", rows=200, cols=12)
 
     # Most recent completed week = the Monday-to-Sunday block ending most recently
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1258,6 +1272,15 @@ def write_weekly_snapshot_tab(weeks_back=1):
     out.append(["  CNA/DNA 1st % = (IACNA + IADNA) / IAs Performed = pre-IA drop-off rate (target <2%)."])
     out.append(["  Clinic Rebook % = of unique patients seen this week, % with any future booking in the diary."])
     out.append(["  Utilization % = (attended + DNA appointment hours, excl. cancelled & classes) / weekly capacity."])
+
+    # All compute succeeded — now touch the sheet atomically.
+    sh = open_spreadsheet()
+    try:
+        ws = sh.worksheet("Weekly Snapshot")
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Weekly Snapshot", rows=200, cols=12)
+
     ws.update(values=out, range_name="A1", value_input_option="RAW")
     return ws
 
@@ -1652,21 +1675,21 @@ def main():
             detect_rebookings()
         except Exception as e:
             print(f"  WARN rebooking detection failed: {e}")
-        print("Refreshing IA Rebook Rate tab…")
-        write_ia_rebook_rate_tab()
-        print("Refreshing Monthly Summary tab…")
-        write_monthly_summary_tab()
-        print("Refreshing Weekly Snapshot tab…")
-        write_weekly_snapshot_tab(weeks_back=4)
-        print("Refreshing Performance Dashboard tab…")
-        write_performance_dashboard_tab()
-        print("Refreshing Weekly Drop-off Analysis tab…")
-        write_weekly_dropoff_analysis_tab()
-        print("Refreshing Lead Conversion table on Dashboard tab…")
-        try:
-            write_dashboard_lead_conversion()
-        except Exception as e:
-            print(f"  WARN lead-conversion update failed: {e}")
+        # Each refresh wrapped independently — a network blip on one tab must not
+        # abort the rest of the run (or the Slack notifications at the end).
+        for label, fn in [
+            ("IA Rebook Rate", write_ia_rebook_rate_tab),
+            ("Monthly Summary", write_monthly_summary_tab),
+            ("Weekly Snapshot", lambda: write_weekly_snapshot_tab(weeks_back=4)),
+            ("Performance Dashboard", write_performance_dashboard_tab),
+            ("Weekly Drop-off Analysis", write_weekly_dropoff_analysis_tab),
+            ("Lead Conversion (Dashboard)", write_dashboard_lead_conversion),
+        ]:
+            print(f"Refreshing {label} tab…")
+            try:
+                fn()
+            except Exception as e:
+                print(f"  WARN {label} refresh failed: {e}")
         print("Sending Slack notifications…")
         try:
             import slack_notifier
