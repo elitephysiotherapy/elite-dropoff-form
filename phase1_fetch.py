@@ -596,7 +596,12 @@ def apply_leads_tab_formatting(ws):
 
 
 def leads_pipeline_summary():
-    """Return per-status counts of leads currently in the Leads tab.
+    """Return per-status counts of leads dated within the CURRENT week.
+
+    Week = Sunday→Saturday (Europe/London), matching the leads/bookings sheet
+    convention. We filter by the lead's Date because the Leads tab is no longer
+    wiped weekly (the bookings system now owns that tab) — so without this filter
+    the counts would accumulate across all weeks.
     Returns {pending, booked, declined, lost, total, not_booked}."""
     sh = open_leads_spreadsheet()
     try:
@@ -604,11 +609,28 @@ def leads_pipeline_summary():
     except gspread.exceptions.WorksheetNotFound:
         return None
     records = ws.get_all_records()
+
+    today = datetime.now(LONDON).date()
+    week_start = today - timedelta(days=(today.weekday() + 1) % 7)  # back to Sunday
+    week_end = week_start + timedelta(days=7)
+
+    def _lead_date(raw):
+        raw = str(raw or "").strip()
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d %b %Y", "%Y-%m-%d %H:%M"):
+            try:
+                return datetime.strptime(raw[:len(datetime.now().strftime(fmt))], fmt).date()
+            except ValueError:
+                continue
+        return None
+
     counts = {"pending": 0, "booked": 0, "declined": 0, "lost": 0}
     for r in records:
         # Skip fully-empty rows
         if not any(str(v).strip() for v in r.values()):
             continue
+        d = _lead_date(r.get("Date"))
+        if not d or not (week_start <= d < week_end):
+            continue  # only count THIS week's leads
         status = str(r.get("Status") or "").strip().lower() or "pending"
         if status in counts:
             counts[status] += 1
@@ -1660,13 +1682,12 @@ def main():
     print_preview(rows, excluded)
     print()
     if write_mode:
-        # Sunday-only: wipe the Leads tab for a fresh week (archives first)
-        if datetime.now(LONDON).weekday() == 6:
-            print("It's Sunday — running weekly leads wipe…")
-            try:
-                weekly_leads_wipe()
-            except Exception as e:
-                print(f"  WARN weekly leads wipe failed: {e}")
+        # NOTE: the Sunday Leads-tab wipe is DISABLED. The bookings system
+        # (bookings_fetch.py) now owns the Leads tab — reception manages a live,
+        # rolling lead list there and the bookings Dashboard reads it by date.
+        # Wiping it weekly would erase that list, so the drop-off system no
+        # longer touches the Leads tab. (weekly_leads_wipe() is kept defined for
+        # reference but is intentionally not called.)
 
         print("Writing drop-off rows to Google Sheet…")
         write_to_sheet(rows)
@@ -1677,13 +1698,17 @@ def main():
             print(f"  WARN rebooking detection failed: {e}")
         # Each refresh wrapped independently — a network blip on one tab must not
         # abort the rest of the run (or the Slack notifications at the end).
+        # NOTE: "Lead Conversion (Dashboard)" write is DISABLED — it wrote to a
+        # tab named "Dashboard" in the leads/bookings sheet, which collided with
+        # the bookings system's own Dashboard. The bookings system now owns that
+        # sheet's Leads tab + Dashboard. (write_dashboard_lead_conversion() is
+        # kept defined for reference but is intentionally not called.)
         for label, fn in [
             ("IA Rebook Rate", write_ia_rebook_rate_tab),
             ("Monthly Summary", write_monthly_summary_tab),
             ("Weekly Snapshot", lambda: write_weekly_snapshot_tab(weeks_back=4)),
             ("Performance Dashboard", write_performance_dashboard_tab),
             ("Weekly Drop-off Analysis", write_weekly_dropoff_analysis_tab),
-            ("Lead Conversion (Dashboard)", write_dashboard_lead_conversion),
         ]:
             print(f"Refreshing {label} tab…")
             try:
