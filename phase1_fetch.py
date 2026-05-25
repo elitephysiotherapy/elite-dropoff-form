@@ -950,9 +950,10 @@ def write_ia_rebook_rate_tab(months_back=3):
         out.append([])
 
     out.append(["Definitions:"])
-    out.append(["  Rebooked = patient has attended a follow-up OR has an active future booking after the IA."])
+    out.append(["  Rebooked = patient has ATTENDED a follow-up OR has an active (non-cancelled) future booking after the IA. A booked 2nd visit that was later DNA'd or cancelled does NOT count."])
     out.append(["  IACNA = IA cancelled before attending.  IADNA = IA did-not-attend."])
     out.append(["  IACNAs and IADNAs are excluded from numerator AND denominator (physio never saw patient)."])
+    out.append(["  ⏳ PROVISIONAL: the current/most-recent period looks artificially HIGH — many patients book a 2nd visit but then CNA/DNA it before attending. This figure is recomputed every day, so it SETTLES (drops) over the following 1-2 weeks. Review the settled figure after ~2 weeks."])
 
     # All compute succeeded — now touch the sheet atomically.
     sh = open_spreadsheet()
@@ -1296,7 +1297,8 @@ def write_weekly_snapshot_tab(weeks_back=1):
     out.append([])
     out.append(["Definitions:"])
     out.append(["  IAs Performed = all attended IA-type appointments (broader 8: Initial Appt, Club IA, PHI IA, ACL IA, Sports & MSK Consult, Mummy MOT, Pelvic Health, Club Consultation)."])
-    out.append(["  IA Rebook % = of IAs Performed, how many have any non-cancelled appointment booked afterwards."])
+    out.append(["  IA Rebook % = of strict-4 IAs performed, how many ATTENDED a follow-up or have an active future booking. A booked 2nd visit later DNA'd or cancelled does NOT count."])
+    out.append(["  ⏳ IA Rebook % is PROVISIONAL for recent weeks — it looks high at first because many 2nd visits are booked but then CNA'd/DNA'd before attending. It's recomputed daily and SETTLES (drops) over ~1-2 weeks, so review the settled figure for a week once it's ~2 weeks old."])
     out.append(["  Review Appts = Total Appts Seen − IAs Performed (the denominator for DNA/CNA rates)."])
     out.append(["  DNA % / CNA % = non-IA no-shows / cancellations, as % of Review Appts."])
     out.append(["  DNA+CNA % = combined rate (target <10%)."])
@@ -1400,8 +1402,29 @@ def write_weekly_dropoff_analysis_tab():
     pointed there redraw themselves on every daily run.
     """
     import config
+    import phase2 as p2
     now = datetime.now(LONDON)
     sh = open_spreadsheet()
+
+    def _performed_counts(su, eu):
+        """Attended IAs (broader 13 NP types) + review appts performed in the
+        UTC window [su, eu). Matches the Weekly Snapshot definitions. One light
+        Cliniko fetch (no per-patient history), so cheap to run per week."""
+        iso = lambda d: d.strftime("%Y-%m-%dT%H:%M:%SZ")
+        appts = list(p2.fetch_all("/individual_appointments", [
+            ("q[]", f"starts_at:>={iso(su)}"), ("q[]", f"starts_at:<{iso(eu)}")]))
+        ias = reviews = 0
+        for a in appts:
+            if a.get("cancelled_at") or a.get("did_not_arrive"):
+                continue  # attended only
+            tid = p2.id_from_link(a.get("appointment_type"))
+            if tid in config.EXCLUDED_FROM_TOTAL_APPTS:
+                continue  # classes / group sessions
+            if tid in config.NEW_PATIENT_TYPE_IDS:
+                ias += 1
+            else:
+                reviews += 1
+        return ias, reviews
 
     weeks = {}
     for ws in sh.worksheets():
@@ -1422,7 +1445,9 @@ def write_weekly_dropoff_analysis_tab():
     # Physio-responsible drop-off types (IACNA / IADNA are pre-IA — excluded
     # from the practitioner tally; the physio never saw the patient).
     PHYS_RESP = ("iadnr", "cancelled", "did_not_attend")
-    STAGE_ROWS = ["IACNA/DNA", "IADNR", "Before Session 3",
+    # Stage breakdown EXCLUDES pre-IA drop-offs (IACNA / IADNA) — the patient
+    # never attended, so there's no stage of rehab to place them in.
+    STAGE_ROWS = ["IADNR", "Before Session 3",
                   "Before Session 6", "After Session 6"]
     BODY_MAX = 14   # fixed body-area block height so the pie-chart range is stable
 
@@ -1436,9 +1461,8 @@ def write_weekly_dropoff_analysis_tab():
                        or "").strip().lower()
             physio_full = str(r.get("Physio") or r.get("physio") or "?").strip()
             display = config.PRACTITIONER_DISPLAY_NAME.get(physio_full, physio_full)
-            if kind in ("iacna", "iadna"):
-                stage["IACNA/DNA"] += 1
-            elif kind in PHYS_RESP:
+            # Pre-IA drop-offs (iacna/iadna) are excluded from the stage breakdown.
+            if kind in PHYS_RESP:
                 if kind == "iadnr":
                     stage["IADNR"] += 1
                 sn_raw = str(r.get("Session #") or r.get("session_number") or "").strip()
@@ -1481,6 +1505,18 @@ def write_weekly_dropoff_analysis_tab():
 
     for idx, title in enumerate(ordered):
         per, stage, body_counts, clinical = analyse(weeks[title])
+        # IAs + review appointments actually performed that week (from Cliniko),
+        # so the IADNR / CNA / DNA counts can be read against the volume they
+        # came from.
+        wd = week_date(title)
+        ias_perf = review_perf = None
+        if wd != datetime.min:
+            try:
+                su = wd.replace(tzinfo=LONDON).astimezone(timezone.utc)
+                eu = (wd.replace(tzinfo=LONDON) + timedelta(days=7)).astimezone(timezone.utc)
+                ias_perf, review_perf = _performed_counts(su, eu)
+            except Exception as e:
+                print(f"  WARN performed-counts failed for {title}: {e}")
         out.append(["CURRENT WEEK — " + title if idx == 0 else title])
         out.append(["Practitioner", "IADNR", "CNA", "DNA", "Total", "",
                     "Stage Drop-off", "Count", "",
@@ -1510,16 +1546,27 @@ def write_weekly_dropoff_analysis_tab():
             b = body_rows[i] if i < len(body_rows) else ["", ""]
             cl = clin_rows[i] if i < len(clin_rows) else ["", ""]
             out.append(p + [""] + s + [""] + b + [""] + cl)
+        # Performed-volume context: pair IADNRs against IAs performed, and
+        # CNAs+DNAs against review appointments completed, for the same week.
+        ia_disp = ias_perf if ias_perf is not None else "?"
+        rev_disp = review_perf if review_perf is not None else "?"
+        out.append(["IAs performed this week:", ia_disp, "", "IADNRs:", tot["iadnr"]])
+        out.append(["Review appts completed:", rev_disp, "",
+                    "CNAs + DNAs:", tot["cancelled"] + tot["did_not_attend"]])
         out.append([])
 
     out.append(["Definitions:"])
     out.append(["  Practitioner tally = physio-responsible drop-offs only: "
                 "IADNR, CNA (established-patient cancellation), DNA."])
-    out.append(["  IACNA/DNA = pre-IA drop-offs (patient never attended the "
-                "assessment) — not attributed to a physio."])
+    out.append(["  IACNA / IADNA (pre-IA drop-offs — patient never attended the "
+                "assessment) are EXCLUDED from the Stage breakdown and the Body-Area "
+                "chart; they are not attributed to a physio and have no rehab stage."])
     out.append(["  Before Session 3 / Before Session 6 = dropped off at session "
                 "1-3 / 4-6 (attended a max of 2 / a max of 5). "
                 "After Session 6 = session 7+."])
+    out.append(["  IAs performed / Review appts completed = attended appointments "
+                "that week (from Cliniko) — the denominators for the drop-offs: "
+                "read IADNRs against IAs performed, and CNAs+DNAs against Review appts."])
 
     try:
         ws = sh.worksheet("Weekly Drop-off Analysis")

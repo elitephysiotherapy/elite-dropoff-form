@@ -431,12 +431,24 @@ def weekly_clinic_stats(start_utc, end_utc):
             return True
         return False
 
-    # IAs rebooked: strict 4 IAs that have any non-cancelled appt afterwards.
+    # IAs rebooked: strict 4 IAs where the patient ATTENDED a later appointment
+    # OR has an active (non-cancelled) future booking. A later appointment that
+    # was DNA'd does NOT count — a booked-then-no-showed 2nd visit is a drop-off,
+    # not a rebook. This matches ia_rebook_rate_for_window and lets the weekly
+    # IA Rebook % MATURE: a 2nd visit booked in the IA week counts as rebooked
+    # (provisionally high), but if it's later CNA'd (cancelled → excluded by the
+    # default query) or DNA'd (filtered out below), the daily recompute drops it.
     n_ias_rebooked = 0
     for ia in strict_ias_attended:
         patient_id = id_from_link(ia.get("patient"))
         ia_starts = ia.get("starts_at")
-        if patient_id and ia_starts and _has_any_appt(patient_id, ia_starts, strict_gt=True):
+        if not (patient_id and ia_starts):
+            continue
+        later = list(fetch_all("/individual_appointments", [
+            ("q[]", f"patient_id:={patient_id}"),
+            ("q[]", f"starts_at:>{ia_starts}"),
+        ]))
+        if any(not a.get("did_not_arrive") for a in later):
             n_ias_rebooked += 1
 
     # Group appointments (classes) — fetch and add to service hours
