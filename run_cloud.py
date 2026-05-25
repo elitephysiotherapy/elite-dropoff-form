@@ -66,11 +66,43 @@ def should_run(job, now):
     return False
 
 
+def selftest():
+    """Read-only cloud connectivity/credentials check. No writes, no Slack
+    messages. Returns True only if Google Sheets, Cliniko and Slack all respond."""
+    import os
+    print("[selftest] read-only cloud checks…", flush=True)
+    ok = True
+    try:
+        import phase1_fetch
+        print(f"[selftest] Google Sheets OK — opened {phase1_fetch.open_spreadsheet().title!r}")
+    except Exception as e:
+        ok = False; print(f"[selftest] Google Sheets FAILED: {e!r}")
+    try:
+        import phase2
+        first = next(iter(phase2.fetch_all("/practitioners", [])), None)
+        print(f"[selftest] Cliniko OK — API reachable (got a record: {first is not None})")
+    except Exception as e:
+        ok = False; print(f"[selftest] Cliniko FAILED: {e!r}")
+    try:
+        from slack_sdk import WebClient
+        a = WebClient(token=os.environ["SLACK_BOT_TOKEN"]).auth_test()
+        print(f"[selftest] Slack OK — bot {a.get('user')!r} on team {a.get('team')!r}")
+    except Exception as e:
+        ok = False; print(f"[selftest] Slack FAILED: {e!r}")
+    print(f"[selftest] RESULT: {'ALL OK' if ok else 'FAILURES ABOVE'}")
+    return ok
+
+
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(f"usage: run_cloud.py <{'|'.join(COMMANDS)}>")
+    if len(sys.argv) < 2:
+        print(f"usage: run_cloud.py <{'|'.join(COMMANDS)}|selftest>")
         sys.exit(2)
     job = sys.argv[1]
+    if job == "selftest":
+        sys.exit(0 if selftest() else 1)
+    if job not in COMMANDS:
+        print(f"usage: run_cloud.py <{'|'.join(COMMANDS)}|selftest>")
+        sys.exit(2)
     now = datetime.now(LONDON)
     stamp = now.strftime("%Y-%m-%d %H:%M %Z")
 
