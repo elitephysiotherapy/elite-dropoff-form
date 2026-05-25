@@ -17,6 +17,7 @@ skipped, so existing human edits to rows are never overwritten.
 """
 
 import os
+import json
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -507,9 +508,18 @@ def print_preview(rows, excluded_reschedules):
 
 # ---------- Sheets writer ----------
 
+def _sheets_credentials():
+    """Google Sheets credentials. Prefers the SERVICE_ACCOUNT_JSON env var
+    (used in the cloud / on Render); falls back to the local
+    service_account.json file for running on the Mac."""
+    raw = os.environ.get("SERVICE_ACCOUNT_JSON")
+    if raw:
+        return Credentials.from_service_account_info(json.loads(raw), scopes=SHEETS_SCOPES)
+    return Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SHEETS_SCOPES)
+
+
 def open_spreadsheet():
-    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SHEETS_SCOPES)
-    gc = gspread.authorize(creds)
+    gc = gspread.authorize(_sheets_credentials())
     return gc.open_by_key(SPREADSHEET_ID)
 
 
@@ -534,8 +544,7 @@ LEADS_STATUS_VALUES = ["pending", "booked", "declined", "lost"]
 
 def open_leads_spreadsheet():
     import config
-    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SHEETS_SCOPES)
-    return gspread.authorize(creds).open_by_key(config.LEADS_SPREADSHEET_ID)
+    return gspread.authorize(_sheets_credentials()).open_by_key(config.LEADS_SPREADSHEET_ID)
 
 
 def apply_leads_tab_formatting(ws):
