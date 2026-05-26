@@ -20,6 +20,9 @@ DISCHARGE_MAX_H = 120   # stop evaluating after 5 days
 
 # A patient counts as genuinely discharged only after a real course of care.
 DISCHARGE_MIN_ATTENDED = 3
+# The "well done" congrats email only goes to patients who completed a fuller
+# course of care THIS episode (Martin 2026: ≥6 attended in the current episode).
+DISCHARGE_CONGRATS_MIN_ATTENDED = 6
 
 
 def collect(appts, responder_ids):
@@ -75,3 +78,7 @@ def _discharge_touches(appt, hrs, out):
     if hrs >= DISCHARGE_EMAIL_H:
         out.append(Touch("discharge_survey_email", pid, "email", "discharge_survey",
                           aid, ctx, trigger_type="discharge"))
+        # "Well done" congrats email — only for a fuller course of care this episode.
+        if cliniko.episode_attended_count(pid) >= DISCHARGE_CONGRATS_MIN_ATTENDED:
+            out.append(Touch("discharge", pid, "email", "discharge_congrats",
+                              aid, ctx, trigger_type="discharge"))

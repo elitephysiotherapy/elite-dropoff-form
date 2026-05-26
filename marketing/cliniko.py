@@ -187,3 +187,33 @@ def attended_appt_count(patient_id, before_iso=None):
             continue
         n += 1
     return n
+
+
+EPISODE_GAP_DAYS = 120   # an attendance gap this long marks a new episode of care
+
+
+def episode_attended_count(patient_id):
+    """Attended appointments in the patient's CURRENT episode of care.
+
+    Counts back from their most recent attended appointment, stopping at the
+    first gap of >= EPISODE_GAP_DAYS days (which indicates a separate episode).
+    Used to gate the discharge 'well done' email so it only goes to patients who
+    completed a real course of care THIS time — not returning patients whose
+    lifetime total merely happens to be high.
+    """
+    starts = []
+    for a in phase2.fetch_patient_full_history(patient_id):
+        if a.get("cancelled_at") or a.get("did_not_arrive"):
+            continue
+        s = phase2.parse_iso(a.get("starts_at"))
+        if s and s <= datetime.now(_UTC):
+            starts.append(s)
+    if not starts:
+        return 0
+    starts.sort()
+    count = 1
+    for i in range(len(starts) - 1, 0, -1):
+        if (starts[i] - starts[i - 1]).days >= EPISODE_GAP_DAYS:
+            break
+        count += 1
+    return count
