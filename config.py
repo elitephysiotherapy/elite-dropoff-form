@@ -6,6 +6,8 @@ After editing, no other files need to change. The script picks up new values on
 the next run.
 """
 
+import os
+
 # ===========================================================================
 # IA APPOINTMENT TYPE IDS
 # ===========================================================================
@@ -208,12 +210,13 @@ GENPOP_REVIEW_TYPE_ID = "382563815511823515"   # 2. Review Appointment
 # patient_communication_system.md and tally_nps_form.md for the design.
 
 # Master switch. While False, the poller runs and logs what it WOULD send but
-# sends nothing real. Flip True only at go-live.
-MARKETING_LIVE = False
+# sends nothing real. Flip True only at go-live. Env-controlled so the cutover
+# (and instant rollback) is a Render env toggle, not a code change.
+MARKETING_LIVE = os.environ.get("MARKETING_LIVE", "false").strip().lower() == "true"
 
 # Safe mode: when True, every email/SMS is rerouted to the test contacts below
 # (subject/body prefixed "[TEST → real_recipient]"). Use for channel testing.
-MARKETING_SAFE_MODE = True
+MARKETING_SAFE_MODE = os.environ.get("MARKETING_SAFE_MODE", "true").strip().lower() == "true"
 MARKETING_TEST_EMAIL = "martin@elitephysiocookstown.co.uk"
 MARKETING_TEST_PHONE = "+447740280274"   # Martin's mobile, E.164 format
 
