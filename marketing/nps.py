@@ -109,16 +109,13 @@ def _discharge_touches(appt, hrs, out):
         return
     aid = str(appt["id"])
     ctx = common.appt_ctx(appt)
-    # ≥6 attended this episode → ONE combined "well done" email (congrats +
-    # library + the feedback ask) instead of the plain survey email.
-    combine = cliniko.episode_attended_count(pid) >= DISCHARGE_CONGRATS_MIN_ATTENDED
+    # NOTE: discharge is INFERRED (no "discharged" flag in Cliniko), so this also
+    # catches patients who've merely lapsed. The messages therefore must NOT claim
+    # the patient has completed/been discharged — they are neutral check-ins +
+    # feedback asks that read correctly either way. (No "congrats" / combine email.)
     if hrs >= DISCHARGE_SMS_H:
         out.append(Touch("discharge_survey_sms", pid, "sms", "discharge_survey",
                           aid, ctx, trigger_type="discharge"))
     if hrs >= DISCHARGE_EMAIL_H:
-        if combine:
-            out.append(Touch("discharge", pid, "email", "discharge_congrats",
-                              aid, ctx, trigger_type="discharge"))
-        else:
-            out.append(Touch("discharge_survey_email", pid, "email", "discharge_survey",
-                              aid, ctx, trigger_type="discharge"))
+        out.append(Touch("discharge_survey_email", pid, "email", "discharge_survey",
+                          aid, ctx, trigger_type="discharge"))

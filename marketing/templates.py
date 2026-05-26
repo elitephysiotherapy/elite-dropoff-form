@@ -41,9 +41,9 @@ SMS = {
         "{survey_link}"
     ),
     "discharge_survey": (
-        "Hi {first_name}, congratulations on finishing your treatment with "
-        "{practitioner_name}! How did we do overall? 30 seconds, and it really "
-        "helps us: {survey_link}"
+        "Hi {first_name}, how have you been getting on since your recent visit "
+        "with {practitioner_name}? We'd really value your feedback - 30 seconds, "
+        "and it helps us look after every patient better: {survey_link}"
     ),
     "promoter_followup": (
         "Hi {first_name}, thank you so much for your kind feedback! If you have "
@@ -220,13 +220,17 @@ The team at Elite Physiotherapy {clinic_name}""",
         "subject": "How was your experience with us, {first_name}?",
         "body": """Hi {first_name},
 
-Now that you've completed your treatment with {practitioner_name} at Elite Physiotherapy {clinic_name}, we'd love to know how we did - across the whole journey, not just one visit.
+We hope you've been keeping well since your recent appointment with {practitioner_name} at Elite Physiotherapy {clinic_name}.
 
-How likely are you to recommend us to a friend or family member?
+We'd really value your feedback on how we did - across your whole experience with us, not just one visit. How likely are you to recommend us to a friend or family member?
 
 Tell us in 30 seconds: {survey_link}
 
-Thank you for trusting us with your recovery.
+If you'd like to keep your progress going, your exercise plan is always in your online library: {exercise_library_link}
+
+And if anything has flared up, or there's more you'd like help with, just give us a call on {clinic_phone} - you won't go to the back of the queue.
+
+Thank you for trusting us with your care.
 
 Elite Physiotherapy {clinic_name}""",
     },
