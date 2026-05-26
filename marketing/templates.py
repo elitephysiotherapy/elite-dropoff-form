@@ -525,17 +525,19 @@ def _to_html(text):
         for i, seg in enumerate(_URL_RE.split(para)):
             if i % 2 == 1:   # a URL
                 href = _html.escape(seg, quote=True)
-                out.append(f'<a href="{href}" style="color:#2A77BC;">'
-                            f'{_html.escape(seg)}</a>')
+                out.append(f'<a href="{href}" style="color:#2A77BC;'
+                           'word-break:break-all;overflow-wrap:anywhere;">'
+                           f'{_html.escape(seg)}</a>')
             else:
                 out.append(_html.escape(seg).replace("\n", "<br>"))
-        rendered.append(f'<p style="margin:0 0 16px;">{"".join(out)}</p>')
+        rendered.append('<p style="margin:0 0 16px;overflow-wrap:break-word;'
+                        f'word-break:break-word;">{"".join(out)}</p>')
     body = "\n".join(rendered)
     return (
         '<!doctype html><html><body style="margin:0;background:#f4f7f9;">'
         '<div style="max-width:560px;margin:0 auto;padding:28px 24px;'
         'font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;'
-        'color:#33424E;background:#ffffff;">'
+        'color:#33424E;background:#ffffff;overflow-wrap:break-word;word-break:break-word;">'
         f'{body}'
         '</div></body></html>'
     )
