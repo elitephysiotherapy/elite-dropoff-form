@@ -85,6 +85,7 @@ def run_once():
 
     touches = []
     touches += nps.collect(started, responders)
+    touches += nps.collect_welcome()
     touches += reactivation.collect(started, cancelled)
     if local.hour == LIFECYCLE_HOUR and local.minute < 10:
         print("Daily lifecycle window — collecting 30/90/180-day + birthday touches")

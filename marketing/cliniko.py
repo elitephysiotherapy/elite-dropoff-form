@@ -75,6 +75,28 @@ def appointments_started_between(start_dt_utc, end_dt_utc):
     ])
 
 
+def appointments_created_between(start_dt_utc, end_dt_utc):
+    """Individual appointments CREATED (booked) in [start, end) — used by the
+    welcome flow, which triggers on when the appointment was booked, not on the
+    appointment time itself (an IA booked today may be weeks away)."""
+    return _merge_live_cancelled([
+        ("q[]", f"created_at:>={_iso(start_dt_utc)}"),
+        ("q[]", f"created_at:<{_iso(end_dt_utc)}"),
+    ])
+
+
+def is_new_patient(patient_id, appt):
+    """True if `appt` is the patient's first-ever appointment (none earlier).
+    Lets the welcome email go only to genuinely new patients, not returning
+    patients booking a fresh episode."""
+    this_start = appt.get("starts_at") or ""
+    for a in phase2.fetch_patient_full_history(patient_id):
+        s = a.get("starts_at") or ""
+        if s and this_start and s < this_start:
+            return False
+    return True
+
+
 # ---------------- appointment attributes ----------------
 
 def appt_type_id(appt):

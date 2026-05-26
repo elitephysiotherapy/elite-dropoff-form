@@ -7,6 +7,8 @@ responds and are handled webhook-side by detractor.py.
 collect(appts, responder_ids) -> list[Touch]   (touches that are due now)
 """
 
+from datetime import timedelta
+
 from marketing import cliniko, common
 from marketing.common import Touch
 
@@ -17,6 +19,10 @@ IA_NURTURE_H = 24       # +1 day, only if no response yet
 DISCHARGE_SMS_H = 24    # 1-day settle window before treating it as a discharge
 DISCHARGE_EMAIL_H = 26
 DISCHARGE_MAX_H = 120   # stop evaluating after 5 days
+
+# Welcome email — sent ~1 hour after a NEW patient books an IA appointment.
+WELCOME_DELAY_H = 1
+WELCOME_LOOKBACK_DAYS = 2   # how far back to scan for newly-booked IAs each run
 
 # A patient counts as genuinely discharged only after a real course of care.
 DISCHARGE_MIN_ATTENDED = 3
@@ -40,6 +46,29 @@ def collect(appts, responder_ids):
         else:
             _discharge_touches(appt, hrs, touches)
     return touches
+
+
+def collect_welcome():
+    """New-patient welcome — fires ~WELCOME_DELAY_H hours after a NEW patient
+    books an Initial Assessment. Triggers on booking time (created_at), not the
+    appointment time. Dedup (flow 'welcome' + appointment id) prevents resends."""
+    out = []
+    end = common.now_utc()
+    start = end - timedelta(days=WELCOME_LOOKBACK_DAYS)
+    for appt in cliniko.appointments_created_between(start, end):
+        if cliniko.is_cancelled(appt) or cliniko.is_class(appt):
+            continue
+        if not cliniko.is_initial_appointment(appt):
+            continue
+        hrs = common.hours_since(appt.get("created_at"))
+        if hrs is None or hrs < WELCOME_DELAY_H:
+            continue
+        pid = cliniko.patient_id_of(appt)
+        if not pid or not cliniko.is_new_patient(pid, appt):
+            continue
+        out.append(Touch("welcome", pid, "email", "welcome", str(appt["id"]),
+                          common.appt_ctx(appt), trigger_type="welcome"))
+    return out
 
 
 def _ia_touches(appt, hrs, responder_ids, out):

@@ -118,10 +118,12 @@ Here's what you can expect from our team:
 
 3. We support you between sessions. You'll get your movement plan after each visit so you always know what to do next.
 
-Before your first visit
-If you haven't already, please complete your short pre-assessment form - it helps us hit the ground running:
+To get you started before your first visit, here are a couple of things that help:
 
-{form_link}
+- Tips for non-pharmaceutical pain and stress relief: https://canva.link/bwk24xk93lqkooj
+- Gentle exercises to start moving pain-free again: https://canva.link/91gpchk5r5fohu6
+
+We've also sent your short pre-assessment form with your booking confirmation - completing it before you come in helps us hit the ground running.
 
 Any questions at all before you come in, just reply to this email or call us on {clinic_phone}. We're glad you're here.
 
