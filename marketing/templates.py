@@ -106,29 +106,24 @@ Elite Physiotherapy {clinic_name}
     "welcome": {
         "sender": "clinic",
         "subject": "Welcome to Elite Physiotherapy, {first_name}",
-        "body": """Hi {first_name},
+        "body": """Hi {first_name}
 
-Welcome to Elite Physiotherapy, and thank you for choosing us. You have other options, and we don't take it lightly that you picked us to help you get back to living free from pain and doing the things that matter most to you.
+Thank you for choosing Elite Physiotherapy as your health care provider and giving us the privilege of working with you and to help you live free from pain and get back to doing things that matter most in your life. We appreciate you have other options and we promise you we will do everything possible to ensure you get the result you want.
 
-Here's what you can expect from our team:
+Here is what you should expect from our team:
 
-1. We treat the cause, not just the site of the problem. Easing your pain quickly matters - but our real job is to find why it happened, so it doesn't keep coming back.
+• We never treat just the site of the problem - We are not interested in short term relief (paracetamol can do that for you). Yes, of course, we want to ease your pain as quickly as possible, our goal, however, is to find the true cause and leave you feeling completely confident going back to the activities that matter most in your life.
 
-2. We'll progress you safely, all the way through. Pain often eases well before the problem is fully resolved. The biggest mistake we see is people stopping too soon. We'll guide you through the full plan so it lasts.
+• We ensure that once the pain has eased that we safely progress you through the complete treatment plan. It's not unusual to notice a significant reduction in your pain levels quickly with us but it's important to know that there may still be a little more work to do in your movement plan to ensure this problem does not reoccur so please listen to your physio at all times. Patients returning to activities just because their pain is gone is the BIGGEST MISTAKE WE SEE ON A DAILY BASIS. We see this even in our work in elite sport and it's our team's job to ensure you don't make the same mistake. We promise we have your best interests at heart and this will SAVE YOU time, money and effort in the long run and get you back safely and as quickly as possible.
 
-3. We support you between sessions. You'll get your movement plan after each visit so you always know what to do next.
+• Complete support throughout the whole process with your movement plan emailed to you after each session. If for some reason you don't receive your exercises by the time you get home, please do us a favour and check your spam folder and if they're still not there send us a quick email to info@elitephysiocookstown.co.uk
 
-To get you started before your first visit, here are a couple of things that help:
+As life is so manic these days, it's important to take a moment and just breathe. So we've enclosed some key tips for you to get started on your recovery before you visit the clinic. For tips on non-pharmaceutical immediate pain and stress relief click here: https://canva.link/bwk24xk93lqkooj and for exercises to help you start to get your body moving pain free again please click here: https://canva.link/91gpchk5r5fohu6
 
-- Tips for non-pharmaceutical pain and stress relief: https://canva.link/bwk24xk93lqkooj
-- Gentle exercises to start moving pain-free again: https://canva.link/91gpchk5r5fohu6
+If you need any further help before your first appointment just give our reception team a call on 02886440995
 
-We've also sent your short pre-assessment form with your booking confirmation - completing it before you come in helps us hit the ground running.
-
-Any questions at all before you come in, just reply to this email or call us on {clinic_phone}. We're glad you're here.
-
-Warm regards,
-The team at Elite Physiotherapy {clinic_name}""",
+Warm Regards,
+The Elite Physiotherapy Team""",
     },
     "form_reminder": {
         "sender": "clinic",
