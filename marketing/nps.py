@@ -28,7 +28,15 @@ WELCOME_LOOKBACK_DAYS = 2   # how far back to scan for newly-booked IAs each run
 DISCHARGE_MIN_ATTENDED = 3
 # The "well done" congrats email only goes to patients who completed a fuller
 # course of care THIS episode (Martin 2026: ≥6 attended in the current episode).
+# At ≥6 the discharge email is COMBINED — congrats + library + survey ask in one.
 DISCHARGE_CONGRATS_MIN_ATTENDED = 6
+# Discharge is only inferred after these appointment types (Martin 2026:
+# Review, Club Follow Up, Private Health Insurance Review) — not every non-IA appt.
+DISCHARGE_TRIGGER_TYPE_IDS = {
+    "382563815511823515",   # 2. Review Appointment
+    "382589431795684515",   # 4. Club Follow Up Appointment
+    "1558531409491006559",  # 6. Private Health Insurance Review
+}
 
 
 def collect(appts, responder_ids):
@@ -43,7 +51,7 @@ def collect(appts, responder_ids):
             continue
         if cliniko.is_initial_appointment(appt):
             _ia_touches(appt, hrs, responder_ids, touches)
-        else:
+        elif cliniko.appt_type_id(appt) in DISCHARGE_TRIGGER_TYPE_IDS:
             _discharge_touches(appt, hrs, touches)
     return touches
 
@@ -101,13 +109,16 @@ def _discharge_touches(appt, hrs, out):
         return
     aid = str(appt["id"])
     ctx = common.appt_ctx(appt)
+    # ≥6 attended this episode → ONE combined "well done" email (congrats +
+    # library + the feedback ask) instead of the plain survey email.
+    combine = cliniko.episode_attended_count(pid) >= DISCHARGE_CONGRATS_MIN_ATTENDED
     if hrs >= DISCHARGE_SMS_H:
         out.append(Touch("discharge_survey_sms", pid, "sms", "discharge_survey",
                           aid, ctx, trigger_type="discharge"))
     if hrs >= DISCHARGE_EMAIL_H:
-        out.append(Touch("discharge_survey_email", pid, "email", "discharge_survey",
-                          aid, ctx, trigger_type="discharge"))
-        # "Well done" congrats email — only for a fuller course of care this episode.
-        if cliniko.episode_attended_count(pid) >= DISCHARGE_CONGRATS_MIN_ATTENDED:
+        if combine:
             out.append(Touch("discharge", pid, "email", "discharge_congrats",
+                              aid, ctx, trigger_type="discharge"))
+        else:
+            out.append(Touch("discharge_survey_email", pid, "email", "discharge_survey",
                               aid, ctx, trigger_type="discharge"))

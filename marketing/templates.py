@@ -209,6 +209,8 @@ You put in the work, and it paid off. A few things to help you stay well from he
 - Build back gradually. If something flares, don't panic - it's a signal, not a setback. Ease off, breathe, and return to your exercises pain-free.
 - We're still here. If this problem returns, or a new one appears, you don't go to the back of the queue - just call {clinic_phone} and we'll look after you.
 
+And while we have you - your honest feedback helps us look after every patient better. It takes about 30 seconds: {survey_link}
+
 It's been a pleasure helping you. Look after yourself.
 
 The team at Elite Physiotherapy {clinic_name}""",
