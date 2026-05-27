@@ -354,6 +354,33 @@ def pilates_counts(this_mon, next_mon):
 # Leads not booked
 # ===========================================================================
 
+def new_bookings_this_week(this_mon, now):
+    """Count of new-patient IA bookings MADE this week.
+
+    Counts /individual_appointments whose booking was created since Monday
+    00:00 (London) this week, of an IA type, and not cancelled — the same
+    definition the New Patient Bookings tracker uses (bookings_fetch.py). This
+    is keyed on when the booking was MADE (created_at), not when the
+    appointment happens, so it answers 'how many new patients did we book this
+    week?'. One count per IA appointment booked (repeat IAs for returning
+    patients count too), matching the bookings sheet's weekly 'Total IAs'.
+    """
+    week_start = _midnight(this_mon)
+    created = list(phase2.fetch_all("/individual_appointments", [
+        ("q[]", f"created_at:>={_iso(week_start)}"),
+        ("q[]", f"created_at:<{_iso(now)}"),
+    ]))
+    n = 0
+    for a in created:
+        type_id = phase2.id_from_link(a.get("appointment_type"))
+        if type_id not in config.BOOKINGS_IA_TYPE_IDS:
+            continue   # not an initial assessment
+        if a.get("cancelled_at"):
+            continue   # booking already cancelled — not a live new booking
+        n += 1
+    return n
+
+
 def leads_not_booked(this_mon, next_mon):
     """Count of Leads-tab rows dated within the current week that have NOT been
     booked. A lead is 'booked' once its Status column is set to "booked";
@@ -395,7 +422,7 @@ def _n(v):
 
 
 def build_report(now, this_mon, next_mon, appt, resched, cdnr, react,
-                 react_target, leads, pilates, pilates_next_mon):
+                 react_target, leads, new_bookings, pilates, pilates_next_mon):
     """Build the monospace stats table."""
     def cell(d, key):
         return "?" if d is None else _n(d.get(key, 0))
@@ -415,6 +442,7 @@ def build_report(now, this_mon, next_mon, appt, resched, cdnr, react,
 
     rows = [
         ("", "This Wk", "Next Wk", "Target"),
+        ("New Bookings", _n(new_bookings), "—", ""),
         ("Leads not booked", _n(leads), "—", ""),
         ("Total Appts Cookstown",
          cell(appt["total"], ("Cookstown", "this")),
@@ -528,12 +556,15 @@ def main():
     print("  Leads not booked…")
     leads = leads_not_booked(this_mon, next_mon)
 
+    print("  New bookings this week…")
+    new_bookings = new_bookings_this_week(this_mon, now)
+
     print("  Pilates (Bookwhen)…")
     pilates, pilates_next_mon = pilates_counts(this_mon, next_mon)
 
     header, sub, table = build_report(
         now, this_mon, next_mon, appt, resched, cdnr, react,
-        react_target, leads, pilates, pilates_next_mon)
+        react_target, leads, new_bookings, pilates, pilates_next_mon)
     print("\n" + header)
     print(sub)
     print(table + "\n")
