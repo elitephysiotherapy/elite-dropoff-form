@@ -344,10 +344,19 @@ def write_dashboard(sh):
 
     weekly, monthly = {}, {}
     for r in all_rows:
-        booked = str(r.get("Date Booked") or "")
-        if len(booked) < 10:
+        booked = str(r.get("Date Booked") or "").strip()
+        # Normally "YYYY-MM-DD HH:MM", but a hand-edited cell can be date-only
+        # ("YYYY-MM-DD"). Parse tolerantly so one odd row can't crash the whole
+        # Dashboard refresh (and fail the cron with exit 1).
+        dt = None
+        for fmt, n in (("%Y-%m-%d %H:%M", 16), ("%Y-%m-%d", 10)):
+            try:
+                dt = datetime.strptime(booked[:n], fmt)
+                break
+            except ValueError:
+                continue
+        if dt is None:
             continue
-        dt = datetime.strptime(booked[:16], "%Y-%m-%d %H:%M")
         weekly.setdefault(week_tab_name(dt), []).append(r)
         monthly.setdefault(dt.strftime("%Y-%m"), []).append(r)
 
