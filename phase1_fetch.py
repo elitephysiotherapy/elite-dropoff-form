@@ -526,6 +526,14 @@ def open_spreadsheet():
 def get_or_create_tab(sh, tab_name):
     try:
         ws = sh.worksheet(tab_name)
+        # Self-heal: re-assert the dropdown + colour rules on the active tab.
+        # If a previous run created the tab but died before formatting (leaving
+        # column N with no dropdown / no colours), this repairs it next run.
+        # apply_dropoff_tab_formatting is idempotent, so this never duplicates.
+        try:
+            apply_dropoff_tab_formatting(ws)
+        except Exception as e:
+            print(f"  WARN couldn't re-apply formatting to '{tab_name}': {e}")
         return ws, False
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title=tab_name, rows=200, cols=len(SHEET_COLUMNS))
@@ -850,7 +858,25 @@ def apply_dropoff_tab_formatting(ws):
         ("leave",             {"red": 0.96, "green": 0.78, "blue": 0.78}),  # red
     ]
 
+    # Idempotent: drop any conditional-format rules already on this tab before
+    # re-adding, so re-running (self-heal) never stacks duplicate rules. This
+    # function is the sole owner of conditional formatting on W/C drop-off tabs.
+    try:
+        meta = sh.fetch_sheet_metadata(params={
+            "fields": "sheets(properties(sheetId),conditionalFormats)"})
+        existing_cf = 0
+        for s in meta.get("sheets", []):
+            if s.get("properties", {}).get("sheetId") == sheet_id:
+                existing_cf = len(s.get("conditionalFormats", []) or [])
+                break
+    except Exception as e:
+        print(f"  WARN couldn't read existing conditional formats: {e}")
+        existing_cf = 0
+
     requests = []
+    for idx in range(existing_cf - 1, -1, -1):   # delete high→low so indices stay valid
+        requests.append({"deleteConditionalFormatRule":
+                         {"sheetId": sheet_id, "index": idx}})
     for i, (value, color) in enumerate(rules):
         requests.append({
             "addConditionalFormatRule": {
