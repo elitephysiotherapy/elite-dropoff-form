@@ -33,6 +33,26 @@ def category(score):
     return "Detractor"
 
 
+def _resolve_full_name(resp):
+    """The survey link only carries the patient's FIRST name (used for friendly
+    greetings like "Hi Debbie"). For the recorded NPS rows + the detractor
+    callback workflow reception needs the FULL name, so look it up from Cliniko
+    by patient_id. Best-effort: falls back to the link's name if the lookup is
+    unavailable, so a Cliniko hiccup never blocks recording the response."""
+    fallback = resp.get("patient_name", "") or ""
+    pid = resp.get("patient_id")
+    if not pid:
+        return fallback
+    try:
+        from marketing import cliniko
+        p = cliniko.get_patient(pid)
+        if p and p.get("full_name"):
+            return p["full_name"]
+    except Exception as e:
+        print(f"  WARN: full-name lookup failed for patient {pid}: {e}")
+    return fallback
+
+
 def handle_response(resp):
     """Process one survey response. `resp` keys:
       patient_id, patient_name, patient_email, patient_phone, physio_name,
@@ -45,6 +65,9 @@ def handle_response(resp):
         return "ignored: no score in payload"
     cat = category(int(score))
     clinic = config.CLINICS.get(resp.get("clinic_name") or "", {})
+    # Resolve the full name once (for sheet records + internal alert). Greetings
+    # keep using resp["patient_name"] (first name) for a friendly tone.
+    resp["patient_full_name"] = _resolve_full_name(resp)
 
     try:
         _write_raw_row(resp, cat)
@@ -78,7 +101,7 @@ def _write_raw_row(resp, cat):
     tab(_RAW).append_row([
         _today(),                       # A Date Sent (response day — see build report)
         str(resp.get("patient_id", "")),
-        resp.get("patient_name", ""),
+        resp.get("patient_full_name") or resp.get("patient_name", ""),  # C full name
         resp.get("physio_name", ""),
         resp.get("clinic_name", ""),
         resp.get("trigger_type", ""),
@@ -95,7 +118,7 @@ def _write_raw_row(resp, cat):
 def _write_detractor_row(resp):
     tab(_DET).append_row([
         _today(),
-        resp.get("patient_name", ""),
+        resp.get("patient_full_name") or resp.get("patient_name", ""),  # B full name
         str(resp.get("patient_id", "")),
         resp.get("physio_name", ""),
         resp.get("clinic_name", ""),
@@ -113,7 +136,7 @@ def _write_detractor_row(resp):
 
 def _alert(template_id, resp):
     ctx = {
-        "patient_name": resp.get("patient_name", ""),
+        "patient_name": resp.get("patient_full_name") or resp.get("patient_name", ""),
         "score": resp.get("nps_score", ""),
         "physio_name": resp.get("physio_name", ""),
         "clinic_name": resp.get("clinic_name", ""),
