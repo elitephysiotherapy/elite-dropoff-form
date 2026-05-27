@@ -13,12 +13,14 @@ nps_sheet_setup.gs is run) every call degrades gracefully — already_sent()
 returns False and log_send() is a no-op — so the poller still dry-runs.
 """
 
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 LONDON = ZoneInfo("Europe/London")
 _TAB = "Marketing - Sent Log"
 _rows_cache = None   # cached once per process (each poll is a fresh process)
+_READ_FAILED = object()   # sentinel: ledger read errored (≠ legitimately empty)
 
 
 def _now():
@@ -36,13 +38,35 @@ def _tab():
 
 
 def _rows():
+    """Cached Sent Log rows for this process.
+
+    Three outcomes, kept distinct on purpose:
+      • ws is None  -> [] (sheet not configured / shadow mode — safe to "send",
+                       nothing actually goes out in shadow)
+      • read OK     -> the data rows
+      • read errors -> _READ_FAILED sentinel, so already_sent() can FAIL SAFE
+                       (skip this cycle) instead of re-sending the whole ledger.
+
+    The read is retried a few times first, because a transient Google Sheets
+    429 (write/read quota) used to blank the ledger and trigger a mass re-send.
+    """
     global _rows_cache
     if _rows_cache is None:
         ws = _tab()
-        try:
-            _rows_cache = ws.get_all_values()[1:] if ws else []
-        except Exception:
+        if ws is None:
             _rows_cache = []
+        else:
+            _rows_cache = _READ_FAILED
+            for attempt in range(4):
+                try:
+                    _rows_cache = ws.get_all_values()[1:]
+                    break
+                except Exception as e:
+                    if attempt == 3:
+                        print(f"  WARN: Sent Log read failed after retries ({e}) "
+                              f"— skipping sends this cycle to avoid duplicates")
+                        break
+                    time.sleep(1.5 * (attempt + 1))
     return _rows_cache
 
 
@@ -61,7 +85,13 @@ def already_sent(patient_id, flow_name, anchor, within_days=45):
     """
     pid, anc = str(patient_id), str(anchor or "")
     cutoff = _now() - timedelta(days=within_days)
-    for r in _rows():
+    rows = _rows()
+    if rows is _READ_FAILED:
+        # Could not verify the ledger this cycle — treat as already sent so we
+        # never double-send. The next cycle (≈10 min) retries once the sheet is
+        # readable again; a delayed touch is far better than a duplicate one.
+        return True
+    for r in rows:
         if len(r) < 6:
             continue
         if r[1] == pid and r[3] == flow_name and r[5] == anc:
@@ -82,6 +112,17 @@ def log_send(patient_id, patient_name, flow_name, channel,
     ws = _tab()
     if ws is None:
         return
-    ws.append_row(row, value_input_option="USER_ENTERED")
-    if _rows_cache is not None:
+    # Retry on transient Google Sheets 429s. A write that silently fails leaves
+    # the touch SENT-but-UNLOGGED, which makes the next cycle re-send it — so we
+    # try hard to record every send.
+    for attempt in range(4):
+        try:
+            ws.append_row(row, value_input_option="USER_ENTERED")
+            break
+        except Exception as e:
+            if attempt == 3:
+                print(f"  WARN: sent_log write failed after retries ({e})")
+                return
+            time.sleep(1.5 * (attempt + 1))
+    if isinstance(_rows_cache, list):   # keep in-process cache in sync
         _rows_cache.append(row)
