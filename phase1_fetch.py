@@ -199,9 +199,41 @@ def is_ia_only_patient_at(appt, history):
     return attended_before <= 1
 
 
+def responsible_physio_id(appt, history):
+    """The physio responsible for a drop-off event = the physio who most
+    recently ATTENDED an appointment with the patient before this event.
+
+    Rationale (Martin 2026-05-28): if Molaí performs Joe Bloggs' IA and Joe
+    later DNAs a follow-up scheduled with Aoife, the drop-off belongs to
+    Molaí — she's the one who owned the patient relationship. Aoife had
+    never seen the patient. Falls back to the scheduled physio when the
+    patient has no prior attended history (the IACNA/IADNA case — before
+    the first IA, nobody has 'seen' the patient yet)."""
+    appt_start = appt.get("starts_at") or ""
+    attended = [h for h in (history or [])
+                if (h.get("starts_at") or "") < appt_start
+                and not h.get("cancelled_at")
+                and not h.get("did_not_arrive")]
+    if attended:
+        attended.sort(key=lambda x: x.get("starts_at") or "")
+        prev_prac = id_from_link(attended[-1].get("practitioner"))
+        if prev_prac:
+            return prev_prac
+    return id_from_link(appt.get("practitioner"))
+
+
+# IA type set used for classify_dropoff's "is this an IA cancellation/DNA?"
+# decision. Wider than PHASE1_DROPOFF_IA_TYPE_IDS (the strict 4 used for NPs):
+# also includes Club Consultation, Sports & MSK Consult, Mummy MOT, Pelvic
+# Health — so cancelling/DNA-ing one of those gets flagged IACNA/IADNA, not
+# the generic "cancelled"/"did_not_attend" bucket (Hugh McGurk case).
+import phase2 as _p2_module
+_IA_TYPES_FOR_CLASSIFY = _p2_module.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS
+
+
 def classify_dropoff(appt, type_id, history):
     """Returns one of: 'iacna', 'iadna', 'iadnr', 'cancelled', 'did_not_attend', None."""
-    is_ia = type_id in PHASE1_DROPOFF_IA_TYPE_IDS
+    is_ia = type_id in _IA_TYPES_FOR_CLASSIFY
     is_cancelled = bool(appt.get("cancelled_at"))
     is_dna = bool(appt.get("did_not_arrive"))
 
@@ -349,16 +381,16 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
         is_cancelled = bool(a.get("cancelled_at"))
         is_dna = bool(a.get("did_not_arrive"))
 
-        # Attended non-IA appointment is never a drop-off — skip before history fetch
-        if not is_cancelled and not is_dna and type_id not in PHASE1_DROPOFF_IA_TYPE_IDS:
+        # Attended non-IA appointment is never a drop-off — skip before history fetch.
+        # Uses the wider IA set (incl Club Consultation etc.) so we don't skip
+        # an attended wider-IA that might be an IADNR.
+        if not is_cancelled and not is_dna and type_id not in _IA_TYPES_FOR_CLASSIFY:
             continue
 
-        prac_id = id_from_link(a.get("practitioner"))
         biz_id = id_from_link(a.get("business"))
         patient_id = id_from_link(a.get("patient"))
 
         type_name = (types_by_id.get(type_id) or {}).get("name", "?")
-        prac = pracs_by_id.get(prac_id) or {}
         clinic = business_name(biz_by_id.get(biz_id) or {})
         patient = full_patient_name(a.get("patient_name"))
         appt_date = fmt_local_dt(a.get("starts_at"))
@@ -372,7 +404,8 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
         elif is_dna:
             notice_hours_val = 0
 
-        # Fetch patient history once (cached) — needed for classification.
+        # Fetch patient history once (cached) — needed for classification AND
+        # for the responsible-physio rule (most recent attending physio).
         # None (not []) marks a FAILED fetch so we skip rather than misclassify.
         if patient_id and patient_id not in history_cache:
             try:
@@ -384,6 +417,12 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
         history = history_cache.get(patient_id)
         if history is None:
             continue  # fetch failed — leave for the next run's rolling re-scan
+
+        # Responsible physio = most recent attending physio (NOT the scheduled
+        # physio of the cancelled appointment). Falls back to scheduled physio
+        # if the patient has no prior attended history (IACNA/IADNA case).
+        prac_id = responsible_physio_id(a, history)
+        prac = pracs_by_id.get(prac_id) or {}
 
         kind = classify_dropoff(a, type_id, history)
         if kind is None:

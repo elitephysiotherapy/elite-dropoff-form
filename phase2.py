@@ -675,6 +675,29 @@ def monthly_stats_per_physio(start_utc, end_utc):
     true_dna_ids = _build_true_dna_set(appts)
     true_cna_ids = _build_true_cna_set(appts)
 
+    def _responsible_prac_id(a):
+        """For a CNA/DNA on a NON-IA (review) appointment, return the physio
+        who most recently ATTENDED the patient before this event. Matches the
+        drop-off tracker's responsible-physio rule — Aoife shouldn't be hit
+        on her CNA % for a patient that only ever saw Molaí. For IACNA/IADNA
+        (cancelling/DNA-ing the first IA), there's no prior attending physio
+        so we keep the scheduled physio."""
+        pid = id_from_link(a.get("patient"))
+        if not pid:
+            return id_from_link(a.get("practitioner"))
+        a_start = a.get("starts_at") or ""
+        history = _get_history(pid)
+        attended_before = [h for h in (history or [])
+                           if (h.get("starts_at") or "") < a_start
+                           and not h.get("cancelled_at")
+                           and not h.get("did_not_arrive")]
+        if attended_before:
+            attended_before.sort(key=lambda x: x.get("starts_at") or "")
+            prev = id_from_link(attended_before[-1].get("practitioner"))
+            if prev:
+                return prev
+        return id_from_link(a.get("practitioner"))
+
     for a in appts:
         type_id = id_from_link(a.get("appointment_type"))
         is_excluded = type_id in config.EXCLUDED_FROM_TOTAL_APPTS
@@ -709,16 +732,20 @@ def monthly_stats_per_physio(start_utc, end_utc):
             if a["id"] not in true_cna_ids:
                 continue  # duplicate cancellation from the same patient — already counted
             if is_np:
-                stats["iacnas"] += 1
+                stats["iacnas"] += 1   # IACNA stays with the scheduled (IA) physio
             else:
-                stats["cnas_review"] += 1
+                # Non-IA cancellation: attribute to the most-recently attending physio
+                resp_disp, resp_full = _practitioner_display(_responsible_prac_id(a))
+                physios.setdefault(resp_disp, _new(resp_disp, resp_full))["cnas_review"] += 1
         elif is_dna:
             if a["id"] not in true_dna_ids:
                 continue  # rescheduled OR duplicate DNA — excluded
             if is_np:
-                stats["iadnas"] += 1
+                stats["iadnas"] += 1   # IADNA stays with the scheduled (IA) physio
             else:
-                stats["dnas_review"] += 1
+                # Non-IA DNA: attribute to the most-recently attending physio
+                resp_disp, resp_full = _practitioner_display(_responsible_prac_id(a))
+                physios.setdefault(resp_disp, _new(resp_disp, resp_full))["dnas_review"] += 1
         else:  # attended
             stats["total_apts"] += 1
             if is_np:
