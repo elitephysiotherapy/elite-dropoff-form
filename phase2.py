@@ -590,8 +590,11 @@ def monthly_stats_per_physio(start_utc, end_utc):
         for a in appts_list:
             if not a.get("did_not_arrive") or a.get("cancelled_at"):
                 continue
-            if id_from_link(a.get("appointment_type")) in config.EXCLUDED_FROM_TOTAL_APPTS:
+            t_id = id_from_link(a.get("appointment_type"))
+            if t_id in config.EXCLUDED_FROM_TOTAL_APPTS:
                 continue
+            if t_id in config.EXCLUDED_FROM_DROPOFF_STATS:
+                continue  # Sports Massage — never counted toward physio drop-off stats
             if _is_reschedule(a):
                 continue
             candidates.append(a)
@@ -638,8 +641,11 @@ def monthly_stats_per_physio(start_utc, end_utc):
         for a in appts_list:
             if not a.get("cancelled_at"):
                 continue
-            if id_from_link(a.get("appointment_type")) in config.EXCLUDED_FROM_TOTAL_APPTS:
+            t_id = id_from_link(a.get("appointment_type"))
+            if t_id in config.EXCLUDED_FROM_TOTAL_APPTS:
                 continue
+            if t_id in config.EXCLUDED_FROM_DROPOFF_STATS:
+                continue  # Sports Massage — never counted toward physio drop-off stats
             if _is_reschedule(a):
                 continue
             candidates.append(a)

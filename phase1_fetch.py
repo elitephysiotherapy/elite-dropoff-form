@@ -233,6 +233,11 @@ _IA_TYPES_FOR_CLASSIFY = _p2_module.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS
 
 def classify_dropoff(appt, type_id, history):
     """Returns one of: 'iacna', 'iadna', 'iadnr', 'cancelled', 'did_not_attend', None."""
+    # Sports Massage cancels/DNAs are not tracked as drop-offs — they've never
+    # counted toward physio stats in Martin's manual tracker, so we keep them
+    # out of the sheet entirely too (no Slack notifications either).
+    if type_id in config.EXCLUDED_FROM_DROPOFF_STATS:
+        return None
     is_ia = type_id in _IA_TYPES_FOR_CLASSIFY
     is_cancelled = bool(appt.get("cancelled_at"))
     is_dna = bool(appt.get("did_not_arrive"))

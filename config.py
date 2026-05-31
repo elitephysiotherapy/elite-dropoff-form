@@ -42,6 +42,17 @@ NEW_PATIENT_TYPE_IDS = PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS | {
     "1810765504990680283",  # 4. Lab 60 Screening
 }
 
+# Sports Massage cancellations / DNAs never counted toward physio drop-off
+# stats in Martin's manual tracker — apply the same exclusion here so the
+# Performance Dashboard stays consistent. Sports Massage IS still a 1-to-1
+# appointment (counts toward Total Appointments / utilization); it just
+# doesn't generate drop-off rows in the sheet or hits on CNA % / DNA %.
+EXCLUDED_FROM_DROPOFF_STATS = {
+    "752219543803270402",   # Sports Massage Offer (30 Mins)
+    "1820239945827096402",  # Sports Massage Offer (60 mins)
+    "1882529999999735591",  # Sports Massage
+}
+
 
 # ===========================================================================
 # APPOINTMENT TYPES EXCLUDED FROM "Total Appointments Seen"
