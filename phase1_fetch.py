@@ -498,10 +498,13 @@ def enrich_phase2(rows):
         if not r.get("session_number"):
             r["session_number"] = p2.session_number_for(r["appointment_id"], episode) or ""
 
-        # Body area — IACNA / IADNA: patient never attended their IA, no notes to read
+        # Body area — IACNA / IADNA: patient never attended their IA, no notes to read.
+        # Uses the wider IA set so cancellation/DNA of any IA-style appointment
+        # (incl. Club Consultation) is labelled "n/a (pre-IA)", matching the
+        # widened classify_dropoff rule.
         appt_type_id = r.get("_appointment_type_id")
         is_pre_ia = (r["dropoff_type"] in ("cancelled", "did_not_attend")
-                     and appt_type_id in PHASE1_DROPOFF_IA_TYPE_IDS)
+                     and appt_type_id in _IA_TYPES_FOR_CLASSIFY)
         if is_pre_ia:
             r["body_area"] = "n/a (pre-IA)"
             continue

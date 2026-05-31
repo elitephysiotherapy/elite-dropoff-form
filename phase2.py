@@ -722,9 +722,13 @@ def monthly_stats_per_physio(start_utc, end_utc):
         if is_excluded:
             continue  # classes don't count for patient-throughput metrics
 
-        # MONTHLY NP definition = strict 4 IA types only (Martin's manual tracker convention).
-        # This is narrower than the weekly definition (NEW_PATIENT_TYPE_IDS); see config.py.
-        is_np = type_id in config.PHASE1_DROPOFF_IA_TYPE_IDS
+        # Performance Dashboard NPs / IACNA / IADNA all use the WIDER 8-type
+        # IA set (strict 4 + Club Consultation, Sports & MSK Consult, Mummy MOT,
+        # Pelvic Health) so the IACNA/IADNA buckets match the drop-off sheet's
+        # labels — a cancelled Club Consultation is IACNA in both places, and
+        # CNA-1st % (= (IACNAs + IADNAs) / NPs) has a consistent numerator and
+        # denominator. (Martin 2026-05-28.)
+        is_np = type_id in config.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS
 
         if is_cancelled:
             if _is_reschedule(a):
