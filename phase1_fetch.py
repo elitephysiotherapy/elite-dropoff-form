@@ -1691,7 +1691,11 @@ def detect_rebookings():
 
         for sheet_row, row in enumerate(records, start=2):  # row 1 = header
             status = str(row.get("Reactivation Status") or "").strip().lower()
-            if status not in ("pending", "contact_attempted"):
+            # Include BLANK status — newly-written IADNR rows start blank and
+            # used to be skipped here, so reactivated patients with untouched
+            # rows never got auto-flagged green. (Johnnie Wright / Peter
+            # McCormack case, 2026-05-28.)
+            if status not in ("", "pending", "contact_attempted"):
                 continue
             appt_id = str(row.get("appointment_id") or "")
             appt_date = str(row.get("Appointment Date") or "")

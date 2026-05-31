@@ -625,7 +625,55 @@ def monthly_stats_per_physio(start_utc, end_utc):
                 prev = a_start
         return keep
 
+    def _build_true_cna_set(appts_list):
+        """CNA counts only once per patient per month — mirrors the DNA dedup.
+
+        Without this, a persistent canceller (e.g. Peter Kennedy 3x in May)
+        hits the responsible physio with 3 CNAs even though it's the same
+        patient. Per-patient dedup keeps the first cancellation; later ones
+        only count if the patient attended an appointment in between (i.e.
+        genuinely re-engaged and dropped off again).
+        """
+        candidates = []
+        for a in appts_list:
+            if not a.get("cancelled_at"):
+                continue
+            if id_from_link(a.get("appointment_type")) in config.EXCLUDED_FROM_TOTAL_APPTS:
+                continue
+            if _is_reschedule(a):
+                continue
+            candidates.append(a)
+        by_patient = {}
+        for a in candidates:
+            pid = id_from_link(a.get("patient"))
+            by_patient.setdefault(pid, []).append(a)
+        keep = set()
+        for pid, plist in by_patient.items():
+            if not pid:
+                keep.update(p["id"] for p in plist)
+                continue
+            psorted = sorted(plist, key=lambda x: x.get("starts_at") or "")
+            history = _get_history(pid)
+            prev = None
+            for a in psorted:
+                a_start = a.get("starts_at") or ""
+                if prev is None:
+                    keep.add(a["id"])
+                    prev = a_start
+                    continue
+                attended_between = any(
+                    prev < (h.get("starts_at") or "") < a_start
+                    and not h.get("cancelled_at")
+                    and not h.get("did_not_arrive")
+                    for h in history
+                )
+                if attended_between:
+                    keep.add(a["id"])
+                prev = a_start
+        return keep
+
     true_dna_ids = _build_true_dna_set(appts)
+    true_cna_ids = _build_true_cna_set(appts)
 
     for a in appts:
         type_id = id_from_link(a.get("appointment_type"))
@@ -658,6 +706,8 @@ def monthly_stats_per_physio(start_utc, end_utc):
         if is_cancelled:
             if _is_reschedule(a):
                 continue  # patient rebooked elsewhere — not a true CNA
+            if a["id"] not in true_cna_ids:
+                continue  # duplicate cancellation from the same patient — already counted
             if is_np:
                 stats["iacnas"] += 1
             else:
