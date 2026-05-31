@@ -792,14 +792,15 @@ def monthly_stats_per_physio(start_utc, end_utc):
             stats["total_apts"] += 1
             if is_np:
                 stats["nps"] += 1
-                # ATTENDED IA + NO FUTURE BOOKING = IADNR (matches the sheet's
-                # classify_dropoff "attended IA" branch). Without this the
-                # dashboard misses patients who came in for their IA and never
-                # came back — e.g. Shannagh's Conan Milne / Daniel Kane /
-                # Patricia McGartland in May 2026. The IADNR is attributed
-                # to the IA-performing physio (who IS the responsible physio
-                # here — they're the one who saw them).
-                pid = id_from_link(a.get("patient"))
+                # ATTENDED IA + NO FUTURE BOOKING = IADNR — but ONLY for the
+                # strict 4 IA types that expect a follow-up. Mummy MOT, Pelvic
+                # Health Assessment, Sports & MSK Consult and Club Consultation
+                # are one-and-done by design, so flagging them as "no rebook =
+                # IADNR" would unfairly penalise practitioners doing those
+                # (e.g. Marty's 9 false IADNRs in May 2026). Strict-4-only
+                # mirrors the IA Rebook Rate tab's STRICT_IA_TYPE_IDS gate.
+                is_strict_ia = type_id in config.PHASE1_DROPOFF_IA_TYPE_IDS
+                pid = id_from_link(a.get("patient")) if is_strict_ia else None
                 if pid:
                     a_start = a.get("starts_at") or ""
                     history = _get_history(pid)
