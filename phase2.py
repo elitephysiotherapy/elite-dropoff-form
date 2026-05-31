@@ -792,6 +792,25 @@ def monthly_stats_per_physio(start_utc, end_utc):
             stats["total_apts"] += 1
             if is_np:
                 stats["nps"] += 1
+                # ATTENDED IA + NO FUTURE BOOKING = IADNR (matches the sheet's
+                # classify_dropoff "attended IA" branch). Without this the
+                # dashboard misses patients who came in for their IA and never
+                # came back — e.g. Shannagh's Conan Milne / Daniel Kane /
+                # Patricia McGartland in May 2026. The IADNR is attributed
+                # to the IA-performing physio (who IS the responsible physio
+                # here — they're the one who saw them).
+                pid = id_from_link(a.get("patient"))
+                if pid:
+                    a_start = a.get("starts_at") or ""
+                    history = _get_history(pid)
+                    has_later_valid = any(
+                        (h.get("starts_at") or "") > a_start
+                        and not h.get("cancelled_at")
+                        and not h.get("did_not_arrive")
+                        for h in (history or [])
+                    )
+                    if not has_later_valid:
+                        stats["iadnrs"] += 1
             if type_id == config.GENPOP_INITIAL_TYPE_ID:
                 stats["gen_pop_initial"] += 1
             elif type_id == config.GENPOP_REVIEW_TYPE_ID:
