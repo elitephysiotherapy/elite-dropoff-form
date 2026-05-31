@@ -553,6 +553,7 @@ def monthly_stats_per_physio(start_utc, end_utc):
             "display": display, "full_names": {full},
             "total_apts": 0, "nps": 0,
             "cnas_review": 0, "dnas_review": 0, "iacnas": 0, "iadnas": 0,
+            "iadnrs": 0,
             "used_minutes": 0,
             "gen_pop_initial": 0, "gen_pop_review": 0,
         }
@@ -681,6 +682,27 @@ def monthly_stats_per_physio(start_utc, end_utc):
     true_dna_ids = _build_true_dna_set(appts)
     true_cna_ids = _build_true_cna_set(appts)
 
+    def _is_iadnr_event(a):
+        """True if this non-IA cancellation/DNA is an IADNR — same definition
+        as phase1_fetch.classify_dropoff's "iadnr" branch: patient is in their
+        current episode with at most their IA attended (no follow-ups), no
+        future booking (already established by the reschedule check upstream)."""
+        pid = id_from_link(a.get("patient"))
+        if not pid:
+            return False
+        history = _get_history(pid)
+        _, episode, _ = find_episode(history)
+        if not episode:
+            return False
+        a_start = a.get("starts_at") or ""
+        attended_before = sum(
+            1 for h in episode
+            if (h.get("starts_at") or "") < a_start
+            and not h.get("cancelled_at")
+            and not h.get("did_not_arrive")
+        )
+        return attended_before <= 1
+
     def _responsible_prac_id(a):
         """For a CNA/DNA on a NON-IA (review) appointment, return the physio
         who most recently ATTENDED the patient before this event. Matches the
@@ -744,18 +766,28 @@ def monthly_stats_per_physio(start_utc, end_utc):
             if is_np:
                 stats["iacnas"] += 1   # IACNA stays with the scheduled (IA) physio
             else:
-                # Non-IA cancellation: attribute to the most-recently attending physio
+                # Non-IA cancellation: attribute to the most-recently attending physio.
+                # IADNR (patient lost early after IA) goes in its own bucket so the
+                # plain CNA % only reflects review cancellations from patients still
+                # engaged in care — same split Martin uses in his manual tracker.
                 resp_disp, resp_full = _practitioner_display(_responsible_prac_id(a))
-                physios.setdefault(resp_disp, _new(resp_disp, resp_full))["cnas_review"] += 1
+                target = physios.setdefault(resp_disp, _new(resp_disp, resp_full))
+                if _is_iadnr_event(a):
+                    target["iadnrs"] += 1
+                else:
+                    target["cnas_review"] += 1
         elif is_dna:
             if a["id"] not in true_dna_ids:
                 continue  # rescheduled OR duplicate DNA — excluded
             if is_np:
                 stats["iadnas"] += 1   # IADNA stays with the scheduled (IA) physio
             else:
-                # Non-IA DNA: attribute to the most-recently attending physio
                 resp_disp, resp_full = _practitioner_display(_responsible_prac_id(a))
-                physios.setdefault(resp_disp, _new(resp_disp, resp_full))["dnas_review"] += 1
+                target = physios.setdefault(resp_disp, _new(resp_disp, resp_full))
+                if _is_iadnr_event(a):
+                    target["iadnrs"] += 1
+                else:
+                    target["dnas_review"] += 1
         else:  # attended
             stats["total_apts"] += 1
             if is_np:
@@ -788,6 +820,13 @@ def monthly_stats_per_physio(start_utc, end_utc):
         stats["combined_pct"] = ((stats["dnas_review"] + stats["cnas_review"]) / review * 100) if review else None
         stats["cna_dna_1st_pct"] = ((stats["iacnas"] + stats["iadnas"]) / stats["nps"] * 100) if stats["nps"] else None
         stats["pva"] = (stats["total_apts"] / stats["nps"]) if stats["nps"] else None
+        # IA Rebook % per physio — Martin's formula: (NPs − IADNRs) / NPs
+        stats["ia_rebook_pct"] = ((stats["nps"] - stats["iadnrs"]) / stats["nps"] * 100) if stats["nps"] else None
+        # Drop off % per physio — Total Drop offs / (Total Drop offs + Reviews)
+        total_drops = stats["cnas_review"] + stats["dnas_review"] + stats["iadnrs"]
+        stats["total_dropoffs"] = total_drops
+        denom = total_drops + review
+        stats["dropoff_pct"] = (total_drops / denom * 100) if denom else None
         stats["gen_pop_pva"] = ((stats["gen_pop_initial"] + stats["gen_pop_review"]) / stats["gen_pop_initial"]) if stats["gen_pop_initial"] else None
         used_hrs = stats["used_minutes"] / 60
         stats["used_hours"] = round(used_hrs, 2)

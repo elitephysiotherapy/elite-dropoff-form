@@ -1091,6 +1091,18 @@ def _colour_for(metric, value):
         if value <= 2.2:
             return YELLOW_RGB
         return RED_RGB
+    if metric == "ia_rebook_pct":
+        if value >= 85:
+            return GREEN_RGB
+        if value >= 76.5:
+            return YELLOW_RGB
+        return RED_RGB
+    if metric == "dropoff_pct":
+        if value < 10:
+            return GREEN_RGB
+        if value <= 11:
+            return YELLOW_RGB
+        return RED_RGB
     return None
 
 
@@ -1127,8 +1139,10 @@ def write_performance_dashboard_tab():
 
     # Standards row values (display strings)
     headers = ["Practitioner", "Utilization", "NPs", "DNA %", "CNA %", "DNA+CNA %",
+               "IADNRs", "IA Rebook %", "Drop off %",
                "PVA", "CNA/DNA 1st %", "Net Promoter", "Gen Pop PVA", "Total Apts"]
     standard_vals = ["Standard", "75–85%", "≥192", "<2%", "<8%", "<10%",
+                     "—", "≥85%", "<10%",
                      "≥6", "<2%", "≥85%", "≥6", "—"]
 
     out = []
@@ -1154,10 +1168,13 @@ def write_performance_dashboard_tab():
             "dna_pct": 4,
             "cna_pct": 5,
             "combined_pct": 6,
-            "pva": 7,
-            "cna_dna_1st_pct": 8,
-            # NPS col 9 — left blank
-            "gen_pop_pva": 10,
+            # IADNRs col 7 — count, no colour
+            "ia_rebook_pct": 8,
+            "dropoff_pct": 9,
+            "pva": 10,
+            "cna_dna_1st_pct": 11,
+            # Net Promoter col 12 — left blank
+            "gen_pop_pva": 13,
         }
         for metric, col in cols.items():
             v = kpi_values_by_metric.get(metric)
@@ -1186,7 +1203,7 @@ def write_performance_dashboard_tab():
         # Compute Clinic Average and w/o M&J aggregates
         def aggregate(displays):
             agg = {"total_apts": 0, "nps": 0, "cnas_review": 0, "dnas_review": 0,
-                   "iacnas": 0, "iadnas": 0, "used_minutes_total": 0,
+                   "iacnas": 0, "iadnas": 0, "iadnrs": 0, "used_minutes_total": 0,
                    "available_hours": 0,
                    "gen_pop_initial": 0, "gen_pop_review": 0}
             for d in displays:
@@ -1199,6 +1216,7 @@ def write_performance_dashboard_tab():
                 agg["dnas_review"] += s["dnas_review"]
                 agg["iacnas"] += s["iacnas"]
                 agg["iadnas"] += s["iadnas"]
+                agg["iadnrs"] += s.get("iadnrs", 0)
                 agg["used_minutes_total"] += s["used_minutes"]
                 if s.get("available_hours"):
                     agg["available_hours"] += s["available_hours"]
@@ -1213,6 +1231,18 @@ def write_performance_dashboard_tab():
             agg["cna_dna_1st_pct"] = ((agg["iacnas"] + agg["iadnas"]) / agg["nps"] * 100) if agg["nps"] else None
             agg["pva"] = (agg["total_apts"] / agg["nps"]) if agg["nps"] else None
             agg["gen_pop_pva"] = ((agg["gen_pop_initial"] + agg["gen_pop_review"]) / agg["gen_pop_initial"]) if agg["gen_pop_initial"] else None
+            # IA Rebook % — Martin's formula: (NPs − IADNRs) / NPs, computed
+            # for the calendar month. Acknowledges that some IADNRs in the
+            # month relate to IAs from the previous month; over a quarter or
+            # year that timing noise averages out.
+            agg["ia_rebook_pct"] = ((agg["nps"] - agg["iadnrs"]) / agg["nps"] * 100) if agg["nps"] else None
+            # Drop off % — Martin's formula: Total Drop offs / (Total Drop offs
+            # + Review Appts). "Total Drop offs" here = CNAs + DNAs + IADNRs
+            # (matches the per-physio sheet totals, excludes IACNAs/IADNAs).
+            total_drops = agg["cnas_review"] + agg["dnas_review"] + agg["iadnrs"]
+            agg["total_dropoffs"] = total_drops
+            denom = total_drops + review
+            agg["dropoff_pct"] = (total_drops / denom * 100) if denom else None
             used_hrs = agg["used_minutes_total"] / 60
             agg["used_hours"] = round(used_hrs, 2)
             agg["util_pct"] = (used_hrs / agg["available_hours"] * 100) if agg["available_hours"] else None
@@ -1232,6 +1262,9 @@ def write_performance_dashboard_tab():
                 fmt_pct(s["dna_pct"]),
                 fmt_pct(s["cna_pct"]),
                 fmt_pct(s["combined_pct"]),
+                fmt_int(s.get("iadnrs", 0)),
+                fmt_pct(s.get("ia_rebook_pct")),
+                fmt_pct(s.get("dropoff_pct")),
                 fmt_num(s["pva"], 1),
                 fmt_pct(s["cna_dna_1st_pct"]),
                 "",  # Net Promoter — blank for now
@@ -1244,6 +1277,8 @@ def write_performance_dashboard_tab():
                 "dna_pct": s["dna_pct"],
                 "cna_pct": s["cna_pct"],
                 "combined_pct": s["combined_pct"],
+                "ia_rebook_pct": s.get("ia_rebook_pct"),
+                "dropoff_pct": s.get("dropoff_pct"),
                 "pva": s["pva"],
                 "cna_dna_1st_pct": s["cna_dna_1st_pct"],
                 "gen_pop_pva": s["gen_pop_pva"],
@@ -1262,6 +1297,7 @@ def write_performance_dashboard_tab():
                     "util_pct": None, "nps": 0, "dna_pct": None, "cna_pct": None,
                     "combined_pct": None, "pva": None, "cna_dna_1st_pct": None,
                     "gen_pop_pva": None, "total_apts": 0,
+                    "iadnrs": 0, "ia_rebook_pct": None, "dropoff_pct": None,
                 }
             stat_row(display_name, s)
 
@@ -1284,7 +1320,7 @@ def write_performance_dashboard_tab():
         ws = sh.worksheet("Performance Dashboard")
         ws.clear()
     except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Performance Dashboard", rows=400, cols=12)
+        ws = sh.add_worksheet(title="Performance Dashboard", rows=400, cols=15)
 
     ws.update(values=out, range_name="A1", value_input_option="RAW")
 
