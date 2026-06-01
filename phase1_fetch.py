@@ -253,7 +253,14 @@ def classify_dropoff(appt, type_id, history):
             return "iacna"
         if is_dna:
             return "iadna"
-        # Attended IA — IADNR if no future booking
+        # Attended IA → IADNR only if it's a STRICT 4 IA type (Initial Appt,
+        # Club Initial, PHI Initial, ACL Initial) — these are the IAs that
+        # expect a follow-up. Sports & MSK Consult, Mummy MOT, Pelvic Health,
+        # Club Consultation are one-and-done by design, so no-rebook isn't a
+        # drop-off. (Ultrasound Assessment etc. are even narrower NEW_PATIENT
+        # types not in is_ia, so they never reach this branch.)
+        if type_id not in PHASE1_DROPOFF_IA_TYPE_IDS:
+            return None
         return None if has_future_booking_in_history(appt, history) else "iadnr"
 
     # Non-IA appointment
