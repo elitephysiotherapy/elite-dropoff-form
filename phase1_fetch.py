@@ -28,6 +28,8 @@ import requests
 import gspread
 from google.oauth2.service_account import Credentials
 
+import config
+
 load_dotenv(override=True)
 API_KEY = os.environ["CLINIKO_API_KEY"]
 SHARD = os.environ["CLINIKO_SHARD"]
