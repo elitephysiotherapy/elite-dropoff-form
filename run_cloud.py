@@ -27,12 +27,17 @@ PY = sys.executable
 
 # Command to run for each job once the London-time guard passes.
 COMMANDS = {
-    "dropoff":   [PY, "phase1_fetch.py", "--write"],
-    "eod":       [PY, "eod_stats.py", "--post"],
-    "bookings":  [PY, "bookings_fetch.py", "--write"],
-    "progress":  [PY, "progress_scan.py"],
-    "marketing": [PY, "-m", "marketing.poller"],
+    "dropoff":      [PY, "phase1_fetch.py", "--write"],
+    "eod":          [PY, "eod_stats.py", "--post"],
+    "bookings":     [PY, "bookings_fetch.py", "--write"],
+    "progress":     [PY, "progress_scan.py"],
+    "marketing":    [PY, "-m", "marketing.poller"],
+    "monthly_kpi":  [PY, "send_monthly_physio_kpis.py", "--post"],
 }
+
+# Jobs that fire only on the 1st of each calendar month (in addition to the
+# London-time hour/minute check). Used by send_monthly_physio_kpis on day 1.
+MONTHLY_DAY1_JOBS = {"monthly_kpi"}
 
 # Intended schedule in Europe/London local time.
 # Each entry: (weekdays | None, hour, minute).  weekdays is a set with Mon=0..Sun=6;
@@ -44,6 +49,7 @@ TARGETS = {
                  (None, 15, 0), (None, 18, 0), (None, 20, 45)],   # 6 daily polls
     "eod":      [({0, 1, 2, 3}, 12, 45), ({0, 1, 2, 3}, 16, 15),
                  ({0, 1, 2, 3}, 20, 45), ({4}, 15, 45)],          # Mon-Thu x3, Fri x1
+    "monthly_kpi": [(None, 9, 0)],                                # 09:00 on day 1 (see MONTHLY_DAY1_JOBS)
 }
 
 # Minutes after a target time during which a firing still counts as "on time".
@@ -57,6 +63,9 @@ def should_run(job, now):
     """True if `now` (Europe/London) matches a scheduled target for `job`."""
     if job == "marketing":
         return True  # every 10 minutes — timezone-independent
+    # Monthly KPI DM only fires on the 1st of the calendar month.
+    if job in MONTHLY_DAY1_JOBS and now.day != 1:
+        return False
     wd, h, m = now.weekday(), now.hour, now.minute
     for days, th, tm in TARGETS.get(job, []):
         if days is not None and wd not in days:

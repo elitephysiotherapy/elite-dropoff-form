@@ -1177,7 +1177,87 @@ def _colour_for(metric, value):
         if value <= 11:
             return YELLOW_RGB
         return RED_RGB
+    if metric == "net_promoter":
+        # Standard ≥85 (per the dashboard's "Net Promoter ≥85%" gold standard).
+        if value >= 85:
+            return GREEN_RGB
+        if value >= 76.5:
+            return YELLOW_RGB
+        return RED_RGB
     return None
+
+
+def compute_nps_by_physio(start_dt, end_dt):
+    """Per-physio Net Promoter Score from the marketing sheet's
+    NPS - Raw Data tab. NPS = % promoters (9-10) − % detractors (0-6).
+
+    Date filter uses Date Responded (col M), falling back to Date Sent (col A).
+    Physio column on the NPS sheet is the DISPLAY name (e.g. "Molaí"), so it
+    joins directly with the Performance Dashboard's display rows.
+
+    Returns: {display_name: {"nps": int | None, "responses": int,
+                              "promoters": int, "passives": int,
+                              "detractors": int}}.  Empty dict on failure
+    (marketing sheet not configured, no responses yet, etc.) — the dashboard
+    falls back to '—' for the Net Promoter cell when a physio has no data.
+    """
+    try:
+        from marketing.sheets import tab
+        ws = tab("NPS - Raw Data")
+        rows = ws.get_all_values()[1:]
+    except Exception as e:
+        print(f"  WARN: NPS data unavailable ({e})")
+        return {}
+
+    from datetime import datetime as _dt
+
+    def _parse(s):
+        s = (s or "").strip()
+        if not s:
+            return None
+        for fmt in ("%d %b %Y", "%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y"):
+            try:
+                return _dt.strptime(s, fmt)
+            except ValueError:
+                continue
+        return None
+
+    start_d = start_dt.date() if hasattr(start_dt, "date") else start_dt
+    end_d = end_dt.date() if hasattr(end_dt, "date") else end_dt
+
+    raw = {}
+    for r in rows:
+        if len(r) < 13:
+            continue
+        physio = (r[3] or "").strip()
+        score_str = (r[6] or "").strip()
+        if not physio or not score_str:
+            continue
+        d = _parse(r[12]) or _parse(r[0])
+        if d and not (start_d <= d.date() < end_d):
+            continue
+        try:
+            score = int(float(score_str))
+        except ValueError:
+            continue
+        bucket = raw.setdefault(physio, {"promoters": 0, "passives": 0, "detractors": 0, "responses": 0})
+        bucket["responses"] += 1
+        if score >= 9:
+            bucket["promoters"] += 1
+        elif score >= 7:
+            bucket["passives"] += 1
+        else:
+            bucket["detractors"] += 1
+
+    out = {}
+    for phys, c in raw.items():
+        total = c["responses"]
+        if total == 0:
+            out[phys] = {"nps": None, "responses": 0, **c}
+            continue
+        nps = round((c["promoters"] - c["detractors"]) / total * 100)
+        out[phys] = {"nps": nps, "responses": total, **c}
+    return out
 
 
 def write_performance_dashboard_tab():
@@ -1247,7 +1327,7 @@ def write_performance_dashboard_tab():
             "dropoff_pct": 9,
             "pva": 10,
             "cna_dna_1st_pct": 11,
-            # Net Promoter col 12 — left blank
+            "net_promoter": 12,
             "gen_pop_pva": 13,
         }
         for metric, col in cols.items():
@@ -1274,12 +1354,18 @@ def write_performance_dashboard_tab():
             end_local.astimezone(timezone.utc),
         )
 
+        # Per-physio Net Promoter Score from the marketing NPS sheet (lives
+        # in the separate "Elite Physio — NPS & Marketing" workbook).
+        nps_by_physio = compute_nps_by_physio(start_local, end_local)
+
         # Compute Clinic Average and w/o M&J aggregates
         def aggregate(displays):
             agg = {"total_apts": 0, "nps": 0, "cnas_review": 0, "dnas_review": 0,
                    "iacnas": 0, "iadnas": 0, "iadnrs": 0, "used_minutes_total": 0,
                    "available_hours": 0,
-                   "gen_pop_initial": 0, "gen_pop_review": 0}
+                   "gen_pop_initial": 0, "gen_pop_review": 0,
+                   "nps_promoters": 0, "nps_passives": 0, "nps_detractors": 0,
+                   "nps_responses": 0}
             for d in displays:
                 s = stats_by_display.get(d)
                 if not s:
@@ -1296,6 +1382,14 @@ def write_performance_dashboard_tab():
                     agg["available_hours"] += s["available_hours"]
                 agg["gen_pop_initial"] += s["gen_pop_initial"]
                 agg["gen_pop_review"] += s["gen_pop_review"]
+                # Net Promoter — aggregate the underlying counts so we can
+                # compute a properly-weighted NPS for clinic-average rows.
+                n = nps_by_physio.get(d)
+                if n:
+                    agg["nps_promoters"] += n.get("promoters", 0)
+                    agg["nps_passives"] += n.get("passives", 0)
+                    agg["nps_detractors"] += n.get("detractors", 0)
+                    agg["nps_responses"] += n.get("responses", 0)
             # Derived
             review = agg["total_apts"] - agg["nps"]
             agg["review_appts"] = review
@@ -1317,6 +1411,14 @@ def write_performance_dashboard_tab():
             agg["total_dropoffs"] = total_drops
             denom = total_drops + review
             agg["dropoff_pct"] = (total_drops / denom * 100) if denom else None
+            # Net Promoter — properly weighted across all physios in the agg.
+            if agg["nps_responses"]:
+                agg["net_promoter"] = round(
+                    (agg["nps_promoters"] - agg["nps_detractors"])
+                    / agg["nps_responses"] * 100
+                )
+            else:
+                agg["net_promoter"] = None
             used_hrs = agg["used_minutes_total"] / 60
             agg["used_hours"] = round(used_hrs, 2)
             agg["util_pct"] = (used_hrs / agg["available_hours"] * 100) if agg["available_hours"] else None
@@ -1329,6 +1431,12 @@ def write_performance_dashboard_tab():
         # Write clinic-wide rows
         def stat_row(label, s):
             row_idx = len(out) + 1  # 1-indexed sheet row
+            # Net Promoter — clinic rows come from agg["net_promoter"]; per-physio
+            # rows look up the physio's NPS in nps_by_physio.
+            net_promoter_val = s.get("net_promoter")
+            if net_promoter_val is None:
+                net_promoter_val = (nps_by_physio.get(label) or {}).get("nps")
+            net_promoter_str = (f"{net_promoter_val}" if net_promoter_val is not None else "—")
             out.append([
                 label,
                 fmt_pct(s["util_pct"]),
@@ -1341,7 +1449,7 @@ def write_performance_dashboard_tab():
                 fmt_pct(s.get("dropoff_pct")),
                 fmt_num(s["pva"], 1),
                 fmt_pct(s["cna_dna_1st_pct"]),
-                "",  # Net Promoter — blank for now
+                net_promoter_str,
                 fmt_num(s["gen_pop_pva"], 1),
                 fmt_int(s["total_apts"]),
             ])
@@ -1355,6 +1463,7 @@ def write_performance_dashboard_tab():
                 "dropoff_pct": s.get("dropoff_pct"),
                 "pva": s["pva"],
                 "cna_dna_1st_pct": s["cna_dna_1st_pct"],
+                "net_promoter": net_promoter_val,
                 "gen_pop_pva": s["gen_pop_pva"],
             }
             row_with_colours(row_idx, colour_vals, label)

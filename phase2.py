@@ -682,6 +682,14 @@ def monthly_stats_per_physio(start_utc, end_utc):
     true_dna_ids = _build_true_dna_set(appts)
     true_cna_ids = _build_true_cna_set(appts)
 
+    # Per-patient IADNR dedup — one lost patient = one IADNR, regardless of how
+    # many drop-off events they generate in the month. The IA event "owns" the
+    # patient (chronologically first), so iterating appts in date order means
+    # the IA physio gets credited first; subsequent drop-off events for the
+    # same patient are skipped.
+    iadnr_patients_counted = set()
+    appts.sort(key=lambda a: a.get("starts_at") or "")
+
     def _is_iadnr_event(a):
         """True if this non-IA cancellation/DNA is an IADNR — same definition
         as phase1_fetch.classify_dropoff's "iadnr" branch: patient is in their
@@ -770,10 +778,19 @@ def monthly_stats_per_physio(start_utc, end_utc):
                 # IADNR (patient lost early after IA) goes in its own bucket so the
                 # plain CNA % only reflects review cancellations from patients still
                 # engaged in care — same split Martin uses in his manual tracker.
+                # Per-patient dedup on IADNR — if this patient already got counted
+                # as an IADNR (typically via their attended-IA earlier in the
+                # month), don't count a second time. The later CNA event still
+                # exists in the sheet as a record, but the dashboard count = 1
+                # lost patient.
                 resp_disp, resp_full = _practitioner_display(_responsible_prac_id(a))
                 target = physios.setdefault(resp_disp, _new(resp_disp, resp_full))
+                pid = id_from_link(a.get("patient"))
                 if _is_iadnr_event(a):
-                    target["iadnrs"] += 1
+                    if pid and pid not in iadnr_patients_counted:
+                        target["iadnrs"] += 1
+                        iadnr_patients_counted.add(pid)
+                    # else: same patient already counted via their IA event — skip
                 else:
                     target["cnas_review"] += 1
         elif is_dna:
@@ -784,8 +801,11 @@ def monthly_stats_per_physio(start_utc, end_utc):
             else:
                 resp_disp, resp_full = _practitioner_display(_responsible_prac_id(a))
                 target = physios.setdefault(resp_disp, _new(resp_disp, resp_full))
+                pid = id_from_link(a.get("patient"))
                 if _is_iadnr_event(a):
-                    target["iadnrs"] += 1
+                    if pid and pid not in iadnr_patients_counted:
+                        target["iadnrs"] += 1
+                        iadnr_patients_counted.add(pid)
                 else:
                     target["dnas_review"] += 1
         else:  # attended
@@ -801,7 +821,7 @@ def monthly_stats_per_physio(start_utc, end_utc):
                 # mirrors the IA Rebook Rate tab's STRICT_IA_TYPE_IDS gate.
                 is_strict_ia = type_id in config.PHASE1_DROPOFF_IA_TYPE_IDS
                 pid = id_from_link(a.get("patient")) if is_strict_ia else None
-                if pid:
+                if pid and pid not in iadnr_patients_counted:
                     a_start = a.get("starts_at") or ""
                     history = _get_history(pid)
                     has_later_valid = any(
@@ -812,6 +832,7 @@ def monthly_stats_per_physio(start_utc, end_utc):
                     )
                     if not has_later_valid:
                         stats["iadnrs"] += 1
+                        iadnr_patients_counted.add(pid)
             if type_id == config.GENPOP_INITIAL_TYPE_ID:
                 stats["gen_pop_initial"] += 1
             elif type_id == config.GENPOP_REVIEW_TYPE_ID:
