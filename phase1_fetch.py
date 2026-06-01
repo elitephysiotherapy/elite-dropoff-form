@@ -1691,6 +1691,211 @@ def write_monthly_summary_tab():
     return ws
 
 
+def write_physio_trends_tab(months_back=12):
+    """Rolling N-month physio trends with a per-physio drop-down and four
+    line charts (Utilization %, Total Drop off %, IA Rebook %, PVA).
+
+    Layout:
+      A1: title
+      A2: last updated stamp
+      A4: "Select physio:"  B4: drop-down (data validation: physio names)
+      B7:M7: month labels (oldest → newest)
+      A8:A11: metric labels
+      B8:M11: formulas pulling the selected physio's values via INDEX/MATCH
+      Row 13–46: four line-chart overlays (one per metric)
+      Row 50+: hidden raw data blocks (one per metric, one row per physio)
+
+    Uses the dashboard's rules end-to-end (per-patient dedup, responsible-
+    physio attribution, strict-4 IADNR, wider-8 IA for NPs). Heavy — pulls
+    12 months of Cliniko data, so suitable for weekly or monthly refresh.
+    """
+    import phase2 as p2
+
+    now = datetime.now(LONDON)
+    physios = list(config.PRACTITIONER_DISPLAY_ORDER)
+
+    # Build 12 months ending with the current month, oldest first.
+    months = []
+    y, m = now.year, now.month
+    for _ in range(months_back):
+        months.insert(0, (y, m))
+        m -= 1
+        if m < 1:
+            m = 12
+            y -= 1
+    month_labels = [datetime(y, m, 1).strftime("%b-%y") for y, m in months]
+
+    print(f"  Pulling {months_back} months of stats for Physio Trends tab…", flush=True)
+    data = {p: {"util": [None] * months_back, "dropoff": [None] * months_back,
+                "rebook": [None] * months_back, "pva": [None] * months_back}
+            for p in physios}
+    for i, (y, m) in enumerate(months):
+        s_dt = datetime(y, m, 1, tzinfo=LONDON)
+        e_dt = (datetime(y, m + 1, 1, tzinfo=LONDON) if m < 12
+                else datetime(y + 1, 1, 1, tzinfo=LONDON))
+        stats = p2.monthly_stats_per_physio(s_dt.astimezone(timezone.utc),
+                                            e_dt.astimezone(timezone.utc))
+        for phys in physios:
+            sd = stats.get(phys)
+            if not sd:
+                continue
+            review = sd["total_apts"] - sd["nps"]
+            total_drops = sd["cnas_review"] + sd["dnas_review"] + sd.get("iadnrs", 0)
+            data[phys]["util"][i] = sd.get("util_pct")
+            data[phys]["dropoff"][i] = (
+                total_drops / (total_drops + review) * 100
+                if (total_drops + review) else None
+            )
+            data[phys]["rebook"][i] = (
+                (sd["nps"] - sd.get("iadnrs", 0)) / sd["nps"] * 100
+                if sd["nps"] else None
+            )
+            data[phys]["pva"][i] = (sd["total_apts"] / sd["nps"]) if sd["nps"] else None
+
+    METRIC_DEF = [
+        ("Utilization %", "util", 1),
+        ("Total Drop off %", "dropoff", 1),
+        ("IA Rebook %", "rebook", 1),
+        ("PVA", "pva", 2),
+    ]
+
+    sh = open_spreadsheet()
+    try:
+        ws = sh.worksheet("Physio Trends")
+        sheet_id = ws.id
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Physio Trends", rows=200, cols=20)
+        sheet_id = ws.id
+
+    # Delete any existing charts on this tab (so re-runs don't duplicate them).
+    try:
+        meta = sh.fetch_sheet_metadata(params={
+            "fields": "sheets(properties(sheetId),charts(chartId))"
+        })
+        delete_reqs = []
+        for s_obj in meta.get("sheets", []):
+            if s_obj.get("properties", {}).get("sheetId") == sheet_id:
+                for c in s_obj.get("charts", []) or []:
+                    delete_reqs.append({"deleteEmbeddedObject": {"objectId": c["chartId"]}})
+        if delete_reqs:
+            sh.batch_update({"requests": delete_reqs})
+    except Exception as e:
+        print(f"  WARN chart cleanup failed: {e}")
+
+    # Reserve raw-data block rows up front so display-row formulas can point at them.
+    RAW_START = 50
+    raw_blocks = {}
+    cur = RAW_START
+    for label, key, _ in METRIC_DEF:
+        # Block: header row (RAW: <label>), month-label row, then N physio rows, then blank
+        raw_blocks[key] = (cur + 2, cur + 1 + len(physios))   # 1-indexed inclusive
+        cur = raw_blocks[key][1] + 2
+
+    out = []
+    out.append(["Physio Trends — Rolling 12 Months"])
+    out.append([f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"])
+    out.append([])
+    out.append(["Select physio:", physios[0]])
+    out.append([])
+    out.append([])
+    out.append(["Month →"] + month_labels)
+
+    for label, key, _ in METRIC_DEF:
+        start, end = raw_blocks[key]
+        formulas = [
+            f'=IFERROR(INDEX($B${start}:$M${end}, MATCH($B$4, $A${start}:$A${end}, 0), {ci}), "")'
+            for ci in range(1, len(month_labels) + 1)
+        ]
+        out.append([label] + formulas)
+
+    while len(out) < RAW_START - 1:
+        out.append([])
+
+    for label, key, _ in METRIC_DEF:
+        out.append([f"RAW · {label}  (auto-generated, do not edit)"])
+        out.append(["Physio"] + month_labels)
+        for phys in physios:
+            row = [phys]
+            for v in data[phys][key]:
+                if v is None:
+                    row.append("")
+                elif key == "pva":
+                    row.append(f"{v:.2f}")
+                else:
+                    row.append(f"{v:.1f}")
+            out.append(row)
+        out.append([])
+
+    ws.update(values=out, range_name="A1", value_input_option="USER_ENTERED")
+
+    # Drop-down + four chart overlays, in a single batch.
+    requests = [{
+        "setDataValidation": {
+            "range": {"sheetId": sheet_id,
+                      "startRowIndex": 3, "endRowIndex": 4,
+                      "startColumnIndex": 1, "endColumnIndex": 2},
+            "rule": {
+                "condition": {"type": "ONE_OF_LIST",
+                              "values": [{"userEnteredValue": p} for p in physios]},
+                "showCustomUi": True,
+                "strict": True,
+            },
+        }
+    }]
+
+    # 2x2 grid of charts under row 12. Anchor rows/cols are 0-indexed.
+    chart_anchors = [(12, 0), (12, 7), (29, 0), (29, 7)]
+    for idx, ((label, key, _), (a_row, a_col)) in enumerate(zip(METRIC_DEF, chart_anchors)):
+        # Domain = month labels in row 7 (0-indexed row 6), B–M.
+        domain_range = {
+            "sheetId": sheet_id,
+            "startRowIndex": 6, "endRowIndex": 7,
+            "startColumnIndex": 1, "endColumnIndex": 1 + len(month_labels),
+        }
+        # Series = the metric's formula row (row 8/9/10/11 → 0-indexed 7/8/9/10).
+        s_row_0 = 7 + idx
+        series_range = {
+            "sheetId": sheet_id,
+            "startRowIndex": s_row_0, "endRowIndex": s_row_0 + 1,
+            "startColumnIndex": 1, "endColumnIndex": 1 + len(month_labels),
+        }
+        requests.append({
+            "addChart": {
+                "chart": {
+                    "spec": {
+                        "title": label,
+                        "basicChart": {
+                            "chartType": "LINE",
+                            "legendPosition": "NO_LEGEND",
+                            "axis": [
+                                {"position": "BOTTOM_AXIS", "title": "Month"},
+                                {"position": "LEFT_AXIS", "title": label},
+                            ],
+                            "domains": [{"domain": {"sourceRange": {"sources": [domain_range]}}}],
+                            "series": [{
+                                "series": {"sourceRange": {"sources": [series_range]}},
+                                "targetAxis": "LEFT_AXIS",
+                            }],
+                            "headerCount": 0,
+                        }
+                    },
+                    "position": {
+                        "overlayPosition": {
+                            "anchorCell": {"sheetId": sheet_id,
+                                           "rowIndex": a_row, "columnIndex": a_col},
+                            "widthPixels": 500,
+                            "heightPixels": 320,
+                        }
+                    }
+                }
+            }
+        })
+
+    sh.batch_update({"requests": requests})
+    return ws
+
+
 def write_weekly_dropoff_analysis_tab():
     """Weekly Drop-off Analysis tab — per-practitioner tally + stage-of-rehab
     breakdown, one section per week, most recent at the top.
@@ -2061,13 +2266,20 @@ def main():
         # the bookings system's own Dashboard. The bookings system now owns that
         # sheet's Leads tab + Dashboard. (write_dashboard_lead_conversion() is
         # kept defined for reference but is intentionally not called.)
-        for label, fn in [
+        refreshes = [
             ("IA Rebook Rate", write_ia_rebook_rate_tab),
             ("Monthly Summary", write_monthly_summary_tab),
             ("Weekly Snapshot", lambda: write_weekly_snapshot_tab(weeks_back=4)),
             ("Performance Dashboard", write_performance_dashboard_tab),
             ("Weekly Drop-off Analysis", write_weekly_dropoff_analysis_tab),
-        ]:
+        ]
+        # Physio Trends rebuilds 12 months of stats — heavy (~5–8 min). Only
+        # refresh on Mondays + on the 1st of each month so the data stays
+        # current without slowing every daily cron.
+        now_local = datetime.now(LONDON)
+        if now_local.weekday() == 0 or now_local.day == 1:
+            refreshes.append(("Physio Trends (rolling 12 months)", write_physio_trends_tab))
+        for label, fn in refreshes:
             print(f"Refreshing {label} tab…")
             try:
                 fn()
