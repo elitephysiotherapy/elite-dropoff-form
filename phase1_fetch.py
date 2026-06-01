@@ -1723,7 +1723,12 @@ def write_physio_trends_tab(months_back=12):
         if m < 1:
             m = 12
             y -= 1
-    month_labels = [datetime(y, m, 1).strftime("%b-%y") for y, m in months]
+    # Force month labels to TEXT (leading apostrophe). Without this Sheets
+    # parses "Jul-25" as the date "July 25 of current year" → the chart's
+    # x-axis becomes a date axis ("Mar-1, May-1, Jul-1…") AND the numeric
+    # date values get plotted as a second series (the spurious diagonal
+    # line we hit on first build).
+    month_labels = ["'" + datetime(y, m, 1).strftime("%b-%y") for y, m in months]
 
     print(f"  Pulling {months_back} months of stats for Physio Trends tab…", flush=True)
     data = {p: {"util": [None] * months_back, "dropoff": [None] * months_back,
