@@ -202,25 +202,90 @@ def is_ia_only_patient_at(appt, history):
 
 
 def responsible_physio_id(appt, history):
-    """The physio responsible for a drop-off event = the physio who most
-    recently ATTENDED an appointment with the patient before this event.
+    """The physio responsible for a drop-off = physio of the most recent
+    ATTENDED appointment in the patient's CURRENT episode of care.
 
-    Rationale (Martin 2026-05-28): if Molaí performs Joe Bloggs' IA and Joe
-    later DNAs a follow-up scheduled with Aoife, the drop-off belongs to
-    Molaí — she's the one who owned the patient relationship. Aoife had
-    never seen the patient. Falls back to the scheduled physio when the
-    patient has no prior attended history (the IACNA/IADNA case — before
-    the first IA, nobody has 'seen' the patient yet)."""
+    Episode definition (Martin 2026-06-01): begins at the patient's most
+    recent attended STRICT 4 IA (Initial Appt, Club Initial Assessment, PHI
+    Initial Assessment, ACL Initial Assessment). Earlier appointments belong
+    to a prior episode and don't count. So a new IA always resets the
+    responsibility back to the IA physio.
+
+    Excluded from "attendance" because they're not part of physio treatment:
+      - Classes / workshops / group sessions (EXCLUDED_FROM_TOTAL_APPTS) —
+        e.g. Pilates classes, Back Class, ACL Class etc.
+      - Sports Massage (EXCLUDED_FROM_DROPOFF_STATS)
+
+    Examples (Martin's actual cases, 2026-06-01):
+      - Conan Milne: new IA with Shannagh, no follow-up → Shannagh
+        (IA is the only attended event in the episode)
+      - Aidan McNicholl: IA with Aoife, no later treatment attendance → Aoife
+      - Thomas Donnelly: IA, then US attended with Julie, then follow-up not
+        attended → Julie (US is the most recent attended in episode)
+      - Sylvia Mawhinney: IA with Julie, then Pilates → Julie (Pilates is
+        excluded, IA is the most recent treatment attendance)
+
+    Falls back to the scheduled physio if the patient has no strict-4 IA in
+    their history (true IACNA/pre-IA territory)."""
+    appt_type = str(id_from_link(appt.get("appointment_type")))
+    wider8 = {str(x) for x in config.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS}
+    strict4 = {str(x) for x in config.PHASE1_DROPOFF_IA_TYPE_IDS}
+    excluded_from_attendance = (
+        {str(x) for x in config.EXCLUDED_FROM_TOTAL_APPTS} |
+        {str(x) for x in config.EXCLUDED_FROM_DROPOFF_STATS}
+    )
+
+    # CASE A — the drop-off event's appointment IS an IA-type appointment.
+    # Responsible = scheduled physio. This covers:
+    #   • IACNA (cancelled IA, never attended) — the booked-with physio owns it
+    #   • IADNA (DNA'd IA) — same
+    #   • IADNR-via-attended-IA (attended strict-4 IA, no rebook) — the IA
+    #     physio (= scheduled physio for an attended appointment) is who saw
+    #     them, so they own the retention failure
+    # This is what makes "new IA → stays with the IA physio" work for Conan
+    # Milne / Shea Quinn / Aidan McNicholl / Cadhan Rocks etc.
+    if appt_type in wider8:
+        return id_from_link(appt.get("practitioner"))
+
+    # CASE B — event is a non-IA cancellation/DNA. Use the episode rule below.
     appt_start = appt.get("starts_at") or ""
-    attended = [h for h in (history or [])
-                if (h.get("starts_at") or "") < appt_start
-                and not h.get("cancelled_at")
-                and not h.get("did_not_arrive")]
-    if attended:
-        attended.sort(key=lambda x: x.get("starts_at") or "")
-        prev_prac = id_from_link(attended[-1].get("practitioner"))
+
+    # Step 1: find the patient's most recent attended STRICT 4 IA strictly
+    # before this drop-off event. That defines the current episode.
+    ia_start = None
+    for h in (history or []):
+        h_start = h.get("starts_at") or ""
+        if not h_start or h_start >= appt_start:
+            continue
+        if h.get("cancelled_at") or h.get("did_not_arrive"):
+            continue
+        h_type = str(id_from_link(h.get("appointment_type")))
+        if h_type not in strict4:
+            continue
+        if ia_start is None or h_start > ia_start:
+            ia_start = h_start
+
+    if ia_start is None:
+        # No strict-4 IA in history — pre-IA territory, scheduled physio owns it.
+        return id_from_link(appt.get("practitioner"))
+
+    # Step 2: of the attended appointments in the current episode (i.e. since
+    # the IA, including the IA itself), excluding Pilates/classes/Sports
+    # Massage, find the most recent one.
+    in_episode = [h for h in (history or [])
+                  if (h.get("starts_at") or "") >= ia_start
+                  and (h.get("starts_at") or "") < appt_start
+                  and not h.get("cancelled_at")
+                  and not h.get("did_not_arrive")
+                  and str(id_from_link(h.get("appointment_type"))) not in excluded_from_attendance]
+
+    if in_episode:
+        in_episode.sort(key=lambda x: x.get("starts_at") or "")
+        prev_prac = id_from_link(in_episode[-1].get("practitioner"))
         if prev_prac:
             return prev_prac
+
+    # Edge case (every in-episode appt was excluded somehow) — fall back.
     return id_from_link(appt.get("practitioner"))
 
 
