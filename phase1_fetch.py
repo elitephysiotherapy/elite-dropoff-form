@@ -1714,9 +1714,15 @@ def write_physio_trends_tab(months_back=12):
     now = datetime.now(LONDON)
     physios = list(config.PRACTITIONER_DISPLAY_ORDER)
 
-    # Build 12 months ending with the current month, oldest first.
+    # Build 12 COMPLETED months ending with last month, oldest first. The
+    # current (in-progress) month is excluded — drop-off rates look
+    # artificially low early in a month before review-appt cancellations
+    # have had time to land (Martin 2026-06-01).
     months = []
-    y, m = now.year, now.month
+    y, m = now.year, now.month - 1   # start from previous month
+    if m < 1:
+        m = 12
+        y -= 1
     for _ in range(months_back):
         months.insert(0, (y, m))
         m -= 1
@@ -1798,7 +1804,7 @@ def write_physio_trends_tab(months_back=12):
         cur = raw_blocks[key][1] + 2
 
     out = []
-    out.append(["Physio Trends — Rolling 12 Months"])
+    out.append(["Physio Trends — Rolling 12 Completed Months (excludes current month)"])
     out.append([f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"])
     out.append([])
     out.append(["Select physio:", physios[0]])
