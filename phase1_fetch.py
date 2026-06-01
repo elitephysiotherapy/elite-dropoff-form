@@ -1280,11 +1280,17 @@ def write_performance_dashboard_tab():
             e = datetime(y, m + 1, 1, tzinfo=LONDON)
         return s, e
 
+    # Rolling 3-month view: month-before-previous, previous, current.
+    # E.g. in June we show April + May + June; from 1 July it rolls to
+    # May + June + July automatically.
     months = []
-    if now.month > 1:
-        months.append(month_window(now.year, now.month - 1))
-    months.append(month_window(now.year, now.month))
-    months.reverse()  # most recent first
+    for offset in (2, 1, 0):
+        y, m = now.year, now.month - offset
+        while m < 1:
+            m += 12
+            y -= 1
+        months.append(month_window(y, m))
+    months.reverse()  # most recent month on top
 
     # NOTE: we compute the full `out`/`format_cells` payload BELOW before
     # touching the sheet. The tab is only cleared+rewritten once all Cliniko
