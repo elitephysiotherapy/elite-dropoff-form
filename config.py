@@ -250,6 +250,12 @@ MARKETING_SPREADSHEET_ID = "1LYqkrOgwYUQR2AsU03y7h4G97BgMsROJiaeaVUfFuX8"
 # Tally NPS survey form — the code from the published form URL (tally.so/r/XXXXX).
 TALLY_FORM_ID = "lbYWjk"        # tally.so/r/lbYWjk — Elite Physiotherapy Feedback
 
+# SMS URL shortener — the public hostname of this Render web service.
+# NPS SMS messages go through `/r/<token>` redirects to cut the ~400-char
+# Tally URL down to ~40 chars (1 SMS segment vs 3-4). Saves ~£355/yr on Twilio.
+SHORTENER_BASE_URL = os.environ.get(
+    "SHORTENER_BASE_URL", "https://elite-dropoff-form.onrender.com")
+
 # ---- Email (Resend) ----
 EMAIL_FROM_NAME = "Elite Physiotherapy"
 EMAIL_FROM_ADDRESS = "info@elitephysiocookstown.co.uk"   # front desk monitors this

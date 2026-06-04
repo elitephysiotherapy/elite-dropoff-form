@@ -1,0 +1,25 @@
+# Elite Physiotherapy automations — runs on the DigitalOcean droplet.
+# Migrated off the MacBook on 2026-05-19. Times are Europe/London (the
+# droplet's system timezone). Logs land in /root/cliniko-dropoffs/logs/.
+#
+# Install / update:  crontab /root/cliniko-dropoffs/server.crontab
+# View:              crontab -l
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# Drop-off daily analysis — 07:00 every day
+0 7 * * * /root/cliniko-dropoffs/run_daily.sh
+
+# Off-track weekly review — Monday 07:30
+30 7 * * 1 /root/cliniko-dropoffs/progress_poll.sh
+
+# New-patient bookings trawl — 06:00 / 09:00 / 12:00 / 15:00 / 18:00 / 20:45
+0 6,9,12,15,18 * * * /root/cliniko-dropoffs/bookings_poll.sh
+45 20 * * * /root/cliniko-dropoffs/bookings_poll.sh
+
+# End-of-day stats — 12:00/16:00/20:00 Mon-Thu, extra 10:00 Wed, 15:30 Fri
+0 12 * * 1-4 /root/cliniko-dropoffs/eod_poll.sh
+0 16 * * 1-4 /root/cliniko-dropoffs/eod_poll.sh
+0 20 * * 1-4 /root/cliniko-dropoffs/eod_poll.sh
+0 10 * * 3   /root/cliniko-dropoffs/eod_poll.sh
+30 15 * * 5  /root/cliniko-dropoffs/eod_poll.sh

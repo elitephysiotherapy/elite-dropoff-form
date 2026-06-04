@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd job for the New Patient Bookings trawl. Runs bookings_poll.sh at
+  06:00, 09:00, 12:00, 15:00, 18:00 and 20:45 every day.
+
+  Install:
+    cp com.elitephysio.bookings.poll.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.elitephysio.bookings.poll.plist
+  Pause:
+    launchctl unload ~/Library/LaunchAgents/com.elitephysio.bookings.poll.plist
+  Status:
+    launchctl list | grep bookings
+
+  Do not load until the bookings sheet is created and config.BOOKINGS_SPREADSHEET_ID
+  is set — until then the trawl has nowhere to write.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.elitephysio.bookings.poll</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/martinloughran/cliniko-dropoffs/bookings_poll.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/martinloughran/cliniko-dropoffs/logs/bookings-launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/martinloughran/cliniko-dropoffs/logs/bookings-launchd.log</string>
+</dict>
+</plist>
