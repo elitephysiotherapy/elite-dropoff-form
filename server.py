@@ -438,22 +438,6 @@ def tally_webhook():
     return make_response("", 200)
 
 
-@app.route("/r/<token>", methods=["GET"])
-def short_redirect(token):
-    """SMS URL shortener — patients arrive here from NPS text messages.
-
-    Cuts the Tally pre-fill URL from ~400 chars to ~40, dropping NPS SMS
-    from 3-4 segments to 1 (~70% Twilio cost saving on those flows).
-    """
-    from flask import redirect
-    from marketing import url_shortener
-    long_url = url_shortener.lookup(token)
-    if not long_url:
-        return make_response("Link expired or invalid.", 404)
-    url_shortener.record_click(token)  # fire-and-forget
-    return redirect(long_url, code=302)
-
-
 if __name__ == "__main__":
     # Local dev runner
     port = int(os.environ.get("PORT", 5000))

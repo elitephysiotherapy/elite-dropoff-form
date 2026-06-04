@@ -12,23 +12,13 @@ Hidden fields (see tally_nps_form.md §2):
 from urllib.parse import urlencode
 
 import config
-from marketing import url_shortener
 
 VALID_TRIGGERS = {"ia", "discharge", "cna", "dna"}
 
 
 def build_survey_url(*, patient_id, patient_name, patient_email, patient_phone,
                      physio_name, clinic_name, appointment_date, trigger_type):
-    """Return a SHORT redirect URL pointing at the per-patient Tally survey.
-
-    Builds the full Tally URL with all hidden-field params (as before), then
-    routes it through marketing.url_shortener so the SMS body stays under one
-    160-char segment. If shortening fails for any reason (Sheets outage etc.),
-    falls back to the long Tally URL — SMS sending never breaks because of
-    shortener infra.
-
-    `trigger_type` ∈ VALID_TRIGGERS.
-    """
+    """Return the per-patient Tally survey URL. `trigger_type` ∈ VALID_TRIGGERS."""
     if not config.TALLY_FORM_ID:
         raise RuntimeError(
             "config.TALLY_FORM_ID is not set — build the Tally form (see "
@@ -48,6 +38,4 @@ def build_survey_url(*, patient_id, patient_name, patient_email, patient_phone,
         "trigger_type": trigger_type,
         "google_review_url": clinic.get("google_review_url", ""),
     }
-    long_url = f"https://tally.so/r/{config.TALLY_FORM_ID}?{urlencode(params)}"
-    label = f"{trigger_type}_{patient_id or ''}_{appointment_date or ''}"
-    return url_shortener.make_short_url(long_url, label=label)
+    return f"https://tally.so/r/{config.TALLY_FORM_ID}?{urlencode(params)}"
