@@ -128,12 +128,17 @@ def lookup(token: str) -> Optional[str]:
 
 
 def record_click(token: str) -> None:
-    """No-op (was: increment click counter in Sheets via a background thread).
-
-    DISABLED 2026-06-04 — the threaded Sheets write was blocking the single
-    sync gunicorn worker for ~5s per click, queueing subsequent requests
-    behind it. The 302 redirect itself is fast and that's all the patient
-    cares about; click analytics would be a nice-to-have we can re-add later
-    via a periodic batch job that reads Twilio's own delivery + click data.
-    """
-    return  # intentionally no I/O
+    """Increment click counter for analytics. Fire-and-forget — never raises."""
+    def _bg():
+        try:
+            ws = _get_tab()
+            cell = ws.find(token, in_column=1)
+            if not cell:
+                return
+            row = cell.row
+            current = ws.cell(row, 4).value or "0"
+            ws.update_cell(row, 4, int(current) + 1)
+            ws.update_cell(row, 5, _now_iso())
+        except Exception as e:  # noqa: BLE001
+            print(f"[url_shortener] click-tracking failed for {token}: {e}")
+    threading.Thread(target=_bg, daemon=True).start()
