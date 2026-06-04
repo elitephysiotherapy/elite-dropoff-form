@@ -1171,6 +1171,13 @@ def _colour_for(metric, value):
         if value >= 76.5:
             return YELLOW_RGB
         return RED_RGB
+    if metric == "clinic_rebook_pct":
+        # Same gold standard as the Weekly Snapshot's Clinic Rebook % (≥85%).
+        if value >= 85:
+            return GREEN_RGB
+        if value >= 76.5:
+            return YELLOW_RGB
+        return RED_RGB
     if metric == "dropoff_pct":
         if value < 10:
             return GREEN_RGB
@@ -1613,6 +1620,125 @@ def write_weekly_snapshot_tab(weeks_back=1):
         ws = sh.add_worksheet(title="Weekly Snapshot", rows=200, cols=12)
 
     ws.update(values=out, range_name="A1", value_input_option="RAW")
+    return ws
+
+
+def write_weekly_team_stats_tab(weeks_back=4):
+    """Build the 'Weekly Team Stats' tab: per-physio Utilisation % and Clinic
+    Rebook % for each completed week, stacked most-recent-first.
+
+    Complements the Weekly Snapshot (clinic-wide only) and the Performance
+    Dashboard (per-physio but monthly): this gives Sinead the per-physio AND team
+    utilisation + rebook for every week going forward. One block per week:
+
+        Practitioner    | Utilisation % | Clinic Rebook %
+        Clinic Average  |      …        |       …
+        w/o M&J         |      …        |       …
+        Marty / Julie / … (per physio)
+    """
+    import phase2 as p2
+    import config
+    now = datetime.now(LONDON)
+
+    # Same completed-week derivation as write_weekly_snapshot_tab.
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    days_since_sunday = (today.weekday() + 1) % 7  # Sunday=0 in this scheme
+    last_sunday = today - timedelta(days=days_since_sunday)
+    last_monday = last_sunday - timedelta(days=6)
+    periods = []
+    monday = last_monday
+    for _ in range(weeks_back):
+        sunday = monday + timedelta(days=6)
+        week_end_exclusive = sunday + timedelta(days=1)
+        label = f"W/C {monday.strftime('%d %b %Y')}"
+        periods.append((monday, week_end_exclusive, label))
+        monday = monday - timedelta(days=7)
+
+    headers = ["Practitioner", "Utilisation %", "Clinic Rebook %"]
+    standard_vals = ["Gold Standard", "75–85%", "≥85%"]
+
+    out = []
+    out.append(["Weekly Team Stats — per-physio utilisation & rebook"])
+    out.append([f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"])
+    out.append([])
+
+    format_cells = []  # (row_idx, col_idx, rgb)
+
+    def pct(v):
+        return f"{v:.1f}%" if v is not None else "—"
+
+    def aggregate(displays, stats_by_display):
+        used = avail = 0.0
+        seen = future = 0
+        for d in displays:
+            s = stats_by_display.get(d)
+            if not s:
+                continue
+            if s.get("available_hours"):
+                used += s.get("used_hours", 0) or 0
+                avail += s["available_hours"]
+            seen += s.get("unique_patients_seen", 0)
+            future += s.get("patients_with_future", 0)
+        util = (used / avail * 100) if avail else None
+        rebook = (future / seen * 100) if seen else None
+        return util, rebook
+
+    for week_start_local, week_end_local, label in periods:
+        stats_by_display = p2.weekly_stats_per_physio(
+            week_start_local.astimezone(timezone.utc),
+            week_end_local.astimezone(timezone.utc),
+        )
+
+        out.append([label])
+        out.append(headers)
+        out.append(standard_vals)
+
+        def stat_row(row_label, util, rebook):
+            row_idx = len(out) + 1  # 1-indexed sheet row
+            out.append([row_label, pct(util), pct(rebook)])
+            for metric, col, v in (("utilization_pct", 2, util),
+                                   ("clinic_rebook_pct", 3, rebook)):
+                rgb = _colour_for(metric, v)
+                if rgb is not None:
+                    format_cells.append((row_idx, col, rgb))
+
+        clinic_util, clinic_rebook = aggregate(config.PRACTITIONER_DISPLAY_ORDER, stats_by_display)
+        main_util, main_rebook = aggregate(
+            [d for d in config.PRACTITIONER_DISPLAY_ORDER
+             if d not in config.EXCLUDE_FROM_MAIN_TEAM], stats_by_display)
+        stat_row("Clinic Average", clinic_util, clinic_rebook)
+        stat_row("w/o M&J", main_util, main_rebook)
+
+        for display_name in config.PRACTITIONER_DISPLAY_ORDER:
+            s = stats_by_display.get(display_name) or {}
+            stat_row(display_name, s.get("util_pct"), s.get("clinic_rebook_pct"))
+
+        out.append([])  # spacer between weeks
+
+    out.append([])
+    out.append(["Definitions:"])
+    out.append(["  Utilisation % = non-cancelled appointment hours (incl. group sessions) ÷ that physio's available WEEKLY hours."])
+    out.append(["  Weekly hours are derived from monthly contracted hours (÷ 4.345). Override config.PHYSIO_WEEKLY_HOURS for exact figures."])
+    out.append(["  Clinic Rebook % = of the unique patients a physio ATTENDED that week, the share with any future booking in the diary."])
+    out.append(["  Clinic Average / w/o M&J = team roll-up of the per-physio figures (w/o M&J excludes Marty + Julie)."])
+    out.append(["Colour key: green = meets standard, yellow = within 10%, red = below."])
+
+    sh = open_spreadsheet()
+    try:
+        ws = sh.worksheet("Weekly Team Stats")
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Weekly Team Stats", rows=400, cols=4)
+
+    ws.update(values=out, range_name="A1", value_input_option="RAW")
+
+    if format_cells:
+        def col_letter(idx):
+            return chr(ord("A") + idx - 1)
+        batch = [{"range": f"{col_letter(c)}{r}", "format": {"backgroundColor": rgb}}
+                 for r, c, rgb in format_cells]
+        ws.batch_format(batch)
+
     return ws
 
 
@@ -2281,6 +2407,7 @@ def main():
             ("IA Rebook Rate", write_ia_rebook_rate_tab),
             ("Monthly Summary", write_monthly_summary_tab),
             ("Weekly Snapshot", lambda: write_weekly_snapshot_tab(weeks_back=4)),
+            ("Weekly Team Stats", lambda: write_weekly_team_stats_tab(weeks_back=4)),
             ("Performance Dashboard", write_performance_dashboard_tab),
             ("Weekly Drop-off Analysis", write_weekly_dropoff_analysis_tab),
         ]

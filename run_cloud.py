@@ -33,11 +33,13 @@ COMMANDS = {
     "progress":     [PY, "progress_scan.py"],
     "marketing":    [PY, "-m", "marketing.poller"],
     "monthly_kpi":  [PY, "send_monthly_physio_kpis.py", "--post"],
+    "packages_weekly":   [PY, "send_packages_weekly.py", "--post"],
+    "referrers_monthly": [PY, "send_referrers_monthly.py", "--post"],
 }
 
 # Jobs that fire only on the 1st of each calendar month (in addition to the
 # London-time hour/minute check). Used by send_monthly_physio_kpis on day 1.
-MONTHLY_DAY1_JOBS = {"monthly_kpi"}
+MONTHLY_DAY1_JOBS = {"monthly_kpi", "referrers_monthly"}
 
 # Intended schedule in Europe/London local time.
 # Each entry: (weekdays | None, hour, minute).  weekdays is a set with Mon=0..Sun=6;
@@ -50,6 +52,8 @@ TARGETS = {
     "eod":      [({0, 1, 2, 3}, 12, 45), ({0, 1, 2, 3}, 16, 15),
                  ({0, 1, 2, 3}, 20, 45), ({4}, 15, 45)],          # Mon-Thu x3, Fri x1
     "monthly_kpi": [(None, 9, 0)],                                # 09:00 on day 1 (see MONTHLY_DAY1_JOBS)
+    "packages_weekly":   [({0}, 8, 0)],                           # Mon 08:00 — previous week's packages
+    "referrers_monthly": [(None, 8, 0)],                          # 08:00 on day 1 (see MONTHLY_DAY1_JOBS)
 }
 
 # Minutes after a target time during which a firing still counts as "on time".

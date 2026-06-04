@@ -511,6 +511,116 @@ def weekly_clinic_stats(start_utc, end_utc):
     }
 
 
+# ---------------- Per-Physio Weekly Stats (Weekly Team Stats tab) ----------------
+
+def weekly_stats_per_physio(start_utc, end_utc):
+    """Per-physio weekly Utilisation % and Clinic Rebook % for the week window.
+
+    A lean companion to weekly_clinic_stats (which is clinic-wide only). Returns a
+    dict keyed by display_name → {used_hours, available_hours, util_pct,
+    unique_patients_seen, patients_with_future, clinic_rebook_pct}.
+
+    - Utilisation % = non-cancelled appointment hours (individual + classes, the
+      same basis as the clinic figure) ÷ that physio's weekly available hours
+      (config.PHYSIO_WEEKLY_HOURS).
+    - Clinic Rebook % = of the unique patients that physio ATTENDED this week, the
+      share with any future booking after week end — the per-physio version of the
+      clinic-wide clinic_rebook_pct in weekly_clinic_stats.
+    """
+    import config
+    s_iso = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    e_iso = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    live = list(fetch_all("/individual_appointments",
+                          [("q[]", f"starts_at:>={s_iso}"), ("q[]", f"starts_at:<{e_iso}")]))
+    cancelled = list(fetch_all("/individual_appointments",
+                               [("q[]", f"starts_at:>={s_iso}"), ("q[]", f"starts_at:<{e_iso}"),
+                                ("q[]", "cancelled_at:?")]))
+    by_id = {a["id"]: a for a in live}
+    for a in cancelled:
+        by_id[a["id"]] = a
+    appts = list(by_id.values())
+    try:
+        group_appts = list(fetch_all("/group_appointments",
+                                    [("q[]", f"starts_at:>={s_iso}"),
+                                     ("q[]", f"starts_at:<{e_iso}")]))
+    except Exception:
+        group_appts = []
+
+    pracs = {str(p["id"]): p for p in fetch_all("/practitioners")}
+
+    def _display(prac_id):
+        prac = pracs.get(prac_id) or {}
+        full = f"{prac.get('first_name','?')} {prac.get('last_name','')}".strip()
+        return config.PRACTITIONER_DISPLAY_NAME.get(full, full)
+
+    physios = {}
+
+    def _slot(display):
+        return physios.setdefault(display, {
+            "display": display, "used_minutes": 0.0, "attended_patients": set(),
+        })
+
+    for a in appts:
+        prac_id = id_from_link(a.get("practitioner"))
+        if not prac_id:
+            continue
+        s = _slot(_display(prac_id))
+        if not a.get("cancelled_at"):
+            s_dt = parse_iso(a.get("starts_at"))
+            e_dt = parse_iso(a.get("ends_at"))
+            if s_dt and e_dt:
+                s["used_minutes"] += (e_dt - s_dt).total_seconds() / 60
+        type_id = id_from_link(a.get("appointment_type"))
+        is_attended = not a.get("cancelled_at") and not a.get("did_not_arrive")
+        if is_attended and type_id not in config.EXCLUDED_FROM_TOTAL_APPTS:
+            pid = id_from_link(a.get("patient"))
+            if pid:
+                s["attended_patients"].add(pid)
+
+    for g in group_appts:
+        if g.get("cancelled_at") or g.get("archived_at") or g.get("deleted_at"):
+            continue
+        prac_id = id_from_link(g.get("practitioner"))
+        if not prac_id:
+            continue
+        s = _slot(_display(prac_id))
+        s_dt = parse_iso(g.get("starts_at"))
+        e_dt = parse_iso(g.get("ends_at"))
+        if s_dt and e_dt:
+            s["used_minutes"] += (e_dt - s_dt).total_seconds() / 60
+
+    def _has_future(patient_id):
+        # Any non-cancelled appointment from week-end onward (default query hides
+        # cancelled), matching weekly_clinic_stats' clinic_rebook check.
+        for _ in fetch_all("/individual_appointments", [
+            ("q[]", f"patient_id:={patient_id}"),
+            ("q[]", f"starts_at:>={e_iso}"),
+        ]):
+            return True
+        return False
+
+    future_cache = {}
+    for s in physios.values():
+        used_hrs = s["used_minutes"] / 60
+        avail = config.PHYSIO_WEEKLY_HOURS.get(s["display"])
+        s["used_hours"] = round(used_hrs, 1)
+        s["available_hours"] = avail
+        s["util_pct"] = (used_hrs / avail * 100) if avail else None
+        pats = s.pop("attended_patients")
+        n_future = 0
+        for pid in pats:
+            if pid not in future_cache:
+                future_cache[pid] = _has_future(pid)
+            if future_cache[pid]:
+                n_future += 1
+        s["unique_patients_seen"] = len(pats)
+        s["patients_with_future"] = n_future
+        s["clinic_rebook_pct"] = (n_future / len(pats) * 100) if pats else None
+
+    return physios
+
+
 # ---------------- Per-Physio Monthly Stats (Performance Dashboard) ----------------
 
 def monthly_stats_per_physio(start_utc, end_utc):

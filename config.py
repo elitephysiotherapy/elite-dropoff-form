@@ -135,6 +135,15 @@ PHYSIO_MONTHLY_HOURS = {
     "Shannagh": 128.6,
 }
 
+# Per-physio WEEKLY available service hours — derived from PHYSIO_MONTHLY_HOURS
+# (monthly ÷ 4.345 average weeks per month). Powers the weekly per-physio
+# Utilisation column on the "Weekly Team Stats" tab. These are DERIVED figures:
+# to get exact weekly utilisation for any physio, replace their entry below with
+# their true contracted weekly service hours.
+PHYSIO_WEEKLY_HOURS = {
+    name: round(hours / 4.345, 1) for name, hours in PHYSIO_MONTHLY_HOURS.items()
+}
+
 # Physios EXCLUDED from "w/o M&J" rollup (clinic minus owner-consultants).
 EXCLUDE_FROM_MAIN_TEAM = {"Marty", "Julie"}
 
@@ -172,6 +181,10 @@ RECEPTION_LIST_SLACK_EMAILS = [
     "reception@elitephysiocookstown.co.uk",
     "sinead@elitephysiocookstown.co.uk",
 ]
+
+# Slack channel where package-of-care sales are posted (used by the weekly
+# packages count DM to Sinead Rocks). #packages.
+PACKAGES_CHANNEL_ID = "C04G5CKN60Y"
 
 # Spreadsheet URL used in DM links
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1RC7QkHGAa8dH5ShmwbFyswdrmMOo6HTgkcKZEvqoZbI/edit"

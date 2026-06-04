@@ -65,6 +65,13 @@ def handle_response(resp):
         return "ignored: no score in payload"
     cat = category(int(score))
     clinic = config.CLINICS.get(resp.get("clinic_name") or "", {})
+
+    # Idempotency guard: a Tally webhook retry or a patient double-submit must NOT
+    # record the response twice (it would skew the per-physio NPS averages) nor
+    # re-fire the follow-up SMS/email/alert. Bail out whole if already seen.
+    if _already_recorded(resp):
+        return f"duplicate: already recorded (response {resp.get('response_id') or '—'})"
+
     # Resolve the full name once (for sheet records + internal alert). Greetings
     # keep using resp["patient_name"] (first name) for a friendly tone.
     resp["patient_full_name"] = _resolve_full_name(resp)
@@ -96,6 +103,42 @@ def _today():
     return datetime.now(LONDON).strftime("%Y-%m-%d")
 
 
+# Column N (0-based index 13) on "NPS - Raw Data" holds the Tally response id.
+_RESPONSE_ID_COL_IDX = 13
+
+
+def _already_recorded(resp):
+    """True if this NPS response is already in 'NPS - Raw Data' (dedup guard).
+
+    Primary key = Tally response id (column N). For legacy rows written before
+    column N existed (or a submit with no id) it falls back to a composite of
+    patient_id + trigger_type + score + date, which catches a same-day retry
+    without clashing across genuinely different surveys.
+    Read failure → return False (never block recording a real response)."""
+    rid = str(resp.get("response_id") or "").strip()
+    pid = str(resp.get("patient_id") or "").strip()
+    score = str(resp.get("nps_score", "")).strip()
+    trig = str(resp.get("trigger_type") or "").strip()
+    today = _today()
+    try:
+        rows = tab(_RAW).get_all_values()
+    except Exception as e:
+        print(f"  WARN: NPS dedup read failed, proceeding without dedup: {e}")
+        return False
+    for r in rows[1:]:                                       # skip header row
+        existing_rid = r[_RESPONSE_ID_COL_IDX].strip() if len(r) > _RESPONSE_ID_COL_IDX else ""
+        if rid and existing_rid and existing_rid == rid:
+            return True
+        if not rid and pid:                                 # composite fallback
+            r_date = r[0].strip() if len(r) > 0 else ""
+            r_pid = r[1].strip() if len(r) > 1 else ""
+            r_trig = r[5].strip() if len(r) > 5 else ""
+            r_score = r[6].strip() if len(r) > 6 else ""
+            if r_pid == pid and r_trig == trig and r_score == score and r_date == today:
+                return True
+    return False
+
+
 def _write_raw_row(resp, cat):
     callback = "Yes" if resp.get("callback_wanted") else "No"
     tab(_RAW).append_row([
@@ -112,6 +155,7 @@ def _write_raw_row(resp, cat):
         resp.get("callback_number", "") if cat == "Detractor" else "",
         "Response received",
         _today(),                       # M Date Responded
+        str(resp.get("response_id", "")),  # N Response ID (Tally idempotency key)
     ], value_input_option="USER_ENTERED")
 
 

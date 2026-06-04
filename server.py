@@ -380,6 +380,10 @@ def _normalise_tally(payload):
     keyword (confirm the form's question labels match when the Tally form is built).
     """
     f = _tally_fields(payload)
+    data = payload.get("data") or {}
+    # Tally's stable per-submission id — used downstream as an idempotency key so a
+    # webhook retry / double-submit can't write the same NPS response to the sheet twice.
+    response_id = data.get("responseId") or data.get("submissionId") or ""
     raw_score = _tally_find(f, "nps_score", contains="recommend")
     try:
         score = int(float(raw_score)) if raw_score not in (None, "") else None
@@ -390,6 +394,7 @@ def _normalise_tally(payload):
     open_text = (_tally_find(f, "detractor_feedback", contains="went wrong")
                  or _tally_find(f, "passive_feedback", contains="9 or 10") or "")
     return {
+        "response_id": response_id,
         "patient_id": _tally_find(f, "patient_id") or "",
         "patient_name": _tally_find(f, "patient_name") or "",
         "patient_email": _tally_find(f, "patient_email") or "",
