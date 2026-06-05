@@ -49,8 +49,11 @@ TARGETS = {
     "progress": [({0}, 7, 30)],                                   # Mon 07:30
     "bookings": [(None, 6, 0), (None, 9, 0), (None, 12, 0),
                  (None, 15, 0), (None, 18, 0), (None, 20, 45)],   # 6 daily polls
-    "eod":      [({0, 1, 2, 3}, 12, 45), ({0, 1, 2, 3}, 16, 15),
-                 ({0, 1, 2, 3}, 20, 45), ({4}, 15, 45)],          # Mon-Thu x3, Fri x1
+    "eod":      [({0}, 12, 0),  ({0}, 15, 45), ({0}, 20, 0),      # Mon 12:00, 15:45, 20:00
+                 ({1}, 15, 45), ({1}, 20, 0),                     # Tue 15:45, 20:00
+                 ({2}, 10, 0),  ({2}, 15, 45), ({2}, 20, 0),      # Wed 10:00, 15:45, 20:00
+                 ({3}, 15, 45), ({3}, 20, 0),                     # Thu 15:45, 20:00
+                 ({4}, 15, 45)],                                  # Fri 15:45
     "monthly_kpi": [(None, 9, 0)],                                # 09:00 on day 1 (see MONTHLY_DAY1_JOBS)
     "packages_weekly":   [({0}, 8, 0)],                           # Mon 08:00 — previous week's packages
     "referrers_monthly": [(None, 8, 0)],                          # 08:00 on day 1 (see MONTHLY_DAY1_JOBS)
