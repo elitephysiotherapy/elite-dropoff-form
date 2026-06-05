@@ -250,6 +250,12 @@ MARKETING_SPREADSHEET_ID = "1LYqkrOgwYUQR2AsU03y7h4G97BgMsROJiaeaVUfFuX8"
 # Tally NPS survey form — the code from the published form URL (tally.so/r/XXXXX).
 TALLY_FORM_ID = "lbYWjk"        # tally.so/r/lbYWjk — Elite Physiotherapy Feedback
 
+# SMS URL shortener — base URL of the standalone elite-sms-shortener Render
+# web service. NPS SMS go through /r/<token> redirects to cut the ~400-char
+# Tally URL down to ~40 chars. Env var SHORTENER_BASE_URL overrides this.
+SHORTENER_BASE_URL = os.environ.get(
+    "SHORTENER_BASE_URL", "https://elite-sms-shortener.onrender.com")
+
 # ---- Email (Resend) ----
 EMAIL_FROM_NAME = "Elite Physiotherapy"
 EMAIL_FROM_ADDRESS = "info@elitephysiocookstown.co.uk"   # front desk monitors this
