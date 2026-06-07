@@ -1742,6 +1742,192 @@ def write_weekly_team_stats_tab(weeks_back=4):
     return ws
 
 
+# ===========================================================================
+# Monthly funnel — lead → IA → completed appointment counts for the
+# top section of the Monthly Summary tab.  Each metric pulled live from
+# Cliniko; unbooked leads pulled from the Bookings Archive sheet.
+# ===========================================================================
+
+# All "Initial Assessment"-style appointment types (the broad new-patient set).
+_FUNNEL_IA_IDS = set(config.NEW_PATIENT_TYPE_IDS) if hasattr(
+    config, "NEW_PATIENT_TYPE_IDS") else set()
+
+# Club appointment types: Club IA, Club Follow Up, Club Consultation, ACL
+# (initial + profiling), Sports Massage (all variants), Injury Update Testing
+# (30/60), Hip & Groin / Back & Hamstring Profiling, Lab 60 Screening, all
+# Reset/Rebuild Programme Initial Testing sessions.
+_FUNNEL_CLUB_IDS = {
+    "392015278608749674",   # 3. Club Initial Assessment
+    "382589431795684515",   # 4. Club Follow Up Appointment
+    "1396206071189608060",  # Club Consultation
+    "945551547020874765",   # 7. ACL Initial Assessment
+    "1031259844406941435",  # 1. ACL Profiling
+    "1882529999999735591",  # Sports Massage
+    "752219543803270402",   # Sports Massage Offer (30 Mins)
+    "1820239945827096402",  # Sports Massage Offer (60 mins)
+    "765760828145145406",   # Injury Update Testing (ACL/Hamstring/Groin) 30
+    "765761537334842944",   # Injury Update Testing 60
+    "998334021563847947",   # 2. Back & Hamstring Profiling
+    "998332399567770890",   # 3. Hip & Groin Profiling
+    "1810765504990680283",  # 4. Lab 60 Screening
+    "1796352479944775353",  # Complete Groin Rebuild Package & Initial Testing
+    "1796356817727526589",  # Complete Hamstring Rebuild Package & Initial Testing
+    "1796354967016052411",  # Groin Reset Programme Initial Testing
+    "1796358853206480576",  # Hamstring Reset Programme Initial Testing
+}
+
+# General population: Initial Appointment, Review, PHI Initial + Review,
+# Mummy MOT Initial + Review, Pelvic Health Assessment, Sports & MSK
+# Clinical Consultation, Ultrasound Assessment, Injection Therapy,
+# Shockwave Therapy. Includes Injection + Shockwave per Martin 2026-06-07.
+_FUNNEL_GEN_IDS = {
+    "382563815654429852",   # 1. Initial Appointment
+    "382563815511823515",   # 2. Review Appointment
+    "1558530673046721630",  # 5. PHI Initial Assessment
+    "1558531409491006559",  # 6. PHI Review
+    "1118674052857206233",  # Mummy MOT Initial Assessment
+    "1118674366867969498",  # Mummy MOT Review
+    "1194028405859816854",  # Pelvic Health Assessment
+    "1521627460095973060",  # 2. Sports & MSK Clinical Consultation
+    "1206575759565526893",  # 3. Ultrasound Assessment
+    "1192928323588592985",  # 1. Injection Therapy
+    "980228540505003527",   # 2. Shockwave Therapy
+}
+
+
+def _funnel_appt_type_id(a):
+    """Pull the appointment_type id from a Cliniko individual_appointment dict."""
+    self_url = ((a.get("appointment_type") or {}).get("links") or {}).get("self") or ""
+    m = re.search(r"/appointment_types/(\d+)", self_url)
+    return m.group(1) if m else None
+
+
+def _date_to_ym(raw):
+    """Robust date-string → 'YYYY-MM' converter. Handles UK dd/mm/yyyy
+    (the format the Bookings Leads tab uses), ISO yyyy-mm-dd, and dd/mm/yy.
+    Returns None if the string can't be parsed.
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    # dd/mm/yyyy or dd/mm/yy
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{2,4})", s)
+    if m:
+        d, mo, y = m.group(1), m.group(2), m.group(3)
+        if len(y) == 2:
+            y = "20" + y
+        return f"{y}-{mo.zfill(2)}"
+    # ISO yyyy-mm-dd
+    m = re.match(r"^(\d{4})-(\d{2})", s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    return None
+
+
+def _unbooked_leads_by_month():
+    """Read unbooked leads from the Bookings spreadsheet → dict 'YYYY-MM' → int.
+
+    A lead counts as unbooked if its Status is anything except 'booked'
+    (pending / declined / lost / etc.). Reads BOTH the live "Leads" tab
+    (current pending leads, dated by the lead's intake Date) AND the
+    "Leads Archive" tab if it exists (historical leads, dated by Week
+    Archived).
+    """
+    out = {}
+    try:
+        sh = open_leads_spreadsheet()
+    except Exception as e:  # noqa: BLE001
+        print(f"  WARN funnel: couldn't open bookings spreadsheet ({e})")
+        return out
+
+    # Live Leads tab (pending leads not yet archived). Key by intake Date.
+    try:
+        leads_ws = sh.worksheet("Leads")
+        for r in leads_ws.get_all_records():
+            status = str(r.get("Status") or "pending").strip().lower()
+            if status == "booked":
+                continue
+            ym = _date_to_ym(r.get("Date"))
+            if not ym:
+                continue
+            out[ym] = out.get(ym, 0) + 1
+    except Exception as e:  # noqa: BLE001
+        print(f"  WARN funnel: couldn't read Leads tab ({e})")
+
+    # Leads Archive (historical) — may not exist yet, that's OK
+    try:
+        archive_ws = sh.worksheet("Leads Archive")
+        for r in archive_ws.get_all_records():
+            status = str(r.get("Status") or "pending").strip().lower()
+            if status == "booked":
+                continue
+            ym = _date_to_ym(r.get("Week Archived") or r.get("Date"))
+            if not ym:
+                continue
+            out[ym] = out.get(ym, 0) + 1
+    except Exception:  # noqa: BLE001
+        pass  # archive doesn't exist yet — non-fatal
+
+    return out
+
+
+def _funnel_for_month(year, month, unbooked_by_month):
+    """Compute the funnel metrics for a single calendar month.
+
+    Returns dict with: total_leads, ias_booked, unbooked_leads, ias_completed,
+    show_up_pct, club_completed, gen_completed, total_completed.
+    """
+    import phase2 as p2
+    start = datetime(year, month, 1, tzinfo=LONDON)
+    if month == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=LONDON)
+    else:
+        end = datetime(year, month + 1, 1, tzinfo=LONDON)
+    iso_start = start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    iso_end = end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Active (non-cancelled) individual appointments in the month
+    try:
+        active = list(p2.fetch_all("/individual_appointments", [
+            ("q[]", f"starts_at:>={iso_start}"),
+            ("q[]", f"starts_at:<{iso_end}"),
+        ]))
+    except Exception as e:  # noqa: BLE001
+        print(f"  WARN funnel {year}-{month}: active fetch failed ({e})")
+        active = []
+    # Cancelled (Ransack ?` operator = is-present)
+    try:
+        cancelled = list(p2.fetch_all("/individual_appointments", [
+            ("q[]", f"starts_at:>={iso_start}"),
+            ("q[]", f"starts_at:<{iso_end}"),
+            ("q[]", "cancelled_at:?"),
+        ]))
+    except Exception as e:  # noqa: BLE001
+        print(f"  WARN funnel {year}-{month}: cancelled fetch failed ({e})")
+        cancelled = []
+
+    completed = [a for a in active if not a.get("did_not_arrive")]
+
+    def in_bucket(apps, ids):
+        return sum(1 for a in apps if _funnel_appt_type_id(a) in ids)
+
+    ia_booked = in_bucket(active, _FUNNEL_IA_IDS) + in_bucket(cancelled, _FUNNEL_IA_IDS)
+    ia_completed = in_bucket(completed, _FUNNEL_IA_IDS)
+    club_completed = in_bucket(completed, _FUNNEL_CLUB_IDS)
+    gen_completed = in_bucket(completed, _FUNNEL_GEN_IDS)
+    unbooked = unbooked_by_month.get(f"{year:04d}-{month:02d}", 0)
+    return {
+        "total_leads":    ia_booked + unbooked,
+        "ias_booked":     ia_booked,
+        "unbooked_leads": unbooked,
+        "ias_completed":  ia_completed,
+        "show_up_pct":    (ia_completed / ia_booked) if ia_booked else 0.0,
+        "club_completed": club_completed,
+        "gen_completed":  gen_completed,
+        "total_completed": club_completed + gen_completed,
+    }
+
+
 def write_monthly_summary_tab():
     """Refresh Monthly Summary tab — multi-month stacked, current month first,
     aggregated from all W/C tabs in the sheet."""
@@ -1781,6 +1967,54 @@ def write_monthly_summary_tab():
     out.append([f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"])
     out.append([])
 
+    # === MONTHLY FUNNEL — leads / IAs / completed appointments by month ===
+    # Sits at the very top of the tab so it's the first thing Martin sees
+    # heading into the monthly team meeting.
+    print("  Computing Monthly Funnel (12 months)…", flush=True)
+    try:
+        unbooked_by_month = _unbooked_leads_by_month()
+        out.append(["=== MONTHLY FUNNEL (last 12 months) ==="])
+        out.append(["Month", "Total Leads", "IAs Booked", "Unbooked Leads",
+                    "IAs Completed", "IA Show-up %",
+                    "Club Completed", "General Pop Completed",
+                    "Total Completed (Club + Gen)"])
+        # Walk back 12 months from current
+        y, m = now.year, now.month
+        funnel_months = []
+        for _ in range(12):
+            funnel_months.append((y, m))
+            m -= 1
+            if m < 1:
+                m = 12
+                y -= 1
+        for fy, fm in funnel_months:
+            label = datetime(fy, fm, 1).strftime("%B %Y")
+            try:
+                f = _funnel_for_month(fy, fm, unbooked_by_month)
+            except Exception as e:  # noqa: BLE001
+                print(f"  WARN funnel skipped {fy}-{fm:02d}: {e}")
+                out.append([label, "—", "—", "—", "—", "—", "—", "—", "—"])
+                continue
+            out.append([label, f["total_leads"], f["ias_booked"],
+                        f["unbooked_leads"], f["ias_completed"],
+                        f"{f['show_up_pct']*100:.0f}%" if f["ias_booked"] else "—",
+                        f["club_completed"], f["gen_completed"],
+                        f["total_completed"]])
+        out.append([])
+        out.append(["Definitions:"])
+        out.append(["  Total Leads = IAs Booked + Unbooked Leads (booked-and-unbooked-on-the-Bookings-sheet)"])
+        out.append(["  IAs Booked = ALL new-patient appointments scheduled in the month (any of 13 IA types, includes cancellations)"])
+        out.append(["  IAs Completed = attended — excludes cancellations and did-not-arrives"])
+        out.append(["  Club Completed = Club IA, Club Follow Up, Club Consultation, ACL Initial + Profiling, Sports Massage, Injury Update Testing, Profiling, Lab 60, Programme Initial Testing — completed only"])
+        out.append(["  General Pop Completed = Initial Appointment, Review, PHI Initial/Review, Mummy MOT Initial/Review, Pelvic Health, Sports & MSK, Ultrasound, Injection, Shockwave — completed only"])
+        out.append(["  Pilates classes excluded by design."])
+        out.append([])
+    except Exception as e:  # noqa: BLE001 (don't let funnel errors break the rest)
+        print(f"  WARN funnel section failed: {e}")
+        out.append(["=== MONTHLY FUNNEL — failed to compute, see logs ==="])
+        out.append([])
+
+    # === Existing per-physio drop-off sections continue below ===
     current_month_key = now.strftime("%Y-%m")
     for month_key in sorted(rows_by_month.keys(), reverse=True):
         month_label = datetime.strptime(month_key + "-01", "%Y-%m-%d").strftime("%B %Y")
