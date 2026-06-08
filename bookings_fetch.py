@@ -231,6 +231,46 @@ def open_spreadsheet():
     return gspread.authorize(_sheets_credentials()).open_by_key(config.BOOKINGS_SPREADSHEET_ID)
 
 
+def _gs_retry(call, label, attempts=6):
+    """Retry a gspread call on transient errors.
+
+    Mon 8 Jun 2026 12:00 BST poll failed with HTTP 429 (Sheets quota: 60
+    reads/min/user) because the team-email cron was retrying at the same
+    time. Adding a backoff layer here so future quota brushes self-heal.
+
+    Retries: ConnectionError, Timeout, ConnectionReset, HTTP 429/5xx.
+    Backoff: 2, 4, 8, 16, 32 seconds.
+    """
+    import time as _t, socket
+    import requests as _req
+    delay = 2
+    for i in range(attempts):
+        try:
+            return call()
+        except (_req.exceptions.ConnectionError,
+                _req.exceptions.Timeout,
+                ConnectionResetError,
+                socket.timeout) as e:
+            if i == attempts - 1:
+                raise
+            print(f"  {label}: transient {type(e).__name__}, "
+                  f"retry {i+1}/{attempts-1} in {delay}s", flush=True)
+            _t.sleep(delay); delay *= 2
+        except gspread.exceptions.APIError as e:
+            # gspread wraps the HTTP response; extract status code
+            code = None
+            try:
+                code = e.response.status_code  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            if code in (429, 500, 502, 503, 504) and i < attempts - 1:
+                print(f"  {label}: Sheets API {code}, "
+                      f"retry {i+1}/{attempts-1} in {delay}s", flush=True)
+                _t.sleep(delay); delay *= 2
+                continue
+            raise
+
+
 def get_or_create_week_tab(sh, tab_name):
     try:
         return sh.worksheet(tab_name), False
@@ -266,7 +306,9 @@ def existing_appointment_ids(sh):
         if not ws.title.startswith("W/C "):
             continue
         try:
-            ids.update(v for v in ws.col_values(col) if v and v != "appointment_id")
+            vals = _gs_retry(lambda c=col, w=ws: w.col_values(c),
+                             f"col_values({ws.title})")
+            ids.update(v for v in vals if v and v != "appointment_id")
         except Exception as e:
             print(f"  WARN couldn't read ids from {ws.title}: {e}")
     return ids
@@ -281,11 +323,15 @@ def write_to_sheet(sh, rows):
     all_new = []
     for tab_name, tab_rows in sorted(by_tab.items()):
         ws, created = get_or_create_week_tab(sh, tab_name)
-        existing = set() if created else set(ws.col_values(appt_col))
+        existing = (set() if created
+                    else set(_gs_retry(lambda c=appt_col, w=ws: w.col_values(c),
+                                       f"col_values({tab_name})")))
         new = [r for r in tab_rows if r["appointment_id"] not in existing]
         if new:
-            ws.append_rows([[cell_for(r, c) for c in COLUMNS] for r in new],
-                           value_input_option="USER_ENTERED")
+            payload = [[cell_for(r, c) for c in COLUMNS] for r in new]
+            _gs_retry(lambda p=payload, w=ws: w.append_rows(
+                p, value_input_option="USER_ENTERED"),
+                f"append_rows({tab_name})")
         all_new += new
         flag = "(NEW TAB)" if created else "(existing)"
         print(f"  Tab '{tab_name}' {flag}: appended {len(new)} of {len(tab_rows)}")
