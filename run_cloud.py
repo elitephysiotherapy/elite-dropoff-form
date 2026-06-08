@@ -35,6 +35,7 @@ COMMANDS = {
     "monthly_kpi":  [PY, "send_monthly_physio_kpis.py", "--post"],
     "packages_weekly":   [PY, "send_packages_weekly.py", "--post"],
     "referrers_monthly": [PY, "send_referrers_monthly.py", "--post"],
+    "reactivations_weekly": [PY, "send_reactivations_weekly.py", "--post"],
 }
 
 # Jobs that fire only on the 1st of each calendar month (in addition to the
@@ -57,6 +58,7 @@ TARGETS = {
     "monthly_kpi": [(None, 9, 0)],                                # 09:00 on day 1 (see MONTHLY_DAY1_JOBS)
     "packages_weekly":   [({0}, 8, 0)],                           # Mon 08:00 — previous week's packages
     "referrers_monthly": [(None, 8, 0)],                          # 08:00 on day 1 (see MONTHLY_DAY1_JOBS)
+    "reactivations_weekly": [({0}, 8, 0)],                        # Mon 08:00 — previous week's reactivations
 }
 
 # Minutes after a target time during which a firing still counts as "on time".
