@@ -71,6 +71,41 @@ TEAM_EMAIL_EXTRA_RECIPIENTS: list[str] = [
 
 SUBJECT_TEMPLATE = "w/b {monday_label} Physio Team Development Thread"
 
+
+def _retry_transient(call, label: str, attempts: int = 5):
+    """Retry call() on transient network errors (Connection reset, timeouts,
+    Google 502/503/504). Exponential backoff: 2, 4, 8, 16 seconds.
+
+    First run on Mon 8 Jun 2026 hit a Connection-reset-by-peer reading the
+    drop-off Sheet — gspread doesn't auto-retry, so we wrap critical calls.
+    """
+    import time as _t
+    import socket
+    import requests as _req
+    delay = 2
+    for i in range(attempts):
+        try:
+            return call()
+        except (_req.exceptions.ConnectionError,
+                _req.exceptions.Timeout,
+                ConnectionResetError,
+                socket.timeout) as e:
+            if i == attempts - 1:
+                raise
+            print(f"[email] {label}: transient {type(e).__name__}, "
+                  f"retry {i+1}/{attempts-1} in {delay}s", flush=True)
+            _t.sleep(delay)
+            delay *= 2
+        except _req.exceptions.HTTPError as e:
+            code = getattr(e.response, "status_code", 0)
+            if code in (429, 500, 502, 503, 504) and i < attempts - 1:
+                print(f"[email] {label}: HTTP {code}, retry {i+1}/{attempts-1} "
+                      f"in {delay}s", flush=True)
+                _t.sleep(delay)
+                delay *= 2
+                continue
+            raise
+
 # Drop-off types that count toward "real" drop-offs in the team email.
 # Excludes IACNA + IADNA — same convention as the Weekly Drop-off Analysis
 # tab (the source of truth Martin uses), which only sums IADNR + CNA + DNA.
@@ -143,7 +178,7 @@ def _read_weekly_dropoff_analysis(monday: datetime) -> dict:
         ws = sh.worksheet("Weekly Drop-off Analysis")
     except gspread.WorksheetNotFound:
         return out
-    rows = ws.get_all_values()
+    rows = _retry_transient(ws.get_all_values, "Weekly Drop-off Analysis read")
     candidate_labels = [
         monday.strftime("W/C %d %b %Y"),
         monday.strftime("W/C %-d %b %Y"),
@@ -229,7 +264,7 @@ def _read_off_track_review() -> list[tuple[str, str]]:
         ws = sh.worksheet("Off-Track Review")
     except gspread.WorksheetNotFound:
         return []
-    rows = ws.get_all_values()
+    rows = _retry_transient(ws.get_all_values, "Off-Track Review read")
     # Header is "Physio | Patient | …" — find that row, then collect below
     out: list[tuple[str, str]] = []
     in_data = False
@@ -268,7 +303,7 @@ def _get_wc_records(monday: datetime) -> list[dict]:
                 continue
         else:
             raise RuntimeError(f"no W/C tab found for week starting {monday.date()}")
-    return ws.get_all_records()
+    return _retry_transient(ws.get_all_records, "W/C tab read")
 
 
 def _cliniko_count_in_window(
