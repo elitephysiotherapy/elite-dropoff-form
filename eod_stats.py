@@ -362,14 +362,18 @@ def new_bookings_this_week(this_mon, now):
     definition the New Patient Bookings tracker uses (bookings_fetch.py). This
     is keyed on when the booking was MADE (created_at), not when the
     appointment happens, so it answers 'how many new patients did we book this
-    week?'. One count per IA appointment booked (repeat IAs for returning
-    patients count too), matching the bookings sheet's weekly 'Total IAs'.
+    week?'. One count per IA appointment booked, matching the bookings sheet's
+    weekly 'Total IAs'. Reactivations (a patient rebooking an IA after recently
+    dropping one) are EXCLUDED here too, so a no-show-then-rebook doesn't
+    double-count as two new IAs — same rule as the bookings tracker.
     """
+    import bookings_fetch
     week_start = _midnight(this_mon)
     created = list(phase2.fetch_all("/individual_appointments", [
         ("q[]", f"created_at:>={_iso(week_start)}"),
         ("q[]", f"created_at:<{_iso(now)}"),
     ]))
+    history_cache = {}
     n = 0
     for a in created:
         type_id = phase2.id_from_link(a.get("appointment_type"))
@@ -377,6 +381,14 @@ def new_bookings_this_week(this_mon, now):
             continue   # not an initial assessment
         if a.get("cancelled_at"):
             continue   # booking already cancelled — not a live new booking
+        patient_id = phase2.id_from_link(a.get("patient"))
+        if patient_id and patient_id not in history_cache:
+            try:
+                history_cache[patient_id] = phase2.fetch_patient_full_history(patient_id)
+            except Exception:
+                history_cache[patient_id] = None
+        if bookings_fetch._is_reactivation(a, history_cache.get(patient_id)):
+            continue   # reactivation, not a fresh IA
         n += 1
     return n
 

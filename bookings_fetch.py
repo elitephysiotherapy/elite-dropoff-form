@@ -141,6 +141,53 @@ def parse_booking_note(note):
 
 # ---------------- collection ----------------
 
+# A rebooked IA counts as a reactivation (not a fresh IA) when the patient
+# dropped a recent IA within this many days before the new booking.
+REACTIVATION_WINDOW_DAYS = 30
+
+
+def _is_reactivation(this_appt, history, window_days=REACTIVATION_WINDOW_DAYS):
+    """True if this IA booking is the patient coming back after recently
+    dropping an IA — i.e. they DNA'd or cancelled an earlier IA-type
+    appointment within `window_days` before this one, and have not attended
+    anything since that drop. Such a booking is a reactivation, not a new IA.
+
+    Mirrors Martin's canonical 'Reactivation' definition: a patient who was a
+    DNA / CDNR / IADNR and then booked a future appointment."""
+    this_start = phase2.parse_iso(this_appt.get("starts_at"))
+    if not this_start:
+        return False
+    window_start = this_start - timedelta(days=window_days)
+    this_id = str(this_appt.get("id"))
+
+    dropped_ia_dates = []
+    for h in (history or []):
+        if str(h.get("id")) == this_id:
+            continue
+        h_start = phase2.parse_iso(h.get("starts_at"))
+        if not h_start or h_start >= this_start or h_start < window_start:
+            continue
+        if phase2.id_from_link(h.get("appointment_type")) not in config.BOOKINGS_IA_TYPE_IDS:
+            continue   # only a dropped *IA* triggers a reactivation
+        if h.get("cancelled_at") or h.get("did_not_arrive"):
+            dropped_ia_dates.append(h_start)
+    if not dropped_ia_dates:
+        return False
+
+    # Not a reactivation if they already returned — i.e. attended (or have a
+    # live booking for) anything between the most recent dropped IA and now.
+    last_drop = max(dropped_ia_dates)
+    for h in (history or []):
+        if str(h.get("id")) == this_id:
+            continue
+        h_start = phase2.parse_iso(h.get("starts_at"))
+        if not h_start or h_start <= last_drop or h_start >= this_start:
+            continue
+        if not h.get("cancelled_at") and not h.get("did_not_arrive"):
+            return False
+    return True
+
+
 def collect_bookings(lookback_days=BOOKINGS_LOOKBACK_DAYS, skip_ids=None,
                      since_date=None):
     """Return a list of booking row dicts for IA appointments created recently
@@ -190,13 +237,19 @@ def collect_bookings(lookback_days=BOOKINGS_LOOKBACK_DAYS, skip_ids=None,
             and (h.get("starts_at") or "") < this_start
             for h in (history or [])
         )
+        if _is_reactivation(a, history):
+            new_or_past = "Reactivation"
+        elif prior:
+            new_or_past = "Past"
+        else:
+            new_or_past = "New"
         note = parse_booking_note(a.get("notes"))
         rows.append({
             "date_booked": fmt_local(a.get("created_at")),
             "appointment_date": fmt_local(a.get("starts_at")),
             "patient": (a.get("patient_name") or "?").strip(),
             "clinic": clinic_for(a),
-            "new_or_past": "Past" if prior else "New",
+            "new_or_past": new_or_past,
             "appointment_type": types_by_id.get(type_id, "?"),
             "booking_source": "Online" if a.get("booking_ip_address") else "",
             "referrer": note["referrer"] or ("Online" if a.get("booking_ip_address") else ""),
@@ -381,12 +434,17 @@ def write_dashboard(sh):
             print(f"  WARN couldn't read {ws.title}: {e}")
 
     def bucket(rows):
-        return {
-            "total": len(rows),
-            "new": sum(1 for r in rows if str(r.get("New / Past Patient")) == "New"),
-            "past": sum(1 for r in rows if str(r.get("New / Past Patient")) == "Past"),
-            "online": sum(1 for r in rows if str(r.get("Booking Source")) == "Online"),
-        }
+        new = sum(1 for r in rows if str(r.get("New / Past Patient")) == "New")
+        past = sum(1 for r in rows if str(r.get("New / Past Patient")) == "Past")
+        react = sum(1 for r in rows if str(r.get("New / Past Patient")) == "Reactivation")
+        # "Total IAs" = genuine new IA demand (Brand New + Past). Reactivations
+        # (a patient rebooking after a recent dropped IA) are tracked separately
+        # so a no-show-then-rebook doesn't double-count as two IAs.
+        online = sum(1 for r in rows
+                     if str(r.get("New / Past Patient")) != "Reactivation"
+                     and str(r.get("Booking Source")) == "Online")
+        return {"total": new + past, "new": new, "past": past,
+                "reactivation": react, "online": online}
 
     weekly, monthly = {}, {}
     for r in all_rows:
@@ -410,7 +468,7 @@ def write_dashboard(sh):
     now = datetime.now(LONDON)
     out = [["New Patient Bookings — Dashboard"],
            [f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"], []]
-    hdr = ["Period", "Total IAs", "Brand New", "Past Patient",
+    hdr = ["Period", "Total IAs", "Brand New", "Past Patient", "Reactivations",
            "Online", "Phone / Walk-in", "Leads (not booked)"]
 
     out.append(["BY WEEK (Sunday-Saturday)"])
@@ -418,13 +476,13 @@ def write_dashboard(sh):
     for tab in sorted(weekly, key=lambda t: datetime.strptime(t[4:], "%d %b %Y"),
                       reverse=True):
         b = bucket(weekly[tab])
-        out.append([tab, b["total"], b["new"], b["past"], b["online"],
-                    b["total"] - b["online"], lead_w.get(tab, 0)])
+        out.append([tab, b["total"], b["new"], b["past"], b["reactivation"],
+                    b["online"], b["total"] - b["online"], lead_w.get(tab, 0)])
     out.append([])
 
     # One weekly section per clinic — new clinics appear automatically once
     # they are added to config.CLINIKO_BUSINESS_TO_CLINIC.
-    chdr = ["Period", "Total IAs", "Brand New", "Past Patient"]
+    chdr = ["Period", "Total IAs", "Brand New", "Past Patient", "Reactivations"]
     weeks_desc = sorted(weekly, key=lambda t: datetime.strptime(t[4:], "%d %b %Y"),
                         reverse=True)
     for clinic in sorted(set(config.CLINIKO_BUSINESS_TO_CLINIC.values())):
@@ -433,7 +491,7 @@ def write_dashboard(sh):
         for tab in weeks_desc:
             crows = [r for r in weekly[tab] if str(r.get("Clinic")) == clinic]
             b = bucket(crows)
-            out.append([tab, b["total"], b["new"], b["past"]])
+            out.append([tab, b["total"], b["new"], b["past"], b["reactivation"]])
         out.append([])
 
     out.append(["BY CALENDAR MONTH"])
@@ -441,8 +499,8 @@ def write_dashboard(sh):
     for mk in sorted(monthly, reverse=True):
         b = bucket(monthly[mk])
         label = datetime.strptime(mk + "-01", "%Y-%m-%d").strftime("%B %Y")
-        out.append([label, b["total"], b["new"], b["past"], b["online"],
-                    b["total"] - b["online"], lead_m.get(mk, 0)])
+        out.append([label, b["total"], b["new"], b["past"], b["reactivation"],
+                    b["online"], b["total"] - b["online"], lead_m.get(mk, 0)])
 
     try:
         ws = sh.worksheet(DASHBOARD_TAB)
