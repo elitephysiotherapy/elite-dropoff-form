@@ -18,7 +18,9 @@ import hashlib
 import base64
 import time
 import threading
+from datetime import datetime
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import requests as http
 from flask import Flask, request, jsonify, make_response
@@ -225,6 +227,35 @@ def context_block_done(appt_id, summary_md):
 def replace_actions_block(blocks, appt_id, new_block):
     target = f"actions_{appt_id}"
     return [new_block if b.get("block_id") == target else b for b in blocks]
+
+
+# ---------------- Keep-alive ----------------
+# Render's free instance type spins down after 15 min without traffic; waking
+# takes ~45s, far beyond Slack's 3s button-click window, so clicks die until
+# the server is warm. Self-pinging /health every 10 min during clinic waking
+# hours keeps the instance up while staying inside the free tier's monthly
+# instance-hours allowance.
+KEEP_ALIVE_URL = os.environ.get(
+    "RENDER_EXTERNAL_URL", "https://elite-dropoff-form.onrender.com"
+)
+UK_TZ = ZoneInfo("Europe/London")
+
+
+def _keep_alive_loop():
+    while True:
+        now = datetime.now(UK_TZ)
+        in_waking_hours = (
+            (now.hour, now.minute) >= (6, 45) and (now.hour, now.minute) <= (21, 30)
+        )
+        if in_waking_hours:
+            try:
+                http.get(f"{KEEP_ALIVE_URL}/health", timeout=30)
+            except Exception as exc:
+                print(f"keep-alive ping failed: {exc}")
+        time.sleep(600)
+
+
+threading.Thread(target=_keep_alive_loop, daemon=True).start()
 
 
 # ---------------- Routes ----------------
