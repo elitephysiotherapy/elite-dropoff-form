@@ -20,7 +20,6 @@ import time
 import threading
 from datetime import datetime
 from urllib.parse import urlencode
-from zoneinfo import ZoneInfo
 
 import requests as http
 from flask import Flask, request, jsonify, make_response
@@ -99,20 +98,67 @@ def verify_slack_request():
 
 
 # ---------------- Sheet helpers ----------------
+# The Google Sheets read quota (60 read requests/min) is shared with every
+# Elite cron job on the same service account, so each button click must use
+# as few read calls as possible — and tolerate the quota being momentarily
+# exhausted by a sibling job.
+
+_wc_tabs_cache = {"at": 0.0, "tabs": None}
+_WC_TABS_TTL = 600  # seconds
+
+
+def get_wc_tabs(sh):
+    """W/C worksheets, newest week first, cached briefly so click bursts
+    don't re-fetch sheet metadata every time."""
+    now = time.monotonic()
+    if _wc_tabs_cache["tabs"] is None or now - _wc_tabs_cache["at"] > _WC_TABS_TTL:
+        tabs = [ws for ws in sh.worksheets() if ws.title.startswith("W/C ")]
+
+        def tab_date(ws):
+            try:
+                return datetime.strptime(ws.title[4:].strip(), "%d %b %Y")
+            except ValueError:
+                return datetime.min
+
+        tabs.sort(key=tab_date, reverse=True)
+        _wc_tabs_cache.update(at=now, tabs=tabs)
+    return _wc_tabs_cache["tabs"]
+
+
 def find_row_by_appt_id(sh, appt_id):
-    """Locate W/C tab and 1-indexed row containing this appointment_id."""
+    """Locate W/C tab and 1-indexed row containing this appointment_id.
+
+    Reads the appointment_id column of ALL W/C tabs in a single batched API
+    call (vs one call per tab, which blew the per-minute read quota once the
+    sheet accumulated weeks of tabs)."""
     appt_id_str = str(appt_id)
-    for ws in sh.worksheets():
-        if not ws.title.startswith("W/C "):
-            continue
-        try:
-            col = ws.col_values(COL_APPOINTMENT_ID)
-        except Exception:
-            continue
-        for idx, val in enumerate(col, 1):
-            if val == appt_id_str:
+    tabs = get_wc_tabs(sh)
+    if not tabs:
+        return None, None
+    col = gspread.utils.rowcol_to_a1(1, COL_APPOINTMENT_ID).rstrip("0123456789")
+    ranges = [f"'{ws.title}'!{col}:{col}" for ws in tabs]
+    resp = sh.values_batch_get(ranges)
+    for ws, vrange in zip(tabs, resp.get("valueRanges", [])):
+        for idx, rowvals in enumerate(vrange.get("values", []), 1):
+            if rowvals and rowvals[0] == appt_id_str:
                 return ws, idx
     return None, None
+
+
+def sheets_retry(fn, attempts=5):
+    """Run fn, waiting out Sheets per-minute quota errors (429). Slack's
+    response_url stays valid ~30 min, so a delayed update beats the silent
+    failure that had physios clicking buttons 5-6 times."""
+    delay = 10
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except gspread.exceptions.APIError as exc:
+            if "429" not in str(exc) or attempt == attempts - 1:
+                raise
+            print(f"Sheets quota hit — retrying in {delay}s")
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
 
 
 def update_classification(appt_id, clinical=None, next_step=None, reactivation_status=None):
@@ -224,38 +270,17 @@ def context_block_done(appt_id, summary_md):
     }
 
 
+def context_block_saving(appt_id):
+    return {
+        "type": "context",
+        "block_id": f"actions_{appt_id}",
+        "elements": [{"type": "mrkdwn", "text": "⏳ Saving…"}],
+    }
+
+
 def replace_actions_block(blocks, appt_id, new_block):
     target = f"actions_{appt_id}"
     return [new_block if b.get("block_id") == target else b for b in blocks]
-
-
-# ---------------- Keep-alive ----------------
-# Render's free instance type spins down after 15 min without traffic; waking
-# takes ~45s, far beyond Slack's 3s button-click window, so clicks die until
-# the server is warm. Self-pinging /health every 10 min during clinic waking
-# hours keeps the instance up while staying inside the free tier's monthly
-# instance-hours allowance.
-KEEP_ALIVE_URL = os.environ.get(
-    "RENDER_EXTERNAL_URL", "https://elite-dropoff-form.onrender.com"
-)
-UK_TZ = ZoneInfo("Europe/London")
-
-
-def _keep_alive_loop():
-    while True:
-        now = datetime.now(UK_TZ)
-        in_waking_hours = (
-            (now.hour, now.minute) >= (6, 45) and (now.hour, now.minute) <= (21, 30)
-        )
-        if in_waking_hours:
-            try:
-                http.get(f"{KEEP_ALIVE_URL}/health", timeout=30)
-            except Exception as exc:
-                print(f"keep-alive ping failed: {exc}")
-        time.sleep(600)
-
-
-threading.Thread(target=_keep_alive_loop, daemon=True).start()
 
 
 # ---------------- Routes ----------------
@@ -269,31 +294,46 @@ def health():
     return jsonify({"ok": True})
 
 
+# Appointment ids with a save currently in flight — repeat clicks on the same
+# patient are ignored until the first save resolves (prevents e.g. "Reactivate"
+# and "Not Appropriate" both landing for one patient during a quota stall).
+_inflight = set()
+_inflight_lock = threading.Lock()
+
+
 def _process_action_async(action_id, response_url, original_blocks, fallback_text):
     """Heavy work runs in background. We POST the updated message back to Slack's
     response_url when done — Slack waits up to ~30 min for this and updates the
     user's message in place. Required because Sheet updates take >3s, exceeding
     Slack's synchronous response window."""
+    kind, appt_id, choice = action_id.split(":")
     try:
-        parts = action_id.split(":")
-        if len(parts) != 3:
-            return
-        kind, appt_id, choice = parts
+        # Instant feedback: swap the buttons for "Saving…" so the physio sees
+        # the click registered and doesn't keep clicking.
+        http.post(response_url, json={
+            "replace_original": True,
+            "text": fallback_text,
+            "blocks": replace_actions_block(
+                original_blocks, appt_id, context_block_saving(appt_id)),
+        }, timeout=10)
 
         new_block = None
         if kind == "classify":
             if choice == "non_clinical":
                 # Mark Non-clinical, then ask: reactivate or not appropriate?
                 # Clear any stale next_step in case they previously clicked Clinical.
-                update_classification(appt_id, clinical="non clinical", next_step="")
+                sheets_retry(lambda: update_classification(
+                    appt_id, clinical="non clinical", next_step=""))
                 new_block = actions_block_non_clinical_next_step(appt_id)
             elif choice == "clinical":
                 # Clear stale next_step in case they previously clicked Non-clinical.
-                update_classification(appt_id, clinical="clinical", next_step="")
+                sheets_retry(lambda: update_classification(
+                    appt_id, clinical="clinical", next_step=""))
                 new_block = actions_block_next_step(appt_id)
         elif kind == "non_clinical_next":
             if choice == "reactivate":
-                ctx = update_classification(appt_id, next_step="reactivate")
+                ctx = sheets_retry(lambda: update_classification(
+                    appt_id, next_step="reactivate"))
                 if ctx:
                     notify_reception(ctx, decision="reactivate")
                 new_block = context_block_done(
@@ -303,11 +343,11 @@ def _process_action_async(action_id, response_url, original_blocks, fallback_tex
             elif choice == "not_appropriate":
                 # Final state — no reception call needed. Auto-close the reactivation
                 # workflow by marking reactivation_status='leave' (red in the manual sheet).
-                ctx = update_classification(
+                ctx = sheets_retry(lambda: update_classification(
                     appt_id,
                     next_step="not appropriate",
                     reactivation_status="leave",
-                )
+                ))
                 if ctx:
                     notify_reception(ctx, decision="not_appropriate")
                 new_block = context_block_done(
@@ -316,13 +356,14 @@ def _process_action_async(action_id, response_url, original_blocks, fallback_tex
                 )
         elif kind == "next_step":
             if choice == "contact":
-                update_classification(appt_id,
-                                      next_step="physio contacting patient directly")
+                sheets_retry(lambda: update_classification(
+                    appt_id, next_step="physio contacting patient directly"))
                 new_block = context_block_done(
                     appt_id, "✅ *Clinical* → physio contacting directly"
                 )
             elif choice == "tricky":
-                update_classification(appt_id, next_step="tricky patient form")
+                sheets_retry(lambda: update_classification(
+                    appt_id, next_step="tricky patient form"))
                 new_block = context_block_done(
                     appt_id,
                     f"✅ *Clinical* → completing "
@@ -340,6 +381,27 @@ def _process_action_async(action_id, response_url, original_blocks, fallback_tex
         }, timeout=10)
     except Exception as exc:
         print(f"async-process error for {action_id}: {exc}")
+        # Put the buttons back with a warning, so the physio isn't stuck
+        # staring at "Saving…" after an unrecoverable failure.
+        try:
+            warn = {
+                "type": "context",
+                "block_id": f"warn_{appt_id}",
+                "elements": [{"type": "mrkdwn",
+                              "text": "⚠️ Couldn't save just now — please tap again in a minute."}],
+            }
+            blocks = [b for b in original_blocks
+                      if b.get("block_id") != f"warn_{appt_id}"] + [warn]
+            http.post(response_url, json={
+                "replace_original": True,
+                "text": fallback_text,
+                "blocks": blocks,
+            }, timeout=10)
+        except Exception as exc2:
+            print(f"restore-message error for {action_id}: {exc2}")
+    finally:
+        with _inflight_lock:
+            _inflight.discard(appt_id)
 
 
 @app.route("/slack/interactive", methods=["POST"])
@@ -360,6 +422,12 @@ def slack_interactive():
     response_url = payload.get("response_url")
     original_blocks = payload.get("message", {}).get("blocks", [])
     fallback_text = payload.get("message", {}).get("text", "Drop-offs")
+
+    appt_id = parts[1]
+    with _inflight_lock:
+        if appt_id in _inflight:
+            return make_response("", 200)  # save already running for this patient
+        _inflight.add(appt_id)
 
     # ACK Slack within 3s, do the heavy lifting in a background thread.
     threading.Thread(
