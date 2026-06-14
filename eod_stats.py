@@ -541,6 +541,45 @@ def post_to_slack(header, sub, table):
 
 
 # ===========================================================================
+# Persist the week-to-date reactivations figure to the drop-off master sheet
+# ===========================================================================
+
+REACTIVATIONS_LIVE_TAB = "Reactivations (Live)"
+
+
+def write_reactivations_to_sheet(react, react_target, this_mon, now):
+    """Write the week-to-date reactivations count to a small, self-explanatory
+    panel on the drop-off master sheet, so the figure can be looked up at any
+    time without waiting for the Slack message.
+
+    Overwrites in place each EOD run, so it always shows the latest
+    week-to-date number plus when it was last updated. Uses the exact value
+    posted to Slack, so the sheet and the Slack report can never disagree.
+    """
+    import gspread
+    import phase1_fetch as master
+
+    sh = master.open_spreadsheet()
+    try:
+        ws = sh.worksheet(REACTIVATIONS_LIVE_TAB)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=REACTIVATIONS_LIVE_TAB, rows=20, cols=3)
+
+    target_str = str(react_target) if react_target is not None else "—"
+    out = [
+        ["Reactivations — Live (EOD definition)", ""],
+        ["Drop-off patients who rebooked this week (since Monday 08:00). "
+         "Same number as the EOD Slack report.", ""],
+        ["", ""],
+        ["Week commencing", this_mon.strftime("%a %d %b %Y")],
+        ["Reactivations this week", react],
+        ["Weekly target", target_str],
+        ["Last updated", now.strftime("%a %d %b %Y %H:%M")],
+    ]
+    ws.update(values=out, range_name="A1", value_input_option="RAW")
+
+
+# ===========================================================================
 # main
 # ===========================================================================
 
@@ -582,6 +621,15 @@ def main():
     print(table + "\n")
 
     if post:
+        # Persist the week-to-date reactivations figure to the drop-off master
+        # sheet so it can be found any time. Never let a sheet failure block
+        # the Slack post — the report is the priority.
+        try:
+            write_reactivations_to_sheet(react, react_target, this_mon, now)
+            print(f"  Wrote reactivations ({react}) to '{REACTIVATIONS_LIVE_TAB}' tab.")
+        except Exception as e:
+            print(f"  WARN couldn't write reactivations to sheet: {e}")
+
         ok = post_to_slack(header, sub, table)
         # Exit non-zero on failure so the launchd wrapper retries.
         sys.exit(0 if ok else 1)
