@@ -11,6 +11,7 @@ a cheap no-op.
 Each clinic job maps to the same command its local launchd wrapper used:
     dropoff   -> phase1_fetch.py --write      (run_daily.sh)
     eod       -> eod_stats.py --post          (eod_poll.sh)
+    eod_sunday-> eod_stats.py --dm            (Sun 07:00 weekly wrap, DM to Martin only)
     bookings  -> bookings_fetch.py --write     (bookings_poll.sh)
     progress  -> progress_scan.py             (progress_poll.sh)
     marketing -> python -m marketing.poller    (marketing_poll.sh)
@@ -29,6 +30,7 @@ PY = sys.executable
 COMMANDS = {
     "dropoff":      [PY, "phase1_fetch.py", "--write"],
     "eod":          [PY, "eod_stats.py", "--post"],
+    "eod_sunday":   [PY, "eod_stats.py", "--dm"],
     "bookings":     [PY, "bookings_fetch.py", "--write"],
     "progress":     [PY, "progress_scan.py"],
     "marketing":    [PY, "-m", "marketing.poller"],
@@ -55,6 +57,7 @@ TARGETS = {
                  ({2}, 10, 0),  ({2}, 15, 45), ({2}, 20, 0),      # Wed 10:00, 15:45, 20:00
                  ({3}, 15, 45), ({3}, 20, 0),                     # Thu 15:45, 20:00
                  ({4}, 15, 45)],                                  # Fri 15:45
+    "eod_sunday": [({6}, 7, 0)],                                  # Sun 07:00 — Martin's personal weekly wrap (DM only)
     "monthly_kpi": [(None, 9, 0)],                                # 09:00 on day 1 (see MONTHLY_DAY1_JOBS)
     "packages_weekly":   [({0}, 8, 0)],                           # Mon 08:00 — previous week's packages
     "referrers_monthly": [(None, 8, 0)],                          # 08:00 on day 1 (see MONTHLY_DAY1_JOBS)

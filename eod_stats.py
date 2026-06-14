@@ -540,6 +540,31 @@ def post_to_slack(header, sub, table):
         return False
 
 
+def dm_to_user(header, sub, table, email):
+    """DM the stats report to a single Slack user (looked up by email).
+
+    Used by the Sunday personal weekly wrap — goes only to that person's DM,
+    never to the team #eod-claude channel.
+    """
+    token = os.environ.get("SLACK_BOT_TOKEN", "")
+    if not token:
+        print("  WARN SLACK_BOT_TOKEN not set — not DMing")
+        return False
+    from slack_sdk import WebClient
+    from slack_sdk.errors import SlackApiError
+
+    text = f"*{header}*\n_{sub}_\n```\n{table}\n```"
+    client = WebClient(token=token)
+    try:
+        uid = client.users_lookupByEmail(email=email)["user"]["id"]
+        client.chat_postMessage(channel=uid, text=text, unfurl_links=False)
+        print(f"  DMed report to {email} ({uid}).")
+        return True
+    except SlackApiError as e:
+        print(f"  WARN Slack DM failed: {e.response.get('error')}")
+        return False
+
+
 # ===========================================================================
 # Persist the week-to-date reactivations figure to the drop-off master sheet
 # ===========================================================================
@@ -585,6 +610,9 @@ def write_reactivations_to_sheet(react, react_target, this_mon, now):
 
 def main():
     post = "--post" in sys.argv
+    # --dm sends the report only to Martin's Slack DM (the Sunday weekly wrap),
+    # never to the team #eod-claude channel.
+    dm = "--dm" in sys.argv
     now = datetime.now(LONDON)
     this_mon, next_mon, week_after = week_bounds(now)
 
@@ -620,16 +648,23 @@ def main():
     print(sub)
     print(table + "\n")
 
-    if post:
+    if post or dm:
         # Persist the week-to-date reactivations figure to the drop-off master
         # sheet so it can be found any time. Never let a sheet failure block
-        # the Slack post — the report is the priority.
+        # the Slack send — the report is the priority.
         try:
             write_reactivations_to_sheet(react, react_target, this_mon, now)
             print(f"  Wrote reactivations ({react}) to '{REACTIVATIONS_LIVE_TAB}' tab.")
         except Exception as e:
             print(f"  WARN couldn't write reactivations to sheet: {e}")
 
+    if dm:
+        # Sunday personal weekly wrap — DM Martin only, with a clearer header.
+        dm_header = f"Weekly Wrap — week ending {now.strftime('%a %d %b %Y')}"
+        ok = dm_to_user(dm_header, sub, table, config.CEO_SLACK_EMAIL)
+        # Exit non-zero on failure so the cloud wrapper retries.
+        sys.exit(0 if ok else 1)
+    elif post:
         ok = post_to_slack(header, sub, table)
         # Exit non-zero on failure so the launchd wrapper retries.
         sys.exit(0 if ok else 1)
