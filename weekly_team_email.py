@@ -635,8 +635,19 @@ def main() -> int:
         "ia_rebook_pct": ia_pct,
     }
 
-    # Patients off course — read from the Off-Track Review tab (refreshed
-    # daily by phase1_fetch). One row per patient flagged off-track this week.
+    # Patients off course — the Off-Track Review tab is otherwise only rebuilt
+    # by the separate progress cron (Mon 07:30), which fires AFTER this email,
+    # so reading it directly handed us last week's stale list. Refresh it here
+    # for THIS run's week (last week's Cliniko notes are complete by Sunday),
+    # then read it back so the draft always matches the sheet.
+    print("[email] refreshing Off-Track Review tab (progress scan)…", flush=True)
+    try:
+        import progress_scan
+        n_flagged = progress_scan.refresh_tab(last_mon.strftime("%Y-%m-%d"))
+        print(f"[email]   off-track tab refreshed: {n_flagged} flagged")
+    except Exception as e:
+        print(f"[email]   WARN: off-track refresh failed ({e}); "
+              f"reading existing tab", flush=True)
     off_course = _read_off_track_review()
     print(f"[email]   patients off course (Off-Track Review tab): {len(off_course)}")
 

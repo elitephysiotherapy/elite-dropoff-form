@@ -195,6 +195,20 @@ def print_summary(flagged, n_followup, label):
         print(f"  {disp}: {by_phys[disp]} flagged")
 
 
+def refresh_tab(monday=None):
+    """Scan the given (or last completed) Mon-Sun week and (re)write the
+    Off-Track Review tab. Returns the number of flagged patients.
+
+    `monday` may be a 'YYYY-MM-DD' string or None for the last completed week.
+    Used by weekly_team_email so the Monday draft reads a freshly-built tab
+    rather than last week's stale one (this scan otherwise only runs at the
+    separate Mon 07:30 progress cron, which fires AFTER the email)."""
+    start, end, label = week_window(monday)
+    flagged, n_followup = scan(start, end)
+    write_tab(flagged, label, n_followup)
+    return len(flagged)
+
+
 def main():
     monday = None
     for i, a in enumerate(sys.argv):
