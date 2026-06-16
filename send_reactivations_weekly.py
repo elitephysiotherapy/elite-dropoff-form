@@ -78,13 +78,11 @@ def collect_reactivations(start_local, end_local):
 
     out = []
     for pid, a in by_pid.items():
-        # patient
-        try:
-            p = phase2.SESSION.get(f"{phase2.BASE}/patients/{pid}", timeout=20).json()
-        except Exception:
-            p = {}
-        name = (f"{(p.get('first_name') or '').strip()} "
-                f"{(p.get('last_name') or '').strip()}").strip() or pid
+        # Name comes straight off the appointment object — Cliniko returns
+        # patient_name inline, so there's no need for a per-patient GET. The
+        # old GET-per-patient was getting rate-limited (429) after the first
+        # few, which left raw patient IDs in the list instead of names.
+        name = (a.get("patient_name") or "").strip() or pid
         tid = phase2.id_from_link(a.get("appointment_type")) or ""
         out.append({
             "patient": name,
