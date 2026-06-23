@@ -503,11 +503,13 @@ def write_dashboard(sh):
                     b["online"], b["total"] - b["online"], lead_m.get(mk, 0)])
 
     try:
-        ws = sh.worksheet(DASHBOARD_TAB)
-        ws.clear()
+        ws = _gs_retry(lambda: sh.worksheet(DASHBOARD_TAB), "dashboard read")
+        _gs_retry(lambda w=ws: w.clear(), "dashboard clear")
     except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title=DASHBOARD_TAB, rows=200, cols=8)
-    ws.update(values=out, range_name="A1", value_input_option="RAW")
+        ws = _gs_retry(lambda: sh.add_worksheet(title=DASHBOARD_TAB, rows=200, cols=8),
+                       "dashboard create")
+    _gs_retry(lambda w=ws: w.update(values=out, range_name="A1",
+                                    value_input_option="RAW"), "dashboard write")
 
 
 # ---------------- Slack ----------------
