@@ -208,6 +208,16 @@ def _tally(now, booked_rows, by_id, by_patient, react_by_patient, type_filter):
     return weeks, months
 
 
+def _normalize_physio(name):
+    """Merge a physio's secondary "… CS" practitioner record (a separate Cliniko
+    calendar) into their main name, e.g. "Martin Loughran CS" -> "Martin Loughran"
+    (Martin, 2026-06-26)."""
+    n = name.strip()
+    if n.endswith(" CS"):
+        n = n[:-3].strip()
+    return n
+
+
 def _tally_by_physio(now, booked_rows, by_id, by_patient, react_by_patient, type_filter, pracs):
     """months[month_key][physio_name] -> outcome dict. Physio = the booked IA's
     practitioner."""
@@ -223,7 +233,8 @@ def _tally_by_physio(now, booked_rows, by_id, by_patient, react_by_patient, type
         state, pid, anchor = _credit_state(a, react_by_patient, used_reacts, now)
         physio_id = phase2.id_from_link(a.get("practitioner")) if a else None
         phys = pracs.get(physio_id) or {}
-        pname = f"{phys.get('first_name','')} {phys.get('last_name','')}".strip() or "Unknown"
+        pname = _normalize_physio(f"{phys.get('first_name','')} {phys.get('last_name','')}".strip()
+                                  or "Unknown")
         d = months.setdefault(r["month"], {}).setdefault(pname, _blank())
         _add(d, state)
         if state == "Attended" and _has_rebook(pid, anchor, by_patient):
