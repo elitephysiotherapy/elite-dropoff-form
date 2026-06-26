@@ -142,8 +142,10 @@ def parse_booking_note(note):
 # ---------------- collection ----------------
 
 # A rebooked IA counts as a reactivation (not a fresh IA) when the patient
-# dropped a recent IA within this many days before the new booking.
-REACTIVATION_WINDOW_DAYS = 30
+# dropped a recent IA within this many days before the new booking. Beyond this
+# window we assume the patient is presenting with a new issue, so the booking
+# counts as a genuine new IA rather than a reactivation (Martin, 2026-06-26).
+REACTIVATION_WINDOW_DAYS = 60
 
 
 def _is_reactivation(this_appt, history, window_days=REACTIVATION_WINDOW_DAYS):

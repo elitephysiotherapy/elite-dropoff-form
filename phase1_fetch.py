@@ -2639,6 +2639,7 @@ def main():
         # kept defined for reference but is intentionally not called.)
         refreshes = [
             ("IA Rebook Rate", write_ia_rebook_rate_tab),
+            ("Bookings Funnel", lambda: __import__("funnel").write_funnel_tab()),
             ("Monthly Summary", write_monthly_summary_tab),
             ("Weekly Snapshot", lambda: write_weekly_snapshot_tab(weeks_back=4)),
             ("Weekly Team Stats", lambda: write_weekly_team_stats_tab(weeks_back=4)),
