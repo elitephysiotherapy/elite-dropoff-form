@@ -161,6 +161,33 @@ def _context(sh):
     return now, booked_rows, by_id, by_patient, react_by_patient
 
 
+def _credit_state(a, react_by_patient, used_reacts, now):
+    """Attendance state for a booked IA, applying reactivation credit-back."""
+    pid = phase2.id_from_link(a.get("patient")) if a else None
+    state = _attendance(a, now)
+    anchor = (a.get("starts_at") or "") if a else ""
+    if state in ("CNA", "DNA") and pid:
+        for rstart, rid in sorted(react_by_patient.get(pid, [])):
+            if rid in used_reacts or rstart <= anchor:
+                continue
+            used_reacts.add(rid)
+            state = "Attended"
+            break
+    return state, pid, anchor
+
+
+def _add(d, state):
+    d["booked"] += 1
+    if state == "Attended":
+        d["attended"] += 1
+    elif state in ("Pending", "Unknown"):
+        d["pending"] += 1
+    elif state == "CNA":
+        d["cna"] += 1
+    elif state == "DNA":
+        d["dna"] += 1
+
+
 def _tally(now, booked_rows, by_id, by_patient, react_by_patient, type_filter):
     used_reacts = set()
     weeks, months = {}, {}
@@ -171,40 +198,49 @@ def _tally(now, booked_rows, by_id, by_patient, react_by_patient, type_filter):
         type_id = phase2.id_from_link(a.get("appointment_type")) if a else None
         if type_filter is not None and type_id not in type_filter:
             continue
-        pid = phase2.id_from_link(a.get("patient")) if a else None
-        state = _attendance(a, now)
-        anchor = (a.get("starts_at") or "") if a else ""
-        if state in ("CNA", "DNA") and pid:
-            for rstart, rid in sorted(react_by_patient.get(pid, [])):
-                if rid in used_reacts or rstart <= anchor:
-                    continue
-                used_reacts.add(rid)
-                state = "Attended"
-                break
+        state, pid, anchor = _credit_state(a, react_by_patient, used_reacts, now)
         for period in (weeks.setdefault(r["week"], _blank()),
                        months.setdefault(r["month"], _blank())):
-            period["booked"] += 1
-            if state == "Attended":
-                period["attended"] += 1
-            elif state in ("Pending", "Unknown"):
-                period["pending"] += 1
-            elif state == "CNA":
-                period["cna"] += 1
-            elif state == "DNA":
-                period["dna"] += 1
+            _add(period, state)
         if state == "Attended" and _has_rebook(pid, anchor, by_patient):
             weeks[r["week"]]["rebooked"] += 1
             months[r["month"]]["rebooked"] += 1
     return weeks, months
 
 
+def _tally_by_physio(now, booked_rows, by_id, by_patient, react_by_patient, type_filter, pracs):
+    """months[month_key][physio_name] -> outcome dict. Physio = the booked IA's
+    practitioner."""
+    used_reacts = set()
+    months = {}
+    for r in booked_rows:
+        if r["klass"] not in ("New", "Past"):
+            continue
+        a = by_id.get(r["appt_id"])
+        type_id = phase2.id_from_link(a.get("appointment_type")) if a else None
+        if type_filter is not None and type_id not in type_filter:
+            continue
+        state, pid, anchor = _credit_state(a, react_by_patient, used_reacts, now)
+        physio_id = phase2.id_from_link(a.get("practitioner")) if a else None
+        phys = pracs.get(physio_id) or {}
+        pname = f"{phys.get('first_name','')} {phys.get('last_name','')}".strip() or "Unknown"
+        d = months.setdefault(r["month"], {}).setdefault(pname, _blank())
+        _add(d, state)
+        if state == "Attended" and _has_rebook(pid, anchor, by_patient):
+            d["rebooked"] += 1
+    return months
+
+
 def compute_all(sh):
     ctx = _context(sh)
     allw, allm = _tally(*ctx, None)
     corew, corem = _tally(*ctx, CORE_IA_TYPE_IDS)
+    pracs = {str(p["id"]): p for p in phase2.fetch_all("/practitioners")}
+    core_phys = _tally_by_physio(*ctx, CORE_IA_TYPE_IDS, pracs)
     leads_w, leads_m = bf._lead_period_counts(sh)
     return {"all": {"weeks": allw, "months": allm},
             "core": {"weeks": corew, "months": corem},
+            "core_by_physio": core_phys,
             "leads_w": leads_w, "leads_m": leads_m}
 
 
@@ -235,6 +271,20 @@ def _period_row(key, d, lmap, with_leads):
     cells += [d["booked"], d["attended"], d["pending"], d["cna"], d["dna"],
               d["rebooked"], _pct(d["attended"], resolved), _pct(d["rebooked"], d["attended"])]
     return cells
+
+
+def _month_label(mk):
+    return datetime.strptime(mk + "-01", "%Y-%m-%d").strftime("%B %Y")
+
+
+PHYSIO_HEADER = ["Physio", "IAs Booked", "Attended", "Pending", "CNA", "DNA",
+                 "Rebooked", "Attend%", "Rebook%"]
+
+
+def _physio_row(name, d):
+    resolved = d["attended"] + d["cna"] + d["dna"]
+    return [name, d["booked"], d["attended"], d["pending"], d["cna"], d["dna"],
+            d["rebooked"], _pct(d["attended"], resolved), _pct(d["rebooked"], d["attended"])]
 
 
 # --------------------------------------------------------------------------
@@ -269,6 +319,21 @@ def write_funnel_tab(sh=None):
     _funnel_block(out, "FUNNEL 2 — CORE IAs (Initial / Club IA / PHI IA / ACL IA)",
                   data["core"]["weeks"], data["core"]["months"], {}, {}, with_leads=False)
 
+    # Per-physio breakdown of the core funnel, one block per month (recent first).
+    out.append(["FUNNEL 2b — CORE IAs BY PHYSIO"])
+    for mk in sorted(data["core_by_physio"], reverse=True)[:6]:
+        phys = data["core_by_physio"][mk]
+        out.append([_month_label(mk)])
+        out.append(PHYSIO_HEADER)
+        total = _blank()
+        for pname in sorted(phys):
+            d = phys[pname]
+            for k in total:
+                total[k] += d[k]
+            out.append(_physio_row(pname, d))
+        out.append(_physio_row("CLINIC TOTAL", total))
+        out.append([])
+
     try:
         ws = bf._gs_retry(lambda: sh.worksheet(FUNNEL_TAB), "funnel read")
         bf._gs_retry(lambda w=ws: w.clear(), "funnel clear")
@@ -300,6 +365,23 @@ def _print_funnel(title, fdata, leads_w, leads_m, with_leads):
             print(" ".join(f"{str(c):>{w}}" for c, w in zip(row, widths)))
 
 
+def _print_physio(title, months_map, max_months=3):
+    print(f"\n{'='*96}\n{title}\n{'='*96}")
+    widths = [22] + [10] * (len(PHYSIO_HEADER) - 1)
+    for mk in sorted(months_map, reverse=True)[:max_months]:
+        phys = months_map[mk]
+        print(f"\n{_month_label(mk)}")
+        print(" ".join(f"{c:>{w}}" for c, w in zip(PHYSIO_HEADER, widths)))
+        print("-" * (sum(widths) + len(widths)))
+        total = _blank()
+        for pname in sorted(phys):
+            d = phys[pname]
+            for k in total:
+                total[k] += d[k]
+            print(" ".join(f"{str(c):>{w}}" for c, w in zip(_physio_row(pname, d), widths)))
+        print(" ".join(f"{str(c):>{w}}" for c, w in zip(_physio_row("CLINIC TOTAL", total), widths)))
+
+
 def main():
     write = "--write" in sys.argv
     sh = bf.open_spreadsheet()
@@ -312,6 +394,7 @@ def main():
     _print_funnel("FUNNEL 1 — ALL IAs", data["all"], data["leads_w"], data["leads_m"], True)
     _print_funnel("FUNNEL 2 — CORE IAs (Initial / Club IA / PHI IA / ACL IA)",
                   data["core"], {}, {}, False)
+    _print_physio("FUNNEL 2b — CORE IAs BY PHYSIO", data["core_by_physio"])
     if not write:
         print("\n(Preview only — re-run with --write to build the Funnel tab.)")
 
