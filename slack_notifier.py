@@ -275,9 +275,17 @@ def notify_reception(rows):
     )
 
 
-def notify_ops_manager(rows, ia_rebook_mtd_pct=None, leads_summary=None):
-    """Send the daily Ops Manager Summary to CEO + Sinéad Rocks."""
-    text = _ops_manager_dm_text(rows, ia_rebook_mtd_pct=ia_rebook_mtd_pct,
+def notify_ops_manager(rows, ia_rebook_mtd_pct=None, leads_summary=None,
+                       summary_rows=None):
+    """Send the daily Ops Manager Summary to CEO + Sinéad Rocks.
+
+    `summary_rows`, when given, is the full set of drop-offs *dated yesterday*
+    (regardless of when they were first written to the sheet). The summary
+    counts those so it reflects what actually happened yesterday — not just the
+    rows this run happened to add. Falls back to `rows` if not supplied.
+    """
+    counted = summary_rows if summary_rows is not None else rows
+    text = _ops_manager_dm_text(counted, ia_rebook_mtd_pct=ia_rebook_mtd_pct,
                                 leads_summary=leads_summary)
     _send_dm_to_recipients(
         config.OPS_MANAGER_SLACK_EMAILS,
@@ -286,12 +294,15 @@ def notify_ops_manager(rows, ia_rebook_mtd_pct=None, leads_summary=None):
     )
 
 
-def send_all(rows, ia_rebook_mtd_pct=None, leads_summary=None):
+def send_all(rows, ia_rebook_mtd_pct=None, leads_summary=None, summary_rows=None):
     if config.SLACK_SAFE_MODE:
         print(f"Slack SAFE_MODE is ON — all messages will go to {config.CEO_SLACK_EMAIL}")
     if not rows:
-        print("  No drop-offs to notify about today. Still sending Ops Manager summary.")
+        print("  No NEW drop-offs to notify physios/reception about. Still sending Ops Manager summary.")
+    # Physio DMs + reception call list are driven off NEW rows only — we don't
+    # re-ping people about drop-offs already captured and actioned. The Ops
+    # Manager summary, by contrast, reports yesterday's full picture.
     notify_physios(rows)
     notify_reception(rows)
     notify_ops_manager(rows, ia_rebook_mtd_pct=ia_rebook_mtd_pct,
-                       leads_summary=leads_summary)
+                       leads_summary=leads_summary, summary_rows=summary_rows)

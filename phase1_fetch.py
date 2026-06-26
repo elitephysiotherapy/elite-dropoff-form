@@ -2666,8 +2666,21 @@ def main():
                 leads = leads_pipeline_summary()
             except Exception as e:
                 print(f"  WARN leads pipeline summary failed: {e}")
+            # The Ops Manager summary reports YESTERDAY's actual drop-offs, not
+            # just the rows this run added. The daily run's `rows` only contains
+            # drop-offs newly written this run (the rolling re-scan skips ones
+            # already in the sheet), so on a day where yesterday's drop-offs were
+            # already captured it would otherwise report Total: 0. Re-collect
+            # yesterday specifically (full set, no skip) for an accurate count.
+            summary_rows = None
+            try:
+                yday = (datetime.now(LONDON) - timedelta(days=1)).strftime("%Y-%m-%d")
+                summary_rows, _ = collect_dropoffs(date_override=yday)
+            except Exception as e:
+                print(f"  WARN yesterday summary recount failed, "
+                      f"falling back to new rows: {e}")
             slack_notifier.send_all(rows, ia_rebook_mtd_pct=mtd_pct,
-                                    leads_summary=leads)
+                                    leads_summary=leads, summary_rows=summary_rows)
         except Exception as e:
             print(f"  WARN Slack notifications failed: {e}")
             # Don't let Slack failure abort the daily run — the sheet is already updated.
