@@ -29,6 +29,7 @@ load_dotenv(override=True)
 import config
 import eod_stats
 import phase2
+import reactivations
 import slack_notifier
 
 LONDON = ZoneInfo("Europe/London")
@@ -51,45 +52,36 @@ def previous_week_window(now=None):
 
 
 def collect_reactivations(start_local, end_local):
-    """Return list of dicts (one per reactivated patient, sorted by booking time)."""
-    dropoffs = eod_stats.dropoff_patient_ids()
+    """Return list of dicts (one per reactivated patient, sorted by booking time).
+
+    Uses the canonical reactivation engine (reactivations.py) — the single source
+    of truth shared with the EOD number and the bookings sheet. A reactivation is
+    counted when a drop-off patient's FIRST rebooking was created in this window.
+    """
+    s_iso, e_iso = eod_stats._iso(start_local), eod_stats._iso(end_local)
+    now = datetime.now(LONDON)
+
     created = list(phase2.fetch_all("/individual_appointments", [
-        ("q[]", f"created_at:>={eod_stats._iso(start_local)}"),
-        ("q[]", f"created_at:<{eod_stats._iso(end_local)}"),
-    ]))
-    cancelled = list(phase2.fetch_all("/individual_appointments", [
-        ("q[]", f"cancelled_at:>={eod_stats._iso(start_local)}"),
-        ("q[]", f"cancelled_at:<{eod_stats._iso(end_local)}"),
-    ]))
-    rescheduled = {phase2.id_from_link(a.get("patient")) for a in cancelled}
+        ("q[]", f"created_at:>={s_iso}"), ("q[]", f"created_at:<{e_iso}")]))
+    cand_pids = {phase2.id_from_link(a.get("patient")) for a in created}
+    cand_pids.discard(None)
 
-    # First new booking per reactivated patient (earliest within the window)
-    by_pid: dict[str, dict] = {}
-    for a in created:
-        pid = phase2.id_from_link(a.get("patient"))
-        if not pid or pid not in dropoffs or pid in rescheduled:
-            continue
-        if pid not in by_pid or a.get("created_at","") < by_pid[pid].get("created_at",""):
-            by_pid[pid] = a
-
-    # Resolve appointment type names + patient names
     type_id_to_name = {str(t["id"]): t.get("name", "?")
                        for t in phase2.fetch_all("/appointment_types", [])}
 
     out = []
-    for pid, a in by_pid.items():
-        # Name comes straight off the appointment object — Cliniko returns
-        # patient_name inline, so there's no need for a per-patient GET. The
-        # old GET-per-patient was getting rate-limited (429) after the first
-        # few, which left raw patient IDs in the list instead of names.
-        name = (a.get("patient_name") or "").strip() or pid
-        tid = phase2.id_from_link(a.get("appointment_type")) or ""
-        out.append({
-            "patient": name,
-            "booked_at": (a.get("created_at") or "")[:16].replace("T", " "),
-            "starts_at": (a.get("starts_at") or "")[:16].replace("T", " "),
-            "appt_type": type_id_to_name.get(tid, "?"),
-        })
+    for pid in cand_pids:
+        hist = phase2.fetch_patient_full_history(pid)
+        for r in reactivations.reactivations_in_window(hist, start_local, end_local, now):
+            rb = r["rebook"]
+            tid = phase2.id_from_link(rb.get("appointment_type")) or ""
+            cr = rb.get("created_at") or ""
+            out.append({
+                "patient": (rb.get("patient_name") or "").strip() or pid,
+                "booked_at": cr[:16].replace("T", " "),
+                "starts_at": (rb.get("starts_at") or "")[:16].replace("T", " "),
+                "appt_type": type_id_to_name.get(str(tid), "?"),
+            })
     out.sort(key=lambda r: r["booked_at"])
     return out
 

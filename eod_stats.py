@@ -202,30 +202,24 @@ def dropoff_patient_ids():
 
 
 def reactivations(this_mon, now):
-    """Week-to-date reactivations: distinct drop-off-sheet patients with an
-    appointment created since Monday 08:00 this week.
-
-    Patients who also cancelled an appointment this week are excluded — their
-    new booking is a reschedule, not a reactivation.
+    """Week-to-date reactivations via the canonical engine (reactivations.py) —
+    the same definition the weekly DM and the bookings sheet use. Counts each
+    drop-off patient whose first rebooking was created since Monday 08:00.
     """
+    import reactivations as react
     week_start = datetime(this_mon.year, this_mon.month, this_mon.day,
                           8, 0, tzinfo=LONDON)
     created = list(phase2.fetch_all("/individual_appointments", [
         ("q[]", f"created_at:>={_iso(week_start)}"),
         ("q[]", f"created_at:<{_iso(now)}"),
     ]))
-    cancelled = list(phase2.fetch_all("/individual_appointments", [
-        ("q[]", f"cancelled_at:>={_iso(week_start)}"),
-        ("q[]", f"cancelled_at:<{_iso(now)}"),
-    ]))
-    rescheduled = {phase2.id_from_link(a.get("patient")) for a in cancelled}
-    dropoffs = dropoff_patient_ids()
-    reactivated = set()
-    for a in created:
-        pid = phase2.id_from_link(a.get("patient"))
-        if pid and pid in dropoffs and pid not in rescheduled:
-            reactivated.add(pid)
-    return len(reactivated)
+    cand_pids = {phase2.id_from_link(a.get("patient")) for a in created}
+    cand_pids.discard(None)
+    n = 0
+    for pid in cand_pids:
+        hist = phase2.fetch_patient_full_history(pid)
+        n += len(react.reactivations_in_window(hist, week_start, now, now))
+    return n
 
 
 # ===========================================================================

@@ -141,53 +141,15 @@ def parse_booking_note(note):
 
 # ---------------- collection ----------------
 
-# A rebooked IA counts as a reactivation (not a fresh IA) when the patient
-# dropped a recent IA within this many days before the new booking. Beyond this
-# window we assume the patient is presenting with a new issue, so the booking
-# counts as a genuine new IA rather than a reactivation (Martin, 2026-06-26).
-REACTIVATION_WINDOW_DAYS = 60
+def _is_reactivation(this_appt, history, window_days=None):
+    """True if this IA booking is a reactivation (so it's kept OUT of Total IAs).
 
-
-def _is_reactivation(this_appt, history, window_days=REACTIVATION_WINDOW_DAYS):
-    """True if this IA booking is the patient coming back after recently
-    dropping an IA — i.e. they DNA'd or cancelled an earlier IA-type
-    appointment within `window_days` before this one, and have not attended
-    anything since that drop. Such a booking is a reactivation, not a new IA.
-
-    Mirrors Martin's canonical 'Reactivation' definition: a patient who was a
-    DNA / CDNR / IADNR and then booked a future appointment."""
-    this_start = phase2.parse_iso(this_appt.get("starts_at"))
-    if not this_start:
-        return False
-    window_start = this_start - timedelta(days=window_days)
-    this_id = str(this_appt.get("id"))
-
-    dropped_ia_dates = []
-    for h in (history or []):
-        if str(h.get("id")) == this_id:
-            continue
-        h_start = phase2.parse_iso(h.get("starts_at"))
-        if not h_start or h_start >= this_start or h_start < window_start:
-            continue
-        if phase2.id_from_link(h.get("appointment_type")) not in config.BOOKINGS_IA_TYPE_IDS:
-            continue   # only a dropped *IA* triggers a reactivation
-        if h.get("cancelled_at") or h.get("did_not_arrive"):
-            dropped_ia_dates.append(h_start)
-    if not dropped_ia_dates:
-        return False
-
-    # Not a reactivation if they already returned — i.e. attended (or have a
-    # live booking for) anything between the most recent dropped IA and now.
-    last_drop = max(dropped_ia_dates)
-    for h in (history or []):
-        if str(h.get("id")) == this_id:
-            continue
-        h_start = phase2.parse_iso(h.get("starts_at"))
-        if not h_start or h_start <= last_drop or h_start >= this_start:
-            continue
-        if not h.get("cancelled_at") and not h.get("did_not_arrive"):
-            return False
-    return True
+    Delegates to the canonical reactivation engine (reactivations.py) — the single
+    source of truth shared with the weekly DM and the EOD number. A drop-off who
+    rebooks an IA within 60 days = reactivation; a new IA >60 days after the drop
+    is a genuine new booking (returns False)."""
+    import reactivations
+    return reactivations.is_reactivation_ia(this_appt, history, datetime.now(LONDON))
 
 
 def collect_bookings(lookback_days=BOOKINGS_LOOKBACK_DAYS, skip_ids=None,

@@ -30,7 +30,7 @@ def main():
     if "--since" in sys.argv:
         since = sys.argv[sys.argv.index("--since") + 1]
 
-    print(f"Re-classifying with window = {bf.REACTIVATION_WINDOW_DAYS} days, "
+    print(f"Re-classifying via the canonical reactivation engine, "
           f"IAs created since {since}…\n", flush=True)
 
     # Fresh classification for every IA created since `since` (skip_ids empty so
