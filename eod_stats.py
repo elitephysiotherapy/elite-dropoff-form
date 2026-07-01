@@ -213,6 +213,11 @@ def reactivations(this_mon, now):
         ("q[]", f"created_at:>={_iso(week_start)}"),
         ("q[]", f"created_at:<{_iso(now)}"),
     ]))
+    created += list(phase2.fetch_all("/individual_appointments", [
+        ("q[]", f"created_at:>={_iso(week_start)}"),
+        ("q[]", f"created_at:<{_iso(now)}"),
+        ("q[]", "cancelled_at:?"),   # include cancelled bookings (hidden by default)
+    ]))
     cand_pids = {phase2.id_from_link(a.get("patient")) for a in created}
     cand_pids.discard(None)
     n = 0

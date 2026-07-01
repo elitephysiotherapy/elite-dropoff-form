@@ -15,8 +15,10 @@ def appt(aid, typ, start, created, cancelled=None, dna=False):
             "starts_at": start, "created_at": created,
             "cancelled_at": cancelled, "did_not_arrive": dna}
 
+SCAN = "1206575759565526893"     # 3. Ultrasound Assessment — not an IA, not a follow-up
+
 def count(hist):
-    return sum(1 for r in R.reactivation_records(hist, NOW) if not r["is_new_booking"])
+    return sum(1 for r in R.reactivation_records(hist, NOW) if r["is_reactivation"])
 
 def newbookings(hist):
     return sum(1 for r in R.reactivation_records(hist, NOW) if r["is_new_booking"])
@@ -97,6 +99,38 @@ check("DNA then later rebook = 1", count([
     appt("a", FU, "2026-06-10T09:00:00Z", "2026-06-01T09:00:00Z", dna=True),
     appt("b", FU, "2026-06-20T09:00:00Z", "2026-06-12T09:00:00Z"),
 ]), 1)
+
+# 12. Drop then a >60-day ONE-OFF (ultrasound/consult) -> NOT a reactivation, NOT a new booking
+check("drop then >60d one-off = 0 reactivation", count([
+    appt("a", FU, "2026-03-10T09:00:00Z", "2026-03-01T09:00:00Z", cancelled="2026-03-09T09:00:00Z"),
+    appt("b", SCAN, "2026-06-20T09:00:00Z", "2026-06-10T09:00:00Z"),
+]), 0)
+check("drop then >60d one-off = 0 new booking", newbookings([
+    appt("a", FU, "2026-03-10T09:00:00Z", "2026-03-01T09:00:00Z", cancelled="2026-03-09T09:00:00Z"),
+    appt("b", SCAN, "2026-06-20T09:00:00Z", "2026-06-10T09:00:00Z"),
+]), 0)
+
+# 13. Drop then a >60-day FOLLOW-UP -> still a reactivation
+check("drop then >60d follow-up = 1", count([
+    appt("a", FU, "2026-03-10T09:00:00Z", "2026-03-01T09:00:00Z", cancelled="2026-03-09T09:00:00Z"),
+    appt("b", FU, "2026-06-20T09:00:00Z", "2026-06-10T09:00:00Z"),
+]), 1)
+
+# 14. IADNR where the IA was entered the day AFTER it happened (created > starts):
+#     the IA must NOT count as its own rebooking (the Shea Coney bug).
+check("IA entered next day not its own rebook = 0", count([
+    appt("a", IA, "2026-06-13T09:00:00Z", "2026-06-14T07:00:00Z"),   # created after its start
+]), 0)
+
+# 15. Comeback via a >60d new IA + a follow-up shortly after = ONE comeback:
+#     a new booking, NOT also a reactivation (Shea Coney; rule A).
+hist_a = [
+    appt("a", FU, "2026-03-10T09:00:00Z", "2026-03-01T09:00:00Z", cancelled="2026-03-09T09:00:00Z"),
+    appt("b", IA, "2026-06-20T09:00:00Z", "2026-06-10T09:00:00Z"),   # return IA, >60d = new booking
+    appt("c", FU, "2026-06-25T09:00:00Z", "2026-06-22T09:00:00Z"),   # follow-up shortly after
+]
+check("comeback IA + quick follow-up = 0 reactivation", count(hist_a), 0)
+check("comeback IA + quick follow-up = 1 new booking", newbookings(hist_a), 1)
 
 print("RESULT  test")
 print("-" * 60)

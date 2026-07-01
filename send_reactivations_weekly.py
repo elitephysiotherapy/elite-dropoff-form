@@ -61,8 +61,14 @@ def collect_reactivations(start_local, end_local):
     s_iso, e_iso = eod_stats._iso(start_local), eod_stats._iso(end_local)
     now = datetime.now(LONDON)
 
+    # Candidates = everyone who created an appointment in the window. Must include
+    # CANCELLED bookings too (Cliniko's default list hides them), else a patient
+    # whose reactivation booking was later cancelled is silently dropped.
     created = list(phase2.fetch_all("/individual_appointments", [
         ("q[]", f"created_at:>={s_iso}"), ("q[]", f"created_at:<{e_iso}")]))
+    created += list(phase2.fetch_all("/individual_appointments", [
+        ("q[]", f"created_at:>={s_iso}"), ("q[]", f"created_at:<{e_iso}"),
+        ("q[]", "cancelled_at:?")]))
     cand_pids = {phase2.id_from_link(a.get("patient")) for a in created}
     cand_pids.discard(None)
 

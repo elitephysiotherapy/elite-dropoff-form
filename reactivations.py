@@ -49,6 +49,20 @@ def _is_ia(appt):
     return phase2.id_from_link(appt.get("appointment_type")) in phase2.STRICT_IA_TYPE_IDS
 
 
+# Follow-up / continuation-of-care types. Only these count as a reactivation when
+# a drop-off rebooks MORE than 60 days after the drop (Martin, 2026-07-01) — a new
+# IA after 60d is a new booking, and a one-off (ultrasound, consultation, massage)
+# after 60d is neither. Within 60 days, any rebooking counts regardless of type.
+FOLLOWUP_TYPE_IDS = {
+    "382589431795684515",   # 4. Club Follow Up Appointment
+    "382563815511823515",   # 2. Review Appointment
+}
+
+
+def _is_followup(appt):
+    return phase2.id_from_link(appt.get("appointment_type")) in FOLLOWUP_TYPE_IDS
+
+
 def _end_of_day(dt):
     """End of the calendar day (Europe/London) containing dt."""
     loc = dt.astimezone(LONDON)
@@ -89,39 +103,74 @@ def _events(appts, now):
     return evs
 
 
+def _drop_kind(appt):
+    if appt is None:
+        return "?"
+    if appt.get("cancelled_at"):
+        return "CNA"
+    if appt.get("did_not_arrive"):
+        return "DNA"
+    return "IADNR"
+
+
 def reactivation_records(history, now):
     appts = list(history)
-    lapses = []           # (drop_date, end_attendance_or_None)
+    lapses = []           # (drop_date, drop_appt)
     lapse_drop = None
+    lapse_drop_appt = None
     for kind, a, t in _events(appts, now):
         if kind == "attend":
-            if lapse_drop is not None:
-                lapses.append((lapse_drop, t))
-                lapse_drop = None
-            if _is_ia(a) and not _has_future_appt(appts, _end_of_day(t), str(a.get("id"))):
-                lapse_drop = t                      # IADNR — opens a fresh lapse
-        else:                                       # CNA / DNA
+            returning = lapse_drop is not None       # this attendance ends a lapse
+            if returning:
+                lapses.append((lapse_drop, lapse_drop_appt))
+                lapse_drop = lapse_drop_appt = None
+            # IADNR opens a lapse ONLY if the patient was already active — an IA
+            # that was itself the patient's return (closed a lapse) plus a follow-up
+            # booked shortly after is ONE comeback, not a new booking + a separate
+            # reactivation (Martin, 2026-07-01 — the Shea Coney case).
+            if (not returning and _is_ia(a)
+                    and not _has_future_appt(appts, _end_of_day(t), str(a.get("id")))):
+                lapse_drop, lapse_drop_appt = t, a
+        else:                                        # CNA / DNA
             if _has_future_appt(appts, _end_of_day(t), str(a.get("id"))):
-                continue                            # reschedule / still in diary
+                continue                             # reschedule / still in diary
             if lapse_drop is None:
-                lapse_drop = t                      # new lapse (else: continue current)
+                lapse_drop, lapse_drop_appt = t, a   # new lapse (else: continue current)
     if lapse_drop is not None:
-        lapses.append((lapse_drop, None))
+        lapses.append((lapse_drop, lapse_drop_appt))
 
     records = []
-    for drop_date, _end in lapses:
+    for drop_date, drop_appt in lapses:
         eod = _end_of_day(drop_date)
-        rebooks = [a for a in appts if (_dt(a.get("created_at")) or now) > eod]
+        did = str(drop_appt.get("id")) if drop_appt else None
+        # The rebooking is a genuine LATER appointment: booked after the drop day
+        # and starting after the drop (excludes the drop appointment itself, e.g.
+        # an IA entered the day after it happened — the Shea Coney bug).
+        rebooks = [a for a in appts
+                   if str(a.get("id")) != did
+                   and (_dt(a.get("created_at")) or now) > eod
+                   and (_dt(a.get("starts_at")) or now) > drop_date]
         if not rebooks:
             continue                                # dropped, never rebooked
         rebook = min(rebooks, key=lambda a: a.get("created_at") or "")
         st = _dt(rebook.get("starts_at"))
         over_60 = bool(st and (st - drop_date).days > NEW_IA_AFTER_DAYS)
+        if not over_60:
+            is_react, is_new = True, False          # ≤60d: any rebooking counts
+        elif _is_ia(rebook):
+            is_react, is_new = False, True          # >60d new IA = new booking
+        elif _is_followup(rebook):
+            is_react, is_new = True, False          # >60d follow-up still counts
+        else:
+            is_react, is_new = False, False         # >60d one-off (scan/consult/…) = neither
         records.append({
             "drop_date": drop_date,
+            "drop_appt": drop_appt,
+            "drop_kind": _drop_kind(drop_appt),
             "rebook": rebook,
             "rebook_created": rebook.get("created_at"),
-            "is_new_booking": _is_ia(rebook) and over_60,
+            "is_reactivation": is_react,
+            "is_new_booking": is_new,
         })
     return records
 
@@ -129,10 +178,9 @@ def reactivation_records(history, now):
 def reactivations_in_window(history, start, end, now):
     """Records whose rebooking was created in [start, end) and that count as a
     reactivation (i.e. not reclassified as a >60-day new booking)."""
-    s_iso = start.astimezone(LONDON).strftime("%Y-%m-%dT%H:%M:%S%z")
     out = []
     for r in reactivation_records(history, now):
-        if r["is_new_booking"]:
+        if not r["is_reactivation"]:
             continue
         cr = _dt(r["rebook_created"])
         if cr and start <= cr < end:
@@ -147,5 +195,5 @@ def is_reactivation_ia(this_appt, history, now):
     tid = str(this_appt.get("id"))
     for r in reactivation_records(history, now):
         if str(r["rebook"].get("id")) == tid:
-            return not r["is_new_booking"]
+            return r["is_reactivation"]
     return False
