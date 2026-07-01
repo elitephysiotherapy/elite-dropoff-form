@@ -119,9 +119,12 @@ def build_dm_text(rows, week_start, week_end):
         lines.append("")
         lines.append("No reactivations recorded last week.")
     lines.append("")
-    lines.append("_A reactivation is a patient who's appeared on a drop-off W/C tab AND "
-                 "created a new appointment last week without cancelling anything "
-                 "(cancellations + rebooks count as reschedules, not reactivations)._")
+    lines.append("_A reactivation is a patient who dropped off — cancelled or no-showed an "
+                 "appointment, or attended an IA and booked nothing, leaving no future "
+                 "appointment — and then rebooked, giving them a future appointment again. "
+                 "Counted once, in the week they rebooked. A same-day cancel-and-rebook is a "
+                 "reschedule, not a reactivation; a new IA booked more than 60 days after the "
+                 "drop is a new booking, not a reactivation._")
     return "\n".join(lines)
 
 
