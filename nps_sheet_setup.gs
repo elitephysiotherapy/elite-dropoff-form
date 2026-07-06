@@ -1,21 +1,21 @@
 /**
- * Elite Physiotherapy — NPS & Marketing sheet builder
+ * Elite Physiotherapy - NPS & Marketing sheet builder
  * =====================================================
  * Builds the 5-tab Google Sheet that the new NPS / marketing system writes to.
- * Companion docs: Elite_Marketing_Replacement_Plan.md (§5), tally_nps_form.md
+ * Companion docs: Elite_Marketing_Replacement_Plan.md (sec. 5), tally_nps_form.md
  *
  * HOW TO RUN (one-off, ~2 minutes):
- *   1. Create a new blank Google Sheet. Name it: Elite Physio — NPS & Marketing
- *   2. Extensions → Apps Script.
+ *   1. Create a new blank Google Sheet. Name it: Elite Physio - NPS & Marketing
+ *   2. Extensions -> Apps Script.
  *   3. Delete anything in the editor, paste this whole file in.
  *   4. Click Save, then Run (choose the function "setupNpsMarketingSheet").
- *   5. First run asks you to authorise — approve it (it only touches this sheet).
+ *   5. First run asks you to authorise - approve it (it only touches this sheet).
  *   6. Switch back to the sheet: all 5 tabs are built. Done.
  *   7. Copy the sheet's ID from its URL (the long code between /d/ and /edit)
- *      and give it to Claude for config.py — it becomes the second SPREADSHEET_ID.
+ *      and give it to Claude for config.py - it becomes the second SPREADSHEET_ID.
  *
  * Safe to re-run: it rebuilds the tabs from scratch each time. It will NOT
- * touch any tab whose name isn't one of the five below — but re-running
+ * touch any tab whose name isn't one of the five below - but re-running
  * clears the five it owns, so don't re-run once real data is in them.
  */
 
@@ -29,7 +29,13 @@ var CLINICS = ['Cookstown', 'Maghera', 'Omagh', 'Armagh'];
 var TRIGGERS = [['Initial Assessment', 'ia'], ['Discharge', 'discharge'],
                 ['Cancellation', 'cna'], ['No-show', 'dna']];
 // These must match the physio_name value the Python system sends to Tally.
-var PHYSIOS = ['Marty', 'Julie', 'Sinead', 'Erin', 'Daire', 'Aoife', 'Molaí', 'Shannagh'];
+// NOTE: Molai's name is built from a char code (237 = i) on purpose. Writing the
+// accented letter as a literal here once got double-encoded when this file was
+// pasted into the Apps Script editor, so the breakdown stopped matching her raw
+// rows. Keeping the source pure-ASCII makes that impossible. Do NOT replace it
+// with a literal "Molai".
+var PHYSIOS = ['Marty', 'Julie', 'Sinead', 'Erin', 'Daire', 'Aoife', 'Ciara',
+               'Mola' + String.fromCharCode(237), 'Shannagh'];
 
 var HEADER_BG = '#2A9EA7';
 var SECTION_BG = '#33424E';
@@ -46,7 +52,7 @@ function setupNpsMarketingSheet() {
   // Move tabs into a sensible order.
   reorder_(ss, [DASH, PHYSIO, DET, RAW, SENT]);
   removeDefault_(ss);
-  ss.toast('NPS & Marketing sheet built — 5 tabs ready.', 'Done', 8);
+  ss.toast('NPS & Marketing sheet built \u2014 5 tabs ready.', 'Done', 8);
 }
 
 
@@ -106,7 +112,7 @@ function buildRawData_(ss) {
   s.getRange(1, 1, 1, headers.length).setValues([headers]);
   styleHeader_(s, 1, headers.length);
 
-  // Column N (Response ID) is the Tally per-submission idempotency key — the
+  // Column N (Response ID) is the Tally per-submission idempotency key - the
   // Python webhook skips writing a row whose Response ID is already present, so
   // a webhook retry / double-submit can't duplicate an NPS score. Hidden helper.
   var widths = [110, 90, 150, 110, 100, 110, 60, 95, 320, 120, 130, 150, 120, 150];
@@ -141,9 +147,9 @@ function buildDetractorTracker_(ss) {
   var widths = [120, 150, 90, 110, 100, 110, 60, 320, 120, 130, 140, 300, 120, 120];
   widths.forEach(function (w, i) { s.setColumnWidth(i + 1, w); });
 
-  // Resolution Status dropdown (column K) — the columns Sinead fills in by hand.
+  // Resolution Status dropdown (column K) - the columns Sinead fills in by hand.
   var rule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['Pending', 'In progress', 'Resolved', 'Closed — no response'], true)
+    .requireValueInList(['Pending', 'In progress', 'Resolved', 'Closed \u2014 no response'], true)
     .setAllowInvalid(true).build();
   s.getRange(2, 11, s.getMaxRows() - 1, 1).setDataValidation(rule);
 
@@ -153,7 +159,7 @@ function buildDetractorTracker_(ss) {
   s.getRange(2, 11, s.getMaxRows() - 1, 4).setBackground('#FFF7E6');
   s.getRange(1, 1, 1, 1).setNote(
     'The Python webhook appends a row here for every detractor. ' +
-    'Columns K–N (shaded) are completed by Sinead as the callback is worked.');
+    'Columns K\u2013N (shaded) are completed by Sinead as the callback is worked.');
 }
 
 
@@ -185,11 +191,11 @@ function buildDashboard_(ss) {
   var dt = "'" + DET + "'!";       // detractor tracker ref
   var sl = "'" + SENT + "'!";      // sent log ref (surveys-sent count)
 
-  s.getRange('A1').setValue('Elite Physiotherapy — NPS Dashboard');
+  s.getRange('A1').setValue('Elite Physiotherapy \u2014 NPS Dashboard');
   s.getRange('A1:F1').merge().setFontSize(16).setFontWeight('bold').setFontColor('#33424E');
   s.getRange('A2:F2').merge().setValue(
-    'NPS = % Promoters − % Detractors (range −100 to +100). '
-    + 'Updates automatically as responses arrive. Promoter 9–10, Passive 7–8, Detractor 0–6.')
+    'NPS = % Promoters \u2212 % Detractors (range \u2212100 to +100). '
+    + 'Updates automatically as responses arrive. Promoter 9\u201310, Passive 7\u20138, Detractor 0\u20136.')
     .setFontColor('#6B7984').setFontStyle('italic');
   s.setColumnWidth(1, 210);
   for (var c = 2; c <= 6; c++) s.setColumnWidth(c, 110);
@@ -203,7 +209,7 @@ function buildDashboard_(ss) {
       '=IFERROR(ROUND((COUNTIFS(' + q + 'G:G,">=9",' + q + 'M:M,">="&(TODAY()-90))-COUNTIFS(' + q + 'G:G,"<=6",' + q + 'M:M,">="&(TODAY()-90)))/COUNTIFS(' + q + 'G:G,">=0",' + q + 'M:M,">="&(TODAY()-90))*100),"No data")'],
     ['Surveys sent', '=COUNTIF(' + sl + 'D:D,"*survey_sms")'],
     ['Responses received', '=COUNT(' + q + 'G2:G)'],
-    ['Response rate', '=IFERROR(ROUND(COUNT(' + q + 'G2:G)/COUNTIF(' + sl + 'D:D,"*survey_sms")*100)&"%","—")']
+    ['Response rate', '=IFERROR(ROUND(COUNT(' + q + 'G2:G)/COUNTIF(' + sl + 'D:D,"*survey_sms")*100)&"%","\u2014")']
   ];
   for (var i = 0; i < head.length; i++) {
     s.getRange(5 + i, 1).setValue(head[i][0]).setFontWeight('bold');
@@ -248,7 +254,7 @@ function buildDashboard_(ss) {
     ['Callbacks requested', '=COUNTIFS(' + q + 'G:G,"<=6",' + q + 'J:J,"Yes")'],
     ['Callbacks resolved', '=COUNTIF(' + dt + 'K:K,"Resolved")'],
     ['Callback resolution rate',
-      '=IFERROR(ROUND(COUNTIF(' + dt + 'K:K,"Resolved")/COUNTIFS(' + q + 'G:G,"<=6",' + q + 'J:J,"Yes")*100)&"%","—")']
+      '=IFERROR(ROUND(COUNTIF(' + dt + 'K:K,"Resolved")/COUNTIFS(' + q + 'G:G,"<=6",' + q + 'J:J,"Yes")*100)&"%","\u2014")']
   ];
   for (var di = 0; di < det.length; di++) {
     s.getRange(rowDet + 1 + di, 1).setValue(det[di][0]).setFontWeight('bold');
@@ -271,11 +277,11 @@ function buildDashboard_(ss) {
     s.getRange(rm, 2).setFormula('=COUNTIFS(' + q + 'G:G,">=0",' + win + ')');
     s.getRange(rm, 3).setFormula('=COUNTIFS(' + q + 'G:G,">=9",' + win + ')');
     s.getRange(rm, 4).setFormula('=COUNTIFS(' + q + 'G:G,"<=6",' + win + ')');
-    s.getRange(rm, 5).setFormula('=IFERROR(ROUND((C' + rm + '-D' + rm + ')/B' + rm + '*100),"—")');
+    s.getRange(rm, 5).setFormula('=IFERROR(ROUND((C' + rm + '-D' + rm + ')/B' + rm + '*100),"\u2014")');
   }
 
   s.getRange(rowMon + 14, 1).setValue(
-    'Tip: select the Monthly Trend table and Insert → Chart for a visual trend line.')
+    'Tip: select the Monthly Trend table and Insert \u2192 Chart for a visual trend line.')
     .setFontColor('#6B7984').setFontStyle('italic');
 
   s.setHiddenGridlines(true);
@@ -293,7 +299,7 @@ function countRow_(s, r, q, col, labelCell) {
   s.getRange(r, 3).setFormula('=COUNTIFS(' + q + col + ',' + labelCell + ',' + q + 'G:G,">=9")');
   s.getRange(r, 4).setFormula('=COUNTIFS(' + q + col + ',' + labelCell + ',' + q + 'G:G,">=7",' + q + 'G:G,"<=8")');
   s.getRange(r, 5).setFormula('=COUNTIFS(' + q + col + ',' + labelCell + ',' + q + 'G:G,"<=6")');
-  s.getRange(r, 6).setFormula('=IFERROR(ROUND((C' + r + '-E' + r + ')/B' + r + '*100),"—")');
+  s.getRange(r, 6).setFormula('=IFERROR(ROUND((C' + r + '-E' + r + ')/B' + r + '*100),"\u2014")');
 }
 
 // Same, but criterion is a literal string (e.g. trigger code "ia").
@@ -302,7 +308,7 @@ function countRowLiteral_(s, r, q, col, lit) {
   s.getRange(r, 3).setFormula('=COUNTIFS(' + q + col + ',' + lit + ',' + q + 'G:G,">=9")');
   s.getRange(r, 4).setFormula('=COUNTIFS(' + q + col + ',' + lit + ',' + q + 'G:G,">=7",' + q + 'G:G,"<=8")');
   s.getRange(r, 5).setFormula('=COUNTIFS(' + q + col + ',' + lit + ',' + q + 'G:G,"<=6")');
-  s.getRange(r, 6).setFormula('=IFERROR(ROUND((C' + r + '-E' + r + ')/B' + r + '*100),"—")');
+  s.getRange(r, 6).setFormula('=IFERROR(ROUND((C' + r + '-E' + r + ')/B' + r + '*100),"\u2014")');
 }
 
 
@@ -312,7 +318,7 @@ function buildPhysioBreakdown_(ss) {
   var s = freshSheet_(ss, PHYSIO);
   var q = "'" + RAW + "'!";
 
-  s.getRange('A1').setValue('NPS — Physio Breakdown  (private — for coaching)');
+  s.getRange('A1').setValue('NPS \u2014 Physio Breakdown  (private \u2014 for coaching)');
   s.getRange('A1:H1').merge().setFontSize(14).setFontWeight('bold').setFontColor('#33424E');
   s.getRange('A2:H2').merge().setValue(
     'Per-physio NPS and the comments behind it. Keep this tab restricted to Marty.')
@@ -331,16 +337,16 @@ function buildPhysioBreakdown_(ss) {
     s.getRange(r, 3).setFormula('=COUNTIFS(' + q + 'D:D,$A' + r + ',' + q + 'G:G,">=9")');
     s.getRange(r, 4).setFormula('=COUNTIFS(' + q + 'D:D,$A' + r + ',' + q + 'G:G,">=7",' + q + 'G:G,"<=8")');
     s.getRange(r, 5).setFormula('=COUNTIFS(' + q + 'D:D,$A' + r + ',' + q + 'G:G,"<=6")');
-    s.getRange(r, 6).setFormula('=IFERROR(ROUND((C' + r + '-E' + r + ')/B' + r + '*100),"—")');
+    s.getRange(r, 6).setFormula('=IFERROR(ROUND((C' + r + '-E' + r + ')/B' + r + '*100),"\u2014")');
     s.getRange(r, 7).setFormula(
       '=IFERROR(ROUND((COUNTIFS(' + q + 'D:D,$A' + r + ',' + q + 'G:G,">=9",' + q + 'M:M,">="&(TODAY()-90))'
       + '-COUNTIFS(' + q + 'D:D,$A' + r + ',' + q + 'G:G,"<=6",' + q + 'M:M,">="&(TODAY()-90)))'
-      + '/COUNTIFS(' + q + 'D:D,$A' + r + ',' + q + 'G:G,">=0",' + q + 'M:M,">="&(TODAY()-90))*100),"—")');
+      + '/COUNTIFS(' + q + 'D:D,$A' + r + ',' + q + 'G:G,">=0",' + q + 'M:M,">="&(TODAY()-90))*100),"\u2014")');
   }
 
   // Comments viewer
   var cRow = 5 + PHYSIOS.length + 2;            // ~15
-  sectionBar_(s, cRow, 8, 'COMMENTS — choose a physio');
+  sectionBar_(s, cRow, 8, 'COMMENTS \u2014 choose a physio');
   s.getRange(cRow + 1, 1).setValue('View comments for:').setFontWeight('bold');
   var picker = s.getRange(cRow + 1, 2);
   picker.setValue(PHYSIOS[0]).setBackground('#FFF7E6');

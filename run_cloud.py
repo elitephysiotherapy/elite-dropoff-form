@@ -38,6 +38,7 @@ COMMANDS = {
     "packages_weekly":   [PY, "send_packages_weekly.py", "--post"],
     "referrers_monthly": [PY, "send_referrers_monthly.py", "--post"],
     "reactivations_weekly": [PY, "send_reactivations_weekly.py", "--post"],
+    "reactivations_monthly": [PY, "reactivations_by_month.py", "--refresh"],
 }
 
 # Jobs that fire only on the 1st of each calendar month (in addition to the
@@ -62,6 +63,7 @@ TARGETS = {
     "packages_weekly":   [({0}, 8, 0)],                           # Mon 08:00 — previous week's packages
     "referrers_monthly": [(None, 8, 0)],                          # 08:00 on day 1 (see MONTHLY_DAY1_JOBS)
     "reactivations_weekly": [({0}, 8, 0)],                        # Mon 08:00 — previous week's reactivations
+    "reactivations_monthly": [(None, 7, 20)],                     # 07:20 daily — refresh monthly totals tab
 }
 
 # Minutes after a target time during which a firing still counts as "on time".

@@ -432,7 +432,7 @@ def write_dashboard(sh):
     now = datetime.now(LONDON)
     out = [["New Patient Bookings — Dashboard"],
            [f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"], []]
-    hdr = ["Period", "Total IAs", "Brand New", "Past Patient", "Reactivations",
+    hdr = ["Period", "Total IAs", "Brand New", "Past Patient", "IA Reactivations",
            "Online", "Phone / Walk-in", "Leads (not booked)"]
 
     out.append(["BY WEEK (Sunday-Saturday)"])
@@ -446,7 +446,7 @@ def write_dashboard(sh):
 
     # One weekly section per clinic — new clinics appear automatically once
     # they are added to config.CLINIKO_BUSINESS_TO_CLINIC.
-    chdr = ["Period", "Total IAs", "Brand New", "Past Patient", "Reactivations"]
+    chdr = ["Period", "Total IAs", "Brand New", "Past Patient", "IA Reactivations"]
     weeks_desc = sorted(weekly, key=lambda t: datetime.strptime(t[4:], "%d %b %Y"),
                         reverse=True)
     for clinic in sorted(set(config.CLINIKO_BUSINESS_TO_CLINIC.values())):

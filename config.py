@@ -113,13 +113,14 @@ PRACTITIONER_DISPLAY_NAME = {
     "Erin McNicholl": "Erin",
     "Daire McKenna": "Daire",
     "Aoife O'Kane": "Aoife",
+    "Ciara O'Kane": "Ciara",
     "Molaí Smith": "Molaí",
     "Shannagh Conwell": "Shannagh",
 }
 
 # Row order in the Performance Dashboard, after Standard / Clinic Average / w/o M&J.
 PRACTITIONER_DISPLAY_ORDER = [
-    "Marty", "Julie", "Sinead", "Erin", "Daire", "Aoife", "Molaí", "Shannagh",
+    "Marty", "Julie", "Sinead", "Erin", "Daire", "Aoife", "Ciara", "Molaí", "Shannagh",
 ]
 
 # Per-physio monthly available service hours (used for monthly Utilization KPI).
@@ -131,6 +132,7 @@ PHYSIO_MONTHLY_HOURS = {
     "Daire": 128.6,
     "Sinead": 128.6,
     "Aoife": 128.6,
+    "Ciara": 128.6,
     "Molaí": 128.6,
     "Shannagh": 128.6,
 }
@@ -159,8 +161,9 @@ PHYSIO_SLACK_EMAIL = {
     "Julie": "julie@elitephysiocookstown.co.uk",
     "Sinead": "sineadmcgill@elitephysiocookstown.co.uk",
     "Erin": "erin@elitephysiocookstown.co.uk",
-    "Daire": "daire@elitephysiocookstown.co.uk",
+    # Daire McKenna left 2 Jul 2026 — removed so no DMs are sent to his account.
     "Aoife": "aoifeokane@elitephysiocookstown.co.uk",
+    "Ciara": "ciara@elitephysiocookstown.co.uk",
     "Molaí": "molai@elitephysiocookstown.co.uk",
     "Shannagh": "shannagh@elitephysiocookstown.co.uk",
 }
