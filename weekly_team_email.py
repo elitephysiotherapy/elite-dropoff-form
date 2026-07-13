@@ -105,6 +105,20 @@ def _retry_transient(call, label: str, attempts: int = 5):
                 delay *= 2
                 continue
             raise
+        except gspread.exceptions.APIError as e:
+            # gspread wraps Sheets HTTP errors in its own APIError, so they
+            # bypass the requests.HTTPError branch above. The six weekly crons
+            # share one GCP project's Sheets read quota and fire ~05:00 UTC, so
+            # a 429 'Read requests per minute' here is transient — back off and
+            # let the per-minute window clear.
+            code = getattr(getattr(e, "response", None), "status_code", 0)
+            if code in (429, 500, 502, 503, 504) and i < attempts - 1:
+                print(f"[email] {label}: Sheets API {code}, retry "
+                      f"{i+1}/{attempts-1} in {delay}s", flush=True)
+                _t.sleep(delay)
+                delay *= 2
+                continue
+            raise
 
 # Drop-off types that count toward "real" drop-offs in the team email.
 # Excludes IACNA + IADNA — same convention as the Weekly Drop-off Analysis
@@ -259,9 +273,14 @@ def _read_off_track_review() -> list[tuple[str, str]]:
     already grouped by physio). The tab is refreshed daily by phase1_fetch;
     this Monday cron reads whatever the latest refresh produced.
     """
-    sh = phase1_fetch.open_spreadsheet()
+    # open_by_key() itself does a Sheets read (fetch_sheet_metadata), so it can
+    # 429 when the shared per-minute quota is saturated — the exact crash on
+    # Mon 13 Jul 2026. Retry with backoff long enough to outlast a 1-min window.
+    sh = _retry_transient(phase1_fetch.open_spreadsheet,
+                          "open spreadsheet (off-track)", attempts=6)
     try:
-        ws = sh.worksheet("Off-Track Review")
+        ws = _retry_transient(lambda: sh.worksheet("Off-Track Review"),
+                              "Off-Track Review worksheet", attempts=6)
     except gspread.WorksheetNotFound:
         return []
     rows = _retry_transient(ws.get_all_values, "Off-Track Review read")
