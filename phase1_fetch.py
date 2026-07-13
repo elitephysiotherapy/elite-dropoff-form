@@ -185,8 +185,46 @@ def has_future_booking_in_history(appt, history):
     )
 
 
+NEW_EPISODE_GAP_DAYS = 60  # >60 days since last attended visit = new episode of care (Martin 2026-07)
+
+
+def _appt_start_dt(a):
+    s = a.get("starts_at") or ""
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def no_attendance_this_episode(appt, history):
+    """True if the patient has NOT attended anything in their CURRENT episode of
+    care before this drop-off event. A gap of more than NEW_EPISODE_GAP_DAYS days
+    since the last attended visit starts a new episode, so a long-gap return that
+    cancels/DNAs before attending is pre-IA (IACNA/IADNA) — the physio never saw
+    them this episode. (Rebecca McConnell never attended; Peter Small last
+    attended years earlier. Martin 2026-07.)"""
+    appt_start = appt.get("starts_at") or ""
+    attended = [h for h in (history or [])
+                if (h.get("starts_at") or "") < appt_start
+                and not h.get("cancelled_at")
+                and not h.get("did_not_arrive")]
+    if not attended:
+        return True  # never attended anything, ever
+    last = max(attended, key=lambda h: h.get("starts_at") or "")
+    ev, ls = _appt_start_dt(appt), _appt_start_dt(last)
+    if ev is None or ls is None:
+        return False
+    return (ev - ls).days > NEW_EPISODE_GAP_DAYS
+
+
 def is_ia_only_patient_at(appt, history):
-    """At the time of `appt`, has the patient attended only their IA in the current episode?"""
+    """At the time of `appt`, has the patient attended only their IA in the current episode?
+
+    Note: this is EPISODE-relative and deliberately `<= 1` — a patient who has
+    dropped early in the CURRENT episode (incl. 0 attended within a fresh
+    post-gap episode) is an IADNR. The pre-IA case (patient who never attended
+    ANYTHING, ever) is handled separately in classify_dropoff via
+    attended_before_count() == 0, so it doesn't reach the IADNR label."""
     import phase2 as p2
     _, episode, _ = p2.find_episode(history)
     if not episode:
@@ -294,6 +332,12 @@ def responsible_physio_id(appt, history):
 # also includes Club Consultation, Sports & MSK Consult, Mummy MOT, Pelvic
 # Health — so cancelling/DNA-ing one of those gets flagged IACNA/IADNA, not
 # the generic "cancelled"/"did_not_attend" bucket (Hugh McGurk case).
+#
+# NOTE: this set is deliberately NOT the broader-13 new-patient set. Diagnostic
+# types (Ultrasound, Profiling, Injury Update Testing) can be booked mid-care by
+# an ESTABLISHED patient, so "cancelled X = IACNA" only holds when the patient
+# has never attended. The never-attended case is handled in classify_dropoff's
+# non-IA branch via attended_before_count() == 0, not by widening this set.
 import phase2 as _p2_module
 _IA_TYPES_FOR_CLASSIFY = _p2_module.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS
 
@@ -323,18 +367,27 @@ def classify_dropoff(appt, type_id, history):
         # expect a follow-up. Sports & MSK Consult, Mummy MOT, Pelvic Health,
         # Club Consultation are one-and-done by design, so no-rebook isn't a
         # drop-off. (Ultrasound Assessment etc. are even narrower NEW_PATIENT
-        # types not in is_ia, so they never reach this branch.)
+        # types not in is_ia, so they never reach this branch — a cancelled/
+        # DNA'd one is handled in the non-IA branch below.)
         if type_id not in PHASE1_DROPOFF_IA_TYPE_IDS:
             return None
         return None if has_future_booking_in_history(appt, history) else "iadnr"
 
-    # Non-IA appointment
+    # Non-IA appointment. If the patient has NEVER attended anything before this
+    # event, the physio never actually saw them — it's a pre-IA drop-off
+    # (IACNA/IADNA), not a physio-responsible IADNR/CNA/DNA. This is what stops a
+    # cancelled first-ever Ultrasound (or any never-attended first booking) being
+    # mislabelled IADNR against the scheduled physio (Rebecca McConnell, 2026-07).
     if is_cancelled:
         if has_future_booking_in_history(appt, history):
             return None  # reschedule
+        if no_attendance_this_episode(appt, history):
+            return "iacna"
         return "iadnr" if is_ia_only_patient_at(appt, history) else "cancelled"
 
     if is_dna:
+        if no_attendance_this_episode(appt, history):
+            return "iadna"
         return "iadnr" if is_ia_only_patient_at(appt, history) else "did_not_attend"
 
     return None  # attended non-IA — not a drop-off
@@ -2267,6 +2320,109 @@ def write_physio_trends_tab(months_back=12):
     return ws
 
 
+def _iadnr_reactivation_lookup(sh, window_days=30):
+    """Map {appointment_id: True/False} for every IADNR row across the W/C tabs.
+    True = the patient rebooked a follow-up within `window_days` of the drop-off
+    (reactivated). A reactivation NEVER un-does the drop-off — the row stays an
+    IADNR — but a within-30-day rebooking means it's not a *net loss*, so the
+    Weekly Drop-off Analysis can show net-loss vs reactivated separately.
+
+    Resolves each patient by the ID embedded in their name-hyperlink, with a
+    name-search fallback, so stale appointment IDs / duplicate patient records
+    don't corrupt the result. (Martin 2026-07: 30-day line.)"""
+    import phase2 as p2
+    import re
+    PID_RE = re.compile(r"/patients/(\d+)")
+
+    def _pdt(s):
+        try:
+            return datetime.fromisoformat((s or "").replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def _sheet_dt(s):
+        s = (s or "").strip()
+        for f in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(s, f)
+            except ValueError:
+                continue
+        return None
+
+    hist_cache = {}
+    def hist(pid):
+        if pid not in hist_cache:
+            try:
+                hist_cache[pid] = p2.fetch_patient_full_history(pid)
+            except Exception:
+                hist_cache[pid] = []
+        return hist_cache[pid]
+
+    name_cache = {}
+    def by_name(first, last):
+        k = (first, last)
+        if k not in name_cache:
+            try:
+                name_cache[k] = list(fetch_all(
+                    "/patients", [("q[]", f"first_name:={first}"), ("q[]", f"last_name:={last}")]))
+            except Exception:
+                name_cache[k] = []
+        return name_cache[k]
+
+    def resolve(pid, disp, ev_date):
+        h = hist(pid)
+        if any((a.get("starts_at") or "")[:10] == ev_date for a in h):
+            return h
+        parts = disp.split()
+        if len(parts) >= 2:
+            for pt in by_name(parts[0], " ".join(parts[1:])):
+                h2 = hist(pt["id"])
+                if any((a.get("starts_at") or "")[:10] == ev_date for a in h2):
+                    return h2
+        return h
+
+    lookup = {}
+    for ws in sh.worksheets():
+        if not ws.title.startswith("W/C "):
+            continue
+        try:
+            form = ws.get_values(value_render_option="FORMULA")
+            recs = ws.get_all_records()
+        except Exception:
+            continue
+        nci = form[0].index("Patient Name") if form and "Patient Name" in form[0] else None
+        for k, rec in enumerate(recs):
+            if str(rec.get("Drop-off Type") or "").strip().lower() != "iadnr":
+                continue
+            aid = str(rec.get("appointment_id") or "")
+            if not aid:
+                continue
+            frow = form[k + 1] if (k + 1) < len(form) else []
+            m = PID_RE.search(str(frow[nci]) if (nci is not None and nci < len(frow)) else "")
+            ev = _sheet_dt(str(rec.get("Appointment Date") or ""))
+            if not m or not ev:
+                lookup[aid] = False
+                continue
+            ev_date = ev.strftime("%Y-%m-%d")
+            h = resolve(m.group(1), str(rec.get("Patient Name") or ""), ev_date)
+            evt = [a for a in h if (a.get("starts_at") or "")[:10] == ev_date]
+            if not evt:
+                lookup[aid] = False
+                continue
+            es = _pdt(evt[0].get("starts_at"))
+            reactivated = False
+            for a in h:
+                s = _pdt(a.get("starts_at"))
+                c = _pdt(a.get("created_at"))
+                if not s or a.get("cancelled_at"):
+                    continue
+                if es and s > es and c and 0 <= (c - es).days <= window_days:
+                    reactivated = True
+                    break
+            lookup[aid] = reactivated
+    return lookup
+
+
 def write_weekly_dropoff_analysis_tab():
     """Weekly Drop-off Analysis tab — per-practitioner tally + stage-of-rehab
     breakdown, one section per week, most recent at the top.
@@ -2316,6 +2472,13 @@ def write_weekly_dropoff_analysis_tab():
             return datetime.min
     ordered = sorted(weeks.keys(), key=week_date, reverse=True)
 
+    # Which IADNRs rebooked within 30 days (reactivations, not net losses).
+    try:
+        react_lookup = _iadnr_reactivation_lookup(sh)
+    except Exception as e:
+        print(f"  WARN reactivation lookup failed, treating all as net loss: {e}")
+        react_lookup = {}
+
     # Physio-responsible drop-off types (IACNA / IADNA are pre-IA — excluded
     # from the practitioner tally; the physio never saw the patient).
     PHYS_RESP = ("iadnr", "cancelled", "did_not_attend")
@@ -2325,8 +2488,9 @@ def write_weekly_dropoff_analysis_tab():
                   "Before Session 6", "After Session 6"]
     BODY_MAX = 14   # fixed body-area block height so the pie-chart range is stable
 
-    def analyse(rows):
+    def analyse(rows, react_lookup):
         per = {}
+        per_react = {}   # display -> IADNRs reactivated within 30d (not net losses)
         stage = {k: 0 for k in STAGE_ROWS}
         body = {}
         clinical = {"Clinical": 0, "Non-Clinical": 0}
@@ -2335,6 +2499,12 @@ def write_weekly_dropoff_analysis_tab():
                        or "").strip().lower()
             physio_full = str(r.get("Physio") or r.get("physio") or "?").strip()
             display = config.PRACTITIONER_DISPLAY_NAME.get(physio_full, physio_full)
+            # IADNRs where the patient rebooked within 30 days are reactivations,
+            # not net losses: still logged as IADNR, but counted separately here
+            # so the tally/stage/body reflect genuine losses only. (Martin 2026-07)
+            if kind == "iadnr" and react_lookup.get(str(r.get("appointment_id") or ""), False):
+                per_react[display] = per_react.get(display, 0) + 1
+                continue
             # Pre-IA drop-offs (iacna/iadna) are excluded from the stage breakdown.
             if kind in PHYS_RESP:
                 if kind == "iadnr":
@@ -2371,14 +2541,14 @@ def write_weekly_dropoff_analysis_tab():
                     clinical["Non-Clinical"] += 1
                 elif cv.startswith("clin"):
                     clinical["Clinical"] += 1
-        return per, stage, body, clinical
+        return per, per_react, stage, body, clinical
 
     out = [["Weekly Drop-off Analysis"],
            [f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"],
            []]
 
     for idx, title in enumerate(ordered):
-        per, stage, body_counts, clinical = analyse(weeks[title])
+        per, per_react, stage, body_counts, clinical = analyse(weeks[title], react_lookup)
         # IAs + review appointments actually performed that week (from Cliniko),
         # so the IADNR / CNA / DNA counts can be read against the volume they
         # came from.
@@ -2424,14 +2594,20 @@ def write_weekly_dropoff_analysis_tab():
         # CNAs+DNAs against review appointments completed, for the same week.
         ia_disp = ias_perf if ias_perf is not None else "?"
         rev_disp = review_perf if review_perf is not None else "?"
-        out.append(["IAs performed this week:", ia_disp, "", "IADNRs:", tot["iadnr"]])
+        react_tot = sum(per_react.values())
+        out.append(["IAs performed this week:", ia_disp, "", "IADNRs (net loss):", tot["iadnr"]])
         out.append(["Review appts completed:", rev_disp, "",
                     "CNAs + DNAs:", tot["cancelled"] + tot["did_not_attend"]])
+        out.append(["", "", "", "IADNRs reactivated ≤30d:", react_tot,
+                    "", "(gross IADNRs:", tot["iadnr"] + react_tot, ")"])
         out.append([])
 
     out.append(["Definitions:"])
     out.append(["  Practitioner tally = physio-responsible drop-offs only: "
                 "IADNR, CNA (established-patient cancellation), DNA."])
+    out.append(["  IADNR (net loss) = attended IA then lost, NOT rebooked within 30 days. "
+                "IADNRs reactivated ≤30d (patient rebooked a follow-up within 30 days) "
+                "stay logged as IADNR but are shown separately, not counted as losses."])
     out.append(["  IACNA / IADNA (pre-IA drop-offs — patient never attended the "
                 "assessment) are EXCLUDED from the Stage breakdown and the Body-Area "
                 "chart; they are not attributed to a physio and have no rehab stage."])

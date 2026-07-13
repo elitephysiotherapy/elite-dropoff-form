@@ -339,8 +339,11 @@ def weekly_clinic_stats(start_utc, end_utc):
     for a in appts:
         if not a.get("did_not_arrive") or a.get("cancelled_at"):
             continue
-        if id_from_link(a.get("appointment_type")) in config.EXCLUDED_FROM_TOTAL_APPTS:
+        t_id = id_from_link(a.get("appointment_type"))
+        if t_id in config.EXCLUDED_FROM_TOTAL_APPTS:
             continue
+        if t_id in config.EXCLUDED_FROM_DROPOFF_STATS:
+            continue  # Sports Massage never counts toward clinic/physio drop-off stats
         if _is_reschedule(a):
             continue
         candidates.append(a)
@@ -392,17 +395,22 @@ def weekly_clinic_stats(start_utc, end_utc):
 
         is_np = type_id in config.NEW_PATIENT_TYPE_IDS  # broader 13
         is_strict_ia = type_id in config.PHASE1_DROPOFF_IA_TYPE_IDS  # strict 4
+        is_sports_massage = type_id in config.EXCLUDED_FROM_DROPOFF_STATS
         is_attended = not is_cancelled and not is_dna
 
         if is_cancelled:
-            if _is_reschedule(a):
+            if is_sports_massage:
+                pass  # Sports Massage never counts as a drop-off (clinic/physio stats)
+            elif _is_reschedule(a):
                 pass  # reschedule — excluded from CNA/IACNA counts
             elif is_np:
                 n_iacnas += 1
             else:
                 n_cnas_review += 1
         elif is_dna:
-            if a["id"] not in true_dna_ids:
+            if is_sports_massage:
+                pass  # Sports Massage never counts as a drop-off (clinic/physio stats)
+            elif a["id"] not in true_dna_ids:
                 pass  # rescheduled OR duplicate DNA — excluded
             elif is_np:
                 n_iadnas += 1
@@ -804,7 +812,11 @@ def monthly_stats_per_physio(start_utc, end_utc):
         """True if this non-IA cancellation/DNA is an IADNR — same definition
         as phase1_fetch.classify_dropoff's "iadnr" branch: patient is in their
         current episode with at most their IA attended (no follow-ups), no
-        future booking (already established by the reschedule check upstream)."""
+        future booking (already established by the reschedule check upstream).
+
+        Episode-relative `<= 1` (the original rule). The never-attended-ever
+        pre-IA case is filtered upstream by _no_attendance_this_episode, so it
+        never reaches here."""
         pid = id_from_link(a.get("patient"))
         if not pid:
             return False
@@ -820,6 +832,28 @@ def monthly_stats_per_physio(start_utc, end_utc):
             and not h.get("did_not_arrive")
         )
         return attended_before <= 1
+
+    def _no_attendance_this_episode(a):
+        """True if the patient has NOT attended anything in their current episode
+        of care before this event. A gap of more than 60 days since the last
+        attended visit starts a new episode (Martin 2026-07), so a never-attended
+        patient OR a long-gap return that cancels/DNAs before attending is pre-IA
+        (IACNA/IADNA) — not a physio-responsible IADNR or review CNA/DNA."""
+        pid = id_from_link(a.get("patient"))
+        if not pid:
+            return False  # unknown patient — keep existing (treat as not pre-IA)
+        a_start = a.get("starts_at") or ""
+        attended = [h for h in (_get_history(pid) or [])
+                    if (h.get("starts_at") or "") < a_start
+                    and not h.get("cancelled_at")
+                    and not h.get("did_not_arrive")]
+        if not attended:
+            return True  # never attended anything, ever
+        last = max(attended, key=lambda h: h.get("starts_at") or "")
+        ev, ls = parse_iso(a.get("starts_at")), parse_iso(last.get("starts_at"))
+        if ev is None or ls is None:
+            return False
+        return (ev - ls).days > 60
 
     def _responsible_prac_id(a):
         """For a CNA/DNA on a NON-IA (review) appointment, return the physio
@@ -896,7 +930,9 @@ def monthly_stats_per_physio(start_utc, end_utc):
                 resp_disp, resp_full = _practitioner_display(_responsible_prac_id(a))
                 target = physios.setdefault(resp_disp, _new(resp_disp, resp_full))
                 pid = id_from_link(a.get("patient"))
-                if _is_iadnr_event(a):
+                if _no_attendance_this_episode(a):
+                    pass  # pre-IA (never attended this episode) — not physio-responsible
+                elif _is_iadnr_event(a):
                     if pid and pid not in iadnr_patients_counted:
                         target["iadnrs"] += 1
                         iadnr_patients_counted.add(pid)
@@ -912,7 +948,9 @@ def monthly_stats_per_physio(start_utc, end_utc):
                 resp_disp, resp_full = _practitioner_display(_responsible_prac_id(a))
                 target = physios.setdefault(resp_disp, _new(resp_disp, resp_full))
                 pid = id_from_link(a.get("patient"))
-                if _is_iadnr_event(a):
+                if _no_attendance_this_episode(a):
+                    pass  # pre-IA (never attended this episode) — not physio-responsible
+                elif _is_iadnr_event(a):
                     if pid and pid not in iadnr_patients_counted:
                         target["iadnrs"] += 1
                         iadnr_patients_counted.add(pid)
