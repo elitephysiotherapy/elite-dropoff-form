@@ -544,10 +544,14 @@ def _build_html(stats: dict, off_course: list[tuple[str, str]],
 def _build_recipients() -> tuple[list[str], list[str]]:
     """Return (to_list, cc_list).
 
-    To = all 8 physios + the extras (Sinead Rocks + Kelly).
+    To = every physio currently on the roster + the extras (Sinead Rocks + Kelly).
     CC = empty in v1.
+
+    Uses PHYSIO_CLINIC_EMAIL (real mailboxes), NOT PHYSIO_SLACK_EMAIL: the two
+    differ for anyone whose Slack is registered to a personal address, and this
+    is real email, not a Slack DM.
     """
-    physios = [email for email in config.PHYSIO_SLACK_EMAIL.values()
+    physios = [email for email in config.PHYSIO_CLINIC_EMAIL.values()
                if email and email != SENDER]
     extras = list(TEAM_EMAIL_EXTRA_RECIPIENTS)
     to = physios + extras

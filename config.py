@@ -130,67 +130,75 @@ CLINIC_MONTHLY_HOURS = 891.3       # total available service hours per month
 #   practitioner_ids their Cliniko IDs (stable even if they change their name)
 #   start / end      "YYYY-MM-DD" or None. end = last working day.
 #   monthly_hours    contracted monthly service hours (capacity/utilisation)
-#   slack_email      clinic email, used to look up their Slack ID at runtime
+#   clinic_email     their real mailbox — where the weekly team email is sent
+#   slack_email      ONLY if the address on their Slack account differs from
+#                    their clinic email. Slack is looked up by email, so if this
+#                    is wrong they silently receive no DMs at all. Verify with
+#                    Slack's users.lookupByEmail before setting it. Defaults to
+#                    clinic_email.
 #   owner_consultant True = excluded from the "w/o M&J" rollup
 #
 TEAM = [
     {"display": "Marty", "full_names": ["Martin Loughran", "Martin Loughran CS"],
      "practitioner_ids": ["382563813490168854", "1521620301232739358"],
      "start": None, "end": None, "monthly_hours": 83.1,
-     "slack_email": "martin@elitephysiocookstown.co.uk", "owner_consultant": True},
+     "clinic_email": "martin@elitephysiocookstown.co.uk", "owner_consultant": True},
 
     {"display": "Julie", "full_names": ["Julie McVey", "Julie McVey CS"],
      "practitioner_ids": ["382564987693962263", "1648706640343471203"],
      "start": None, "end": None, "monthly_hours": 36.7,
-     "slack_email": "julie@elitephysiocookstown.co.uk", "owner_consultant": True},
+     "clinic_email": "julie@elitephysiocookstown.co.uk", "owner_consultant": True},
 
     {"display": "Sinead", "full_names": ["Sinead McGill"],
      "practitioner_ids": ["1172138415936771374"],
      "start": "2022-01-01", "end": None, "monthly_hours": 128.6,
-     "slack_email": "sineadmcgill@elitephysiocookstown.co.uk"},
+     "clinic_email": "sineadmcgill@elitephysiocookstown.co.uk"},
 
     {"display": "Erin", "full_names": ["Erin McNicholl"],
      "practitioner_ids": ["1168999178748040474"],
      "start": "2023-01-01", "end": None, "monthly_hours": 128.6,
-     "slack_email": "erin@elitephysiocookstown.co.uk"},
+     "clinic_email": "erin@elitephysiocookstown.co.uk"},
 
     # LEFT 2 Jul 2026. Kept here on purpose — this is what preserves her name on
     # every historical dashboard, NPS column and drop-off row. Do not delete.
     {"display": "Daire", "full_names": ["Daire McKenna"],
      "practitioner_ids": ["1501275397424158535"],
      "start": "2023-06-01", "end": "2026-07-02", "monthly_hours": 128.6,
-     "slack_email": "daire@elitephysiocookstown.co.uk"},
+     "clinic_email": "daire@elitephysiocookstown.co.uk"},
 
     {"display": "Aoife", "full_names": ["Aoife O'Kane"],
      "practitioner_ids": ["1592625921783764576"],
      "start": "2025-01-01", "end": None, "monthly_hours": 128.6,
-     "slack_email": "aoifeokane@elitephysiocookstown.co.uk"},
+     "clinic_email": "aoifeokane@elitephysiocookstown.co.uk"},
 
     {"display": "Ciara", "full_names": ["Ciara O'Kane"],
      "practitioner_ids": ["1965915462512416363"],
      "start": "2026-06-08", "end": None, "monthly_hours": 128.6,
-     "slack_email": "ciara@elitephysiocookstown.co.uk"},
+     "clinic_email": "ciara@elitephysiocookstown.co.uk"},
 
     {"display": "Molaí", "full_names": ["Molaí Smith"],
      "practitioner_ids": ["1719373338607883970"],
      "start": "2025-09-01", "end": None, "monthly_hours": 128.6,
-     "slack_email": "molai@elitephysiocookstown.co.uk"},
+     "clinic_email": "molai@elitephysiocookstown.co.uk"},
 
     {"display": "Shannagh", "full_names": ["Shannagh Conwell"],
      "practitioner_ids": ["1818200739135100480"],
      "start": "2025-11-01", "end": None, "monthly_hours": 128.6,
-     "slack_email": "shannagh@elitephysiocookstown.co.uk"},
+     "clinic_email": "shannagh@elitephysiocookstown.co.uk"},
 
     # Joins full-time 1 Aug 2026. She has scattered earlier appointments in
     # Cliniko (a placement: 25 in Nov 2025, a handful since) — those resolve to
     # "Kelly" straight away, but she stays off the dashboard and out of the
     # capacity/DM lists until her start date, then appears on her own.
-    # NOTE: her Slack account is registered to a personal address, not a clinic
-    # one — there is no kelly@elitephysiocookstown.co.uk. Update this if she
-    # gets a clinic email, or her DMs will stop reaching her.
+    # ⚠️ Her SLACK account is registered to a personal address — there is no
+    # Slack account for kelly@elitephysiocookstown.co.uk (verified against the
+    # workspace 2026-07-14). Her clinic mailbox gets the weekly team email; her
+    # Slack DMs must go to the iCloud address or they silently vanish. Remove
+    # the slack_email override once her Slack is moved to the clinic address.
     {"display": "Kelly", "full_names": ["Kelly Scott"],
      "practitioner_ids": ["1810741098981627376"],
      "start": "2026-08-01", "end": None, "monthly_hours": 128.6,
+     "clinic_email": "kelly@elitephysiocookstown.co.uk",
      "slack_email": "kellyscott0208@icloud.com"},
 ]
 
@@ -288,15 +296,25 @@ EXCLUDE_FROM_MAIN_TEAM = {m["display"] for m in TEAM if m.get("owner_consultant"
 # SLACK NOTIFICATION CONFIG
 # ===========================================================================
 
-# DERIVED FROM TEAM — display name → email (used to look up Slack user ID at
-# runtime). Only people currently on the team: setting someone's "end" date in
-# TEAM automatically stops all DMs to them from the next day. (This is what was
-# hand-maintained before — Daire was deleted from this list when she left
-# 2 Jul 2026; now her "end" date does it.)
-# To change someone's email, edit their slack_email in TEAM.
+# DERIVED FROM TEAM — display name → the address on their SLACK account, used to
+# look up their Slack user ID at runtime. Falls back to their clinic email, which
+# is right for everyone whose Slack uses their work address.
+# Only people currently on the team: setting someone's "end" date in TEAM
+# automatically stops all DMs to them from the next day. (This was hand-
+# maintained before — Daire was deleted from this list when she left 2 Jul 2026;
+# now her "end" date does it.)
 PHYSIO_SLACK_EMAIL = {
-    m["display"]: m["slack_email"] for m in TEAM
-    if is_active_on(m) and m.get("slack_email")
+    m["display"]: (m.get("slack_email") or m.get("clinic_email"))
+    for m in TEAM
+    if is_active_on(m) and (m.get("slack_email") or m.get("clinic_email"))
+}
+
+# DERIVED FROM TEAM — display name → real mailbox. This is where actual EMAIL
+# goes (the weekly team email), as opposed to Slack DMs above. The two differ
+# whenever someone's Slack is registered to a personal address.
+PHYSIO_CLINIC_EMAIL = {
+    m["display"]: m["clinic_email"] for m in TEAM
+    if is_active_on(m) and m.get("clinic_email")
 }
 
 # Safe-mode redirect target — when SLACK_SAFE_MODE is True, every Slack message
