@@ -180,6 +180,18 @@ TEAM = [
      "practitioner_ids": ["1818200739135100480"],
      "start": "2025-11-01", "end": None, "monthly_hours": 128.6,
      "slack_email": "shannagh@elitephysiocookstown.co.uk"},
+
+    # Joins full-time 1 Aug 2026. She has scattered earlier appointments in
+    # Cliniko (a placement: 25 in Nov 2025, a handful since) — those resolve to
+    # "Kelly" straight away, but she stays off the dashboard and out of the
+    # capacity/DM lists until her start date, then appears on her own.
+    # NOTE: her Slack account is registered to a personal address, not a clinic
+    # one — there is no kelly@elitephysiocookstown.co.uk. Update this if she
+    # gets a clinic email, or her DMs will stop reaching her.
+    {"display": "Kelly", "full_names": ["Kelly Scott"],
+     "practitioner_ids": ["1810741098981627376"],
+     "start": "2026-08-01", "end": None, "monthly_hours": 128.6,
+     "slack_email": "kellyscott0208@icloud.com"},
 ]
 
 
