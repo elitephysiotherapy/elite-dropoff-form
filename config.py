@@ -7,6 +7,7 @@ the next run.
 """
 
 import os
+from datetime import date
 
 # ===========================================================================
 # IA APPOINTMENT TYPE IDS
@@ -102,70 +103,188 @@ EXCLUDED_FROM_TOTAL_APPTS = {
 CLINIC_WEEKLY_HOURS = 198.25       # total available service hours per week
 CLINIC_MONTHLY_HOURS = 891.3       # total available service hours per month
 
-# Maps each Cliniko practitioner full name → short display name on the dashboard.
-# "X CS" entities (e.g. Martin Loughran CS) are folded into the main person.
+# ---------------------------------------------------------------------------
+# THE TEAM ROSTER — the ONE place to edit when someone joins or leaves.
+# ---------------------------------------------------------------------------
+# Everything below (display names, dashboard row order, capacity hours, Slack
+# DMs) is DERIVED from this list. You should never need to edit those by hand.
+#
+#   SOMEONE JOINS →  add an entry with "start" set to their first day.
+#                    Leave "end" as None.
+#   SOMEONE LEAVES → set "end" to their last working day. DO NOT DELETE THEM.
+#
+# ⚠️  NEVER delete a leaver from this list, and never remove them from Cliniko's
+# records. Deleting them here would wipe their name off historical dashboards,
+# NPS history and drop-off rows. Setting "end" is all that's needed: they keep
+# every historical figure they earned, stop receiving Slack DMs, and stop
+# consuming clinic capacity from the day after they leave.
+#
+# Deactivating a leaver in CLINIKO (to stop their per-practitioner monthly bill)
+# is safe — practitioner names are resolved from ALL staff, active and inactive
+# (see all_practitioners() in phase2.py / phase1_fetch.py).
+#
+# Fields:
+#   display          short name shown on every dashboard/DM
+#   full_names       their Cliniko practitioner name(s); "X CS" secondary
+#                    profiles fold into the same person
+#   practitioner_ids their Cliniko IDs (stable even if they change their name)
+#   start / end      "YYYY-MM-DD" or None. end = last working day.
+#   monthly_hours    contracted monthly service hours (capacity/utilisation)
+#   slack_email      clinic email, used to look up their Slack ID at runtime
+#   owner_consultant True = excluded from the "w/o M&J" rollup
+#
+TEAM = [
+    {"display": "Marty", "full_names": ["Martin Loughran", "Martin Loughran CS"],
+     "practitioner_ids": ["382563813490168854", "1521620301232739358"],
+     "start": None, "end": None, "monthly_hours": 83.1,
+     "slack_email": "martin@elitephysiocookstown.co.uk", "owner_consultant": True},
+
+    {"display": "Julie", "full_names": ["Julie McVey", "Julie McVey CS"],
+     "practitioner_ids": ["382564987693962263", "1648706640343471203"],
+     "start": None, "end": None, "monthly_hours": 36.7,
+     "slack_email": "julie@elitephysiocookstown.co.uk", "owner_consultant": True},
+
+    {"display": "Sinead", "full_names": ["Sinead McGill"],
+     "practitioner_ids": ["1172138415936771374"],
+     "start": "2022-01-01", "end": None, "monthly_hours": 128.6,
+     "slack_email": "sineadmcgill@elitephysiocookstown.co.uk"},
+
+    {"display": "Erin", "full_names": ["Erin McNicholl"],
+     "practitioner_ids": ["1168999178748040474"],
+     "start": "2023-01-01", "end": None, "monthly_hours": 128.6,
+     "slack_email": "erin@elitephysiocookstown.co.uk"},
+
+    # LEFT 2 Jul 2026. Kept here on purpose — this is what preserves her name on
+    # every historical dashboard, NPS column and drop-off row. Do not delete.
+    {"display": "Daire", "full_names": ["Daire McKenna"],
+     "practitioner_ids": ["1501275397424158535"],
+     "start": "2023-06-01", "end": "2026-07-02", "monthly_hours": 128.6,
+     "slack_email": "daire@elitephysiocookstown.co.uk"},
+
+    {"display": "Aoife", "full_names": ["Aoife O'Kane"],
+     "practitioner_ids": ["1592625921783764576"],
+     "start": "2025-01-01", "end": None, "monthly_hours": 128.6,
+     "slack_email": "aoifeokane@elitephysiocookstown.co.uk"},
+
+    {"display": "Ciara", "full_names": ["Ciara O'Kane"],
+     "practitioner_ids": ["1965915462512416363"],
+     "start": "2026-06-08", "end": None, "monthly_hours": 128.6,
+     "slack_email": "ciara@elitephysiocookstown.co.uk"},
+
+    {"display": "Molaí", "full_names": ["Molaí Smith"],
+     "practitioner_ids": ["1719373338607883970"],
+     "start": "2025-09-01", "end": None, "monthly_hours": 128.6,
+     "slack_email": "molai@elitephysiocookstown.co.uk"},
+
+    {"display": "Shannagh", "full_names": ["Shannagh Conwell"],
+     "practitioner_ids": ["1818200739135100480"],
+     "start": "2025-11-01", "end": None, "monthly_hours": 128.6,
+     "slack_email": "shannagh@elitephysiocookstown.co.uk"},
+]
+
+
+# ---------------------------------------------------------------------------
+# Roster helpers — date-aware "was this person on the team then?"
+# ---------------------------------------------------------------------------
+
+def _as_date(v):
+    return date.fromisoformat(v) if isinstance(v, str) else v
+
+
+def has_started(member, on=None):
+    """True if `member` had started by `on` (default: today)."""
+    on = on or date.today()
+    start = _as_date(member.get("start"))
+    return start is None or start <= on
+
+
+def is_active_on(member, on=None):
+    """True if `member` was on the team on `on` (default: today)."""
+    on = on or date.today()
+    end = _as_date(member.get("end"))
+    return has_started(member, on) and (end is None or end >= on)
+
+
+def is_active_in_period(member, period_start, period_end):
+    """True if `member` worked at ANY point during [period_start, period_end].
+
+    This is what keeps a leaver's numbers honest: Daire left 2 Jul 2026, so she
+    still has capacity (and a real utilisation %) for July, but none from August
+    onward. Same rule the CFO tool uses (clinician_roi._is_active).
+    """
+    start, end = _as_date(member.get("start")), _as_date(member.get("end"))
+    if start and start > period_end:
+        return False
+    if end and end < period_start:
+        return False
+    return True
+
+
+def _member(display):
+    for m in TEAM:
+        if m["display"] == display:
+            return m
+    return None
+
+
+def monthly_hours_on(display, period_start, period_end):
+    """Monthly capacity for `display` during a period — None if they weren't on
+    the team then, which makes utilisation render as "—" instead of a false 0%."""
+    m = _member(display)
+    if not m or not is_active_in_period(m, period_start, period_end):
+        return None
+    return m.get("monthly_hours")
+
+
+def weekly_hours_on(display, period_start, period_end):
+    """Weekly capacity for `display` during a period (see monthly_hours_on)."""
+    hrs = monthly_hours_on(display, period_start, period_end)
+    return round(hrs / 4.345, 1) if hrs else None
+
+
+# ---------------------------------------------------------------------------
+# DERIVED FROM TEAM — do not edit by hand.
+# ---------------------------------------------------------------------------
+
+# Every Cliniko full name → short display name. Includes LEAVERS, so their
+# historical appointments still resolve to their name rather than "?".
 PRACTITIONER_DISPLAY_NAME = {
-    "Martin Loughran": "Marty",
-    "Martin Loughran CS": "Marty",
-    "Julie McVey": "Julie",
-    "Julie McVey CS": "Julie",
-    "Sinead McGill": "Sinead",
-    "Erin McNicholl": "Erin",
-    "Daire McKenna": "Daire",
-    "Aoife O'Kane": "Aoife",
-    "Ciara O'Kane": "Ciara",
-    "Molaí Smith": "Molaí",
-    "Shannagh Conwell": "Shannagh",
+    full: m["display"] for m in TEAM for full in m["full_names"]
 }
 
 # Row order in the Performance Dashboard, after Standard / Clinic Average / w/o M&J.
-PRACTITIONER_DISPLAY_ORDER = [
-    "Marty", "Julie", "Sinead", "Erin", "Daire", "Aoife", "Ciara", "Molaí", "Shannagh",
-]
+# Includes leavers (their history stays on the board); excludes anyone who hasn't
+# started yet — they appear automatically on their start date.
+PRACTITIONER_DISPLAY_ORDER = [m["display"] for m in TEAM if has_started(m)]
 
-# Per-physio monthly available service hours (used for monthly Utilization KPI).
-# Keys are the display name. Update if a physio's hours change.
+# Per-physio monthly/weekly available service hours (Utilisation KPI).
+# Prefer monthly_hours_on()/weekly_hours_on(), which are date-aware and stop a
+# leaver from eating capacity after they've gone. These flat dicts are the
+# "as of today" view, kept for callers that have no period to hand.
 PHYSIO_MONTHLY_HOURS = {
-    "Marty": 83.1,
-    "Julie": 36.7,
-    "Erin": 128.6,
-    "Daire": 128.6,
-    "Sinead": 128.6,
-    "Aoife": 128.6,
-    "Ciara": 128.6,
-    "Molaí": 128.6,
-    "Shannagh": 128.6,
+    m["display"]: m["monthly_hours"] for m in TEAM if has_started(m)
 }
-
-# Per-physio WEEKLY available service hours — derived from PHYSIO_MONTHLY_HOURS
-# (monthly ÷ 4.345 average weeks per month). Powers the weekly per-physio
-# Utilisation column on the "Weekly Team Stats" tab. These are DERIVED figures:
-# to get exact weekly utilisation for any physio, replace their entry below with
-# their true contracted weekly service hours.
 PHYSIO_WEEKLY_HOURS = {
     name: round(hours / 4.345, 1) for name, hours in PHYSIO_MONTHLY_HOURS.items()
 }
 
 # Physios EXCLUDED from "w/o M&J" rollup (clinic minus owner-consultants).
-EXCLUDE_FROM_MAIN_TEAM = {"Marty", "Julie"}
+EXCLUDE_FROM_MAIN_TEAM = {m["display"] for m in TEAM if m.get("owner_consultant")}
 
 
 # ===========================================================================
 # SLACK NOTIFICATION CONFIG
 # ===========================================================================
 
-# Map display name → email (used to look up Slack user ID at runtime).
-# Update if a physio's Slack/clinic email changes.
+# DERIVED FROM TEAM — display name → email (used to look up Slack user ID at
+# runtime). Only people currently on the team: setting someone's "end" date in
+# TEAM automatically stops all DMs to them from the next day. (This is what was
+# hand-maintained before — Daire was deleted from this list when she left
+# 2 Jul 2026; now her "end" date does it.)
+# To change someone's email, edit their slack_email in TEAM.
 PHYSIO_SLACK_EMAIL = {
-    "Marty": "martin@elitephysiocookstown.co.uk",
-    "Julie": "julie@elitephysiocookstown.co.uk",
-    "Sinead": "sineadmcgill@elitephysiocookstown.co.uk",
-    "Erin": "erin@elitephysiocookstown.co.uk",
-    # Daire McKenna left 2 Jul 2026 — removed so no DMs are sent to his account.
-    "Aoife": "aoifeokane@elitephysiocookstown.co.uk",
-    "Ciara": "ciara@elitephysiocookstown.co.uk",
-    "Molaí": "molai@elitephysiocookstown.co.uk",
-    "Shannagh": "shannagh@elitephysiocookstown.co.uk",
+    m["display"]: m["slack_email"] for m in TEAM
+    if is_active_on(m) and m.get("slack_email")
 }
 
 # Safe-mode redirect target — when SLACK_SAFE_MODE is True, every Slack message

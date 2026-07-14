@@ -641,7 +641,9 @@ def weekly_stats_per_physio(start_utc, end_utc):
     future_cache = {}
     for s in physios.values():
         used_hrs = s["used_minutes"] / 60
-        avail = config.PHYSIO_WEEKLY_HOURS.get(s["display"])
+        # Date-aware: a leaver keeps capacity for weeks they actually worked, and
+        # has none afterwards (utilisation renders "—" rather than a false 0%).
+        avail = config.weekly_hours_on(s["display"], start_utc.date(), end_utc.date())
         s["used_hours"] = round(used_hrs, 1)
         s["available_hours"] = avail
         s["util_pct"] = (used_hrs / avail * 100) if avail else None
@@ -1059,7 +1061,8 @@ def monthly_stats_per_physio(start_utc, end_utc):
         stats["gen_pop_pva"] = ((stats["gen_pop_initial"] + stats["gen_pop_review"]) / stats["gen_pop_initial"]) if stats["gen_pop_initial"] else None
         used_hrs = stats["used_minutes"] / 60
         stats["used_hours"] = round(used_hrs, 2)
-        avail = config.PHYSIO_MONTHLY_HOURS.get(stats["display"])
+        # Date-aware: see weekly_stats_per_physio.
+        avail = config.monthly_hours_on(stats["display"], start_utc.date(), end_utc.date())
         stats["available_hours"] = avail
         stats["util_pct"] = (used_hrs / avail * 100) if avail else None
 
