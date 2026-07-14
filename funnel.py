@@ -246,7 +246,7 @@ def compute_all(sh):
     ctx = _context(sh)
     allw, allm = _tally(*ctx, None)
     corew, corem = _tally(*ctx, CORE_IA_TYPE_IDS)
-    pracs = {str(p["id"]): p for p in phase2.fetch_all("/practitioners")}
+    pracs = phase2.all_practitioners()   # incl. inactive — leavers keep their name
     core_phys = _tally_by_physio(*ctx, CORE_IA_TYPE_IDS, pracs)
     leads_w, leads_m = bf._lead_period_counts(sh)
     return {"all": {"weeks": allw, "months": allm},

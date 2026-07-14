@@ -102,6 +102,36 @@ def fetch_all(path, params=None):
         url = (data.get("links") or {}).get("next")
 
 
+_ALL_PRACS_CACHE = [None]
+
+
+def all_practitioners():
+    """Every practitioner keyed by str(id) — ACTIVE **AND** INACTIVE.
+
+    Cliniko's default /practitioners listing returns only active staff, and
+    GET /practitioners/<id> 404s once someone is deactivated. Their appointments
+    are NOT deleted — they still come back from /individual_appointments — but
+    without the inactive records here, a leaver's practitioner_id can't be
+    resolved to a name, so their work collapses into a "?" bucket and their
+    named row on every rebuilt tab goes empty. That's what happened when Daire
+    McKenna was deactivated (2026-07-13).
+
+    Always use this for practitioner_id -> name lookups, never a bare
+    fetch_all("/practitioners"), so deactivating a leaver in Cliniko (which
+    stops their per-practitioner billing) never blanks historical data.
+
+    Note this is a LOOKUP table, not a roster: callers build per-physio rows
+    from appointments that actually exist in the period, so past staff only
+    ever appear where they genuinely worked.
+    """
+    if _ALL_PRACS_CACHE[0] is None:
+        pracs = {str(p["id"]): p for p in fetch_all("/practitioners")}
+        for p in fetch_all("/practitioners", [("q[]", "active:=false")]):
+            pracs.setdefault(str(p["id"]), p)
+        _ALL_PRACS_CACHE[0] = pracs
+    return _ALL_PRACS_CACHE[0]
+
+
 def fetch_patient_full_history(patient_id):
     """Patient's full appointment history (live + cancelled), sorted ascending."""
     live = list(fetch_all("/individual_appointments", [("q[]", f"patient_id:={patient_id}")]))
@@ -555,7 +585,7 @@ def weekly_stats_per_physio(start_utc, end_utc):
     except Exception:
         group_appts = []
 
-    pracs = {str(p["id"]): p for p in fetch_all("/practitioners")}
+    pracs = all_practitioners()   # incl. inactive — leavers keep their name
 
     def _display(prac_id):
         prac = pracs.get(prac_id) or {}
@@ -659,7 +689,7 @@ def monthly_stats_per_physio(start_utc, end_utc):
     except Exception:
         group_appts = []
 
-    pracs = {str(p["id"]): p for p in fetch_all("/practitioners")}
+    pracs = all_practitioners()   # incl. inactive — leavers keep their name
 
     def _practitioner_display(prac_id):
         prac = pracs.get(prac_id) or {}
@@ -969,7 +999,17 @@ def monthly_stats_per_physio(start_utc, end_utc):
                 # mirrors the IA Rebook Rate tab's STRICT_IA_TYPE_IDS gate.
                 is_strict_ia = type_id in config.PHASE1_DROPOFF_IA_TYPE_IDS
                 pid = id_from_link(a.get("patient")) if is_strict_ia else None
-                if pid and pid not in iadnr_patients_counted:
+                # Only an IA that has ALREADY happened can be an IADNR. A future
+                # booked IA looks "attended" to this code (not cancelled, not
+                # DNA'd) and would otherwise be flagged as a drop-off purely
+                # because no follow-up is on the books yet — but the patient
+                # hasn't been seen, so there's nothing to rebook from. This
+                # inflated every physio's mid-month IADNR count (Shannagh: 9→4,
+                # July 2026). No-op for a completed past month, where every IA
+                # start is already <= now. (Martin 2026-07-13.)
+                ia_dt = parse_iso(a.get("starts_at"))
+                ia_occurred = ia_dt is not None and ia_dt <= datetime.now(timezone.utc)
+                if pid and ia_occurred and pid not in iadnr_patients_counted:
                     a_start = a.get("starts_at") or ""
                     history = _get_history(pid)
                     has_later_valid = any(
@@ -1056,7 +1096,7 @@ def ia_rebook_rate_for_window(start_dt_utc, end_dt_utc):
     iadna = [a for a in ias if a.get("did_not_arrive") and not a.get("cancelled_at")]
     attended_ias = [a for a in ias if not a.get("cancelled_at") and not a.get("did_not_arrive")]
 
-    pracs = {str(p["id"]): p for p in fetch_all("/practitioners")}
+    pracs = all_practitioners()   # incl. inactive — leavers keep their name
 
     per_physio = {}
     for ia in attended_ias:

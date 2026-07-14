@@ -161,6 +161,30 @@ def fetch_all(path, params=None):
         url = (data.get("links") or {}).get("next")
 
 
+_ALL_PRACS_CACHE = [None]
+
+
+def all_practitioners():
+    """Every practitioner keyed by str(id) — ACTIVE **AND** INACTIVE.
+
+    Cliniko's default /practitioners listing returns only active staff, and
+    GET /practitioners/<id> 404s once someone is deactivated. Their appointments
+    are NOT deleted — they still come back from /individual_appointments — but
+    without the inactive records here, a leaver's practitioner_id can't be
+    resolved to a name, so their drop-offs land against "?" instead of them.
+    That's what happened when Daire McKenna was deactivated (2026-07-13).
+
+    Mirrors phase2.all_practitioners(); kept local so this script stays
+    self-contained. Always use this for practitioner_id -> name lookups.
+    """
+    if _ALL_PRACS_CACHE[0] is None:
+        pracs = {str(p["id"]): p for p in fetch_all("/practitioners")}
+        for p in fetch_all("/practitioners", [("q[]", "active:=false")]):
+            pracs.setdefault(str(p["id"]), p)
+        _ALL_PRACS_CACHE[0] = pracs
+    return _ALL_PRACS_CACHE[0]
+
+
 def parse_iso(ts):
     return datetime.fromisoformat(ts.replace("Z", "+00:00")) if ts else None
 
@@ -478,7 +502,7 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
           f"already-in-sheet to skip: {len(skip_appointment_ids)}")
 
     types_by_id = {str(t["id"]): t for t in fetch_all("/appointment_types")}
-    pracs_by_id = {str(p["id"]): p for p in fetch_all("/practitioners")}
+    pracs_by_id = all_practitioners()   # incl. inactive — leavers keep their name
     biz_by_id = {str(b["id"]): b for b in fetch_all("/businesses")}
 
     # Two queries:

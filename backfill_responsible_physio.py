@@ -41,7 +41,7 @@ print("Pre-fetching Cliniko reference data…", flush=True)
 types_by_name = {(t.get("name") or "").strip(): str(t["id"])
                  for t in phase2.fetch_all("/appointment_types")}
 pracs_by_id = {}
-for prac in phase2.fetch_all("/practitioners"):
+for prac in phase2.all_practitioners().values():   # incl. inactive
     pid = str(prac.get("id"))
     full = f"{prac.get('first_name','?')} {prac.get('last_name','')}".strip()
     pracs_by_id[pid] = full

@@ -111,7 +111,7 @@ def fmt(ts):
 
 # --- practitioner id -> display name (for the "Rebooked with" column) ---
 prac_name = {}
-for pr in phase2.fetch_all("/practitioners"):
+for pr in phase2.all_practitioners().values():   # incl. inactive
     full = f"{pr.get('first_name','')} {pr.get('last_name','')}".strip()
     prac_name[str(pr["id"])] = config.PRACTITIONER_DISPLAY_NAME.get(full, full)
 
