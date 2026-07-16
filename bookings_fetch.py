@@ -245,7 +245,11 @@ def open_spreadsheet():
         raise RuntimeError("config.BOOKINGS_SPREADSHEET_ID is not set — create the "
                            "bookings sheet, share it with the service account, and "
                            "paste the ID into config.py")
-    return gspread.authorize(_sheets_credentials()).open_by_key(config.BOOKINGS_SPREADSHEET_ID)
+    # open_by_key does a Sheets metadata fetch — retry it on transient 429/5xx
+    # so a quota brush at open time can't fail the cron before any work is done.
+    client = gspread.authorize(_sheets_credentials())
+    return _gs_retry(lambda: client.open_by_key(config.BOOKINGS_SPREADSHEET_ID),
+                     "open spreadsheet")
 
 
 def _gs_retry(call, label, attempts=6):
@@ -389,7 +393,11 @@ def _lead_period_counts(sh):
 def write_dashboard(sh):
     """Rebuild the Dashboard tab — booking counts by week and by calendar month."""
     all_rows = []
-    for ws in sh.worksheets():
+    # sh.worksheets() is a Sheets metadata read. It ran unwrapped, so a transient
+    # 429/5xx here failed the whole cron with exit 1 — AFTER the bookings were
+    # already written — firing a false "server failure" alert (12:00 poll, 15 Jul
+    # 2026). Wrap it in the same backoff the rest of the write path uses.
+    for ws in _gs_retry(lambda: sh.worksheets(), "list worksheets"):
         if not ws.title.startswith("W/C "):
             continue
         try:
