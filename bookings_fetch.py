@@ -320,11 +320,40 @@ def cell_for(row, col):
     return str(val)
 
 
-def existing_appointment_ids(sh):
+def tabs_for_window(lookback_days=BOOKINGS_LOOKBACK_DAYS, since_date=None):
+    """Week-tab names that can hold a booking created inside the collection
+    window. A row is filed by week_tab_name(date_booked), and date_booked IS
+    created_at — so a booking created in the window can only land in a tab this
+    window spans. Dedup therefore never needs the older tabs.
+
+    (Caveat: if someone hand-edits a row's Date Booked into a different week,
+    that row drops out of the dedup set and could re-log once. Reading every
+    tab to cover that costs a read per tab, every run, forever — see the
+    quota note in _all_week_rows.)"""
+    s_iso, e_iso = created_window(lookback_days, since_date)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    start = (datetime.strptime(s_iso, fmt).replace(tzinfo=timezone.utc)
+             .astimezone(LONDON))
+    end = (datetime.strptime(e_iso, fmt).replace(tzinfo=timezone.utc)
+           .astimezone(LONDON))
+    names, d = set(), start
+    while d.date() <= end.date():
+        names.add(week_tab_name(d))
+        d += timedelta(days=1)
+    names.add(week_tab_name(end))
+    return names
+
+
+def existing_appointment_ids(sh, tabs=None):
+    """Appointment ids already in the sheet, for dedup. `tabs` limits the read
+    to those week tabs (see tabs_for_window); None reads every tab, which is
+    what backfills want."""
     col = COLUMNS.index("appointment_id") + 1
     ids = set()
-    for ws in sh.worksheets():
+    for ws in _gs_retry(lambda: sh.worksheets(), "list worksheets"):
         if not ws.title.startswith("W/C "):
+            continue
+        if tabs is not None and ws.title not in tabs:
             continue
         try:
             vals = _gs_retry(lambda c=col, w=ws: w.col_values(c),
@@ -390,20 +419,43 @@ def _lead_period_counts(sh):
     return weekly, monthly
 
 
+def _all_week_rows(sh):
+    """Every 'W/C ' tab's data rows, as get_all_records-style dicts, in ONE
+    Sheets read.
+
+    Was a get_all_records() per week tab — 1 read each, growing by one tab every
+    week. Together with the dedup read that put the poll near the 60-reads/min/
+    user quota and 429-crashed it (12:00 poll, 15 Jul 2026). The Dashboard needs
+    all-time history, so the fix is to batch the reads, not to skip tabs.
+
+    Returns raw cell strings. get_all_records() would coerce numeric-looking
+    cells to int/float, but every field the Dashboard reads (Date Booked,
+    New / Past Patient, Booking Source, Clinic) is text and is compared via
+    str(), so the bucket counts are unaffected.
+    """
+    titles = [ws.title for ws in _gs_retry(lambda: sh.worksheets(), "list worksheets")
+              if ws.title.startswith("W/C ")]
+    if not titles:
+        return []
+    # Tab names contain "/", so they must be quoted in A1 notation.
+    ranges = [f"'{t}'" for t in titles]
+    batch = _gs_retry(lambda: sh.values_batch_get(ranges), "batch read week tabs")
+    out = []
+    for vr in batch.get("valueRanges", []):
+        vals = vr.get("values") or []
+        if len(vals) < 2:          # header-only or empty tab
+            continue
+        hdr = vals[0]
+        for row in vals[1:]:
+            # The API trims trailing empty cells; get_all_records pads them.
+            row = list(row) + [""] * (len(hdr) - len(row))
+            out.append(dict(zip(hdr, row)))
+    return out
+
+
 def write_dashboard(sh):
     """Rebuild the Dashboard tab — booking counts by week and by calendar month."""
-    all_rows = []
-    # sh.worksheets() is a Sheets metadata read. It ran unwrapped, so a transient
-    # 429/5xx here failed the whole cron with exit 1 — AFTER the bookings were
-    # already written — firing a false "server failure" alert (12:00 poll, 15 Jul
-    # 2026). Wrap it in the same backoff the rest of the write path uses.
-    for ws in _gs_retry(lambda: sh.worksheets(), "list worksheets"):
-        if not ws.title.startswith("W/C "):
-            continue
-        try:
-            all_rows += ws.get_all_records()
-        except Exception as e:
-            print(f"  WARN couldn't read {ws.title}: {e}")
+    all_rows = _all_week_rows(sh)
 
     def bucket(rows):
         new = sum(1 for r in rows if str(r.get("New / Past Patient")) == "New")
@@ -564,7 +616,12 @@ def main():
     skip_ids = set()
     if write_mode:
         try:
-            skip_ids = existing_appointment_ids(open_spreadsheet())
+            # Only the week tabs the collection window can touch — reading every
+            # tab cost a read per tab on every run and grew forever (see
+            # tabs_for_window / _all_week_rows). A --since backfill widens the
+            # window, and tabs_for_window widens the tab set with it.
+            skip_ids = existing_appointment_ids(
+                open_spreadsheet(), tabs=tabs_for_window(since_date=since_date))
         except Exception as e:
             print(f"  WARN couldn't read existing ids: {e}")
 
