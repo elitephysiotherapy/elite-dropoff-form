@@ -15,11 +15,12 @@ ONCE, in the week the rebooking was created.
     drop→rebook→attend→drop→rebook = 2.
   • A rescheduled / therapist-changed appointment that was never cancelled is not
     a drop, so it is never a reactivation.
-  • >60 days: if the first rebook is a NEW IA whose appointment date is more than
-    60 days after the drop-off event, it is a NEW BOOKING, not a reactivation.
-    A follow-up after 60 days is still a reactivation.
-  • Never double-counted: a ≤60-day return is a reactivation only (kept out of
-    Total IAs); a >60-day new IA is a new booking only.
+  • Windows (Martin, 2026-07-20): ANY rebooking within 42 days is a reactivation.
+    A FOLLOW-UP within 90 days is a reactivation. An IA type MORE than 42 days
+    after the drop-off is a NEW EPISODE of care — the original drop-off holds and
+    no reactivation is credited. Beyond those, neither.
+  • Never double-counted: a ≤42-day return is a reactivation only (kept out of
+    Total IAs); a >42-day new IA is a new booking only.
 
 `reactivation_records(history, now)` returns one record per lapse that produced a
 rebooking, each: {drop_date, rebook (appt), rebook_created, is_new_booking}.
@@ -34,7 +35,13 @@ import phase2
 import config
 
 LONDON = ZoneInfo("Europe/London")
-NEW_IA_AFTER_DAYS = 60
+# Reactivation windows (Martin, 2026-07-20 — superseded the flat 60-day rule):
+#   * ANY rebooking within 42 days of the drop-off  -> reactivation
+#   * a FOLLOW-UP within 90 days                    -> reactivation
+#   * an IA type MORE than 42 days after            -> NEW EPISODE of care: the
+#     original drop-off holds and no reactivation is credited
+NEW_IA_AFTER_DAYS = 42
+FOLLOWUP_AFTER_DAYS = 90
 
 
 def _dt(iso):
@@ -154,15 +161,19 @@ def reactivation_records(history, now):
             continue                                # dropped, never rebooked
         rebook = min(rebooks, key=lambda a: a.get("created_at") or "")
         st = _dt(rebook.get("starts_at"))
-        over_60 = bool(st and (st - drop_date).days > NEW_IA_AFTER_DAYS)
-        if not over_60:
-            is_react, is_new = True, False          # ≤60d: any rebooking counts
+        gap = (st - drop_date).days if st else None
+        if gap is not None and gap <= NEW_IA_AFTER_DAYS:
+            is_react, is_new = True, False          # ≤42d: any rebooking counts
         elif _is_ia(rebook):
-            is_react, is_new = False, True          # >60d new IA = new booking
-        elif _is_followup(rebook):
-            is_react, is_new = True, False          # >60d follow-up still counts
+            # >42d new IA = a NEW EPISODE of care. The original drop-off holds
+            # and no reactivation is credited for it.
+            is_react, is_new = False, True
+        elif _is_followup(rebook) and gap is not None and gap <= FOLLOWUP_AFTER_DAYS:
+            is_react, is_new = True, False          # follow-up within 90d still counts
         else:
-            is_react, is_new = False, False         # >60d one-off (scan/consult/…) = neither
+            # >90d follow-up, or a one-off (scan/consult/massage) beyond 42d:
+            # neither a reactivation nor a new booking — the drop-off stands.
+            is_react, is_new = False, False
         records.append({
             "drop_date": drop_date,
             "drop_appt": drop_appt,

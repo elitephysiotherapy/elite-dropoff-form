@@ -76,11 +76,13 @@ check("drop then new IA >60d = 1 new booking", newbookings([
     appt("b", IA, "2026-06-20T09:00:00Z", "2026-06-10T09:00:00Z"),
 ]), 1)
 
-# 8. drop then FOLLOW-UP >60 days later -> still a reactivation
-check("drop then follow-up >60d = 1 reactivation", count([
+# 8. drop then FOLLOW-UP 103 days later -> beyond the 90-day cap, NOT a
+#    reactivation and not a new booking either: the drop-off stands.
+#    (Was "still a reactivation" under the old unbounded follow-up rule.)
+check("drop then follow-up 103d = 0 reactivation", count([
     appt("a", FU, "2026-03-10T09:00:00Z", "2026-03-01T09:00:00Z", cancelled="2026-03-09T09:00:00Z"),
     appt("b", FU, "2026-06-20T09:00:00Z", "2026-06-10T09:00:00Z"),
-]), 1)
+]), 0)
 
 # 9. DNA same-day rebook -> reschedule -> 0
 check("DNA same-day rebook = 0", count([
@@ -110,10 +112,35 @@ check("drop then >60d one-off = 0 new booking", newbookings([
     appt("b", SCAN, "2026-06-20T09:00:00Z", "2026-06-10T09:00:00Z"),
 ]), 0)
 
-# 13. Drop then a >60-day FOLLOW-UP -> still a reactivation
-check("drop then >60d follow-up = 1", count([
+# 13. Windows (Martin 2026-07-20): any rebooking <=42d; a FOLLOW-UP <=90d; an IA
+#     type >42d is a NEW EPISODE (drop-off holds, no reactivation credited).
+#     This follow-up is 102 days out -> beyond the 90-day cap, so NOT a reactivation.
+check("drop then 102d follow-up = 0 (beyond 90d cap)", count([
     appt("a", FU, "2026-03-10T09:00:00Z", "2026-03-01T09:00:00Z", cancelled="2026-03-09T09:00:00Z"),
     appt("b", FU, "2026-06-20T09:00:00Z", "2026-06-10T09:00:00Z"),
+]), 0)
+
+# 13b. Follow-up INSIDE the 90-day cap (60 days out) -> still a reactivation
+check("drop then 60d follow-up = 1 (inside 90d cap)", count([
+    appt("a", FU, "2026-03-10T09:00:00Z", "2026-03-01T09:00:00Z", cancelled="2026-03-09T09:00:00Z"),
+    appt("b", FU, "2026-05-09T09:00:00Z", "2026-04-20T09:00:00Z"),
+]), 1)
+
+# 13c/d. Boundary either side of 42 days. NOTE the gap is measured from the DROP
+#        EVENT — here the cancellation on 9 Mar, not the 10 Mar appointment — so
+#        9 Mar + 42d = 20 Apr is the last day that still counts as a reactivation.
+check("IA at 42d = 1 reactivation", count([
+    appt("a", FU, "2026-03-10T09:00:00Z", "2026-03-01T09:00:00Z", cancelled="2026-03-09T09:00:00Z"),
+    appt("b", IA, "2026-04-20T09:00:00Z", "2026-03-20T09:00:00Z"),
+]), 1)
+
+check("IA at 43d = 0 reactivation (new episode)", count([
+    appt("a", FU, "2026-03-10T09:00:00Z", "2026-03-01T09:00:00Z", cancelled="2026-03-09T09:00:00Z"),
+    appt("b", IA, "2026-04-21T09:00:00Z", "2026-03-20T09:00:00Z"),
+]), 0)
+check("IA at 43d = 1 new booking", newbookings([
+    appt("a", FU, "2026-03-10T09:00:00Z", "2026-03-01T09:00:00Z", cancelled="2026-03-09T09:00:00Z"),
+    appt("b", IA, "2026-04-21T09:00:00Z", "2026-03-20T09:00:00Z"),
 ]), 1)
 
 # 14. IADNR where the IA was entered the day AFTER it happened (created > starts):

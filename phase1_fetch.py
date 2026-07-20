@@ -436,6 +436,7 @@ def responsible_physio_id(appt, history):
 # has never attended. The never-attended case is handled in classify_dropoff's
 # non-IA branch via attended_before_count() == 0, not by widening this set.
 import phase2 as _p2_module
+import reactivations as _react
 _IA_TYPES_FOR_CLASSIFY = _p2_module.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS
 
 
@@ -2454,9 +2455,10 @@ def write_physio_trends_tab(months_back=12):
     return ws
 
 
-def _iadnr_reactivation_lookup(sh, window_days=30):
+def _iadnr_reactivation_lookup(sh, window_days=None):  # window_days: unused, kept for callers
     """Map {appointment_id: True/False} for every IADNR row across the W/C tabs.
-    True = the patient rebooked a follow-up within `window_days` of the drop-off
+    True = the patient rebooked inside the canonical reactivation windows
+    (any type within 42 days, or a follow-up within 90) of the drop-off
     (reactivated). A reactivation NEVER un-does the drop-off — the row stays an
     IADNR — but a within-30-day rebooking means it's not a *net loss*, so the
     Weekly Drop-off Analysis can show net-loss vs reactivated separately.
@@ -2547,10 +2549,19 @@ def _iadnr_reactivation_lookup(sh, window_days=30):
             reactivated = False
             for a in h:
                 s = _pdt(a.get("starts_at"))
-                c = _pdt(a.get("created_at"))
-                if not s or a.get("cancelled_at"):
+                if not s or a.get("cancelled_at") or not es or s <= es:
                     continue
-                if es and s > es and c and 0 <= (c - es).days <= window_days:
+                gap = (s - es).days
+                t_id = str(id_from_link(a.get("appointment_type")))
+                # Same windows as the canonical engine (Martin 2026-07-20):
+                # ANY rebooking within 42 days, or a FOLLOW-UP within 90 days.
+                # An IA type beyond 42 days is a new episode of care — the
+                # original drop-off holds and no reactivation is credited.
+                if gap <= _react.NEW_IA_AFTER_DAYS:
+                    reactivated = True
+                    break
+                if (t_id in _react.FOLLOWUP_TYPE_IDS
+                        and gap <= _react.FOLLOWUP_AFTER_DAYS):
                     reactivated = True
                     break
             lookup[aid] = reactivated
@@ -2622,6 +2633,88 @@ def write_weekly_dropoff_analysis_tab():
                   "Before Session 6", "After Session 6"]
     BODY_MAX = 14   # fixed body-area block height so the pie-chart range is stable
 
+    # ---- Episode-level dedup (Martin 2026-07-20) ----
+    # One episode of care = ONE entry in the stats, against ONE physio, however
+    # many times the patient cancels — IADNR, CNA and DNA alike. Counting rows
+    # double-counted Lyn Kelly and Odhran Nugent, and split Ross Daly across
+    # three physios who had not treated him.
+    #
+    # Only patients with MORE THAN ONE physio-responsible row need resolving
+    # against Cliniko; a single row is already one-per-episode. That keeps this
+    # to ~50 patients instead of ~460, which matters because it runs on the
+    # daily refresh.
+    def _episode_dedup(weeks):
+        """Returns (suppressed_ids, overrides).
+
+        suppressed_ids — appointment_ids that must NOT be counted (the losing
+                         rows of a multi-row patient).
+        overrides      — {appointment_id: {"kind", "physio"}} for the surviving
+                         row, so it carries the right classification and physio.
+        """
+        counts, rows_by_patient = {}, {}
+        for title, rws in weeks.items():
+            for r in rws:
+                kind = str(r.get("Drop-off Type") or "").strip().lower()
+                if kind not in PHYS_RESP:
+                    continue
+                name = str(r.get("Patient Name") or "").strip()
+                aid = str(r.get("appointment_id") or "").strip()
+                if not name or not aid:
+                    continue
+                counts[name] = counts.get(name, 0) + 1
+                rows_by_patient.setdefault(name, []).append(aid)
+        multi = {n for n, c in counts.items() if c > 1}
+        if not multi:
+            return set(), {}
+
+        # One windowed fetch gives appointment_id -> patient, avoiding fragile
+        # name lookups (and GET /individual_appointments/<id> 404s on cancelled
+        # appointments, so it cannot be used here).
+        wanted = {a for n in multi for a in rows_by_patient[n]}
+        idx = {}
+        try:
+            base = [("q[]", "starts_at:>=2026-02-01T00:00:00Z"),
+                    ("q[]", "starts_at:<2027-01-01T00:00:00Z")]
+            for extra in ([], [("q[]", "cancelled_at:?")]):
+                for a in p2.fetch_all("/individual_appointments", base + extra):
+                    if str(a["id"]) in wanted:
+                        idx[str(a["id"])] = a
+        except Exception as e:
+            print(f"  WARN episode dedup: appointment fetch failed ({e}) — "
+                  f"weekly tallies will count rows, not episodes")
+            return set(), {}
+
+        suppressed, overrides = set(), {}
+        pracs = p2.all_practitioners()
+        for name in sorted(multi):
+            aids = rows_by_patient[name]
+            appt = next((idx[a] for a in aids if a in idx), None)
+            if not appt:
+                continue
+            pid = p2.id_from_link(appt.get("patient"))
+            if not pid:
+                continue
+            try:
+                res = p2.episode_dropoff(p2.fetch_patient_full_history(pid))
+            except Exception as e:
+                print(f"  WARN episode dedup failed for {name}: {e}")
+                continue
+            if not res:
+                continue          # reactivated / not a drop-off — leave rows alone
+            keep = str(res["event"].get("id"))
+            for a in aids:
+                if a != keep:
+                    suppressed.add(a)
+            prac = pracs.get(str(res["physio_id"])) or {}
+            full = f'{prac.get("first_name","")} {prac.get("last_name","")}'.strip()
+            overrides[keep] = {"kind": res["kind"], "physio": full}
+        if suppressed:
+            print(f"  Episode dedup: {len(multi)} multi-row patients -> "
+                  f"{len(suppressed)} duplicate row(s) not counted")
+        return suppressed, overrides
+
+    suppressed_ids, dedup_overrides = _episode_dedup(weeks)
+
     def analyse(rows, react_lookup):
         per = {}
         per_react = {}   # display -> IADNRs reactivated within 30d (not net losses)
@@ -2629,9 +2722,16 @@ def write_weekly_dropoff_analysis_tab():
         body = {}
         clinical = {"Clinical": 0, "Non-Clinical": 0}
         for r in rows:
+            aid = str(r.get("appointment_id") or "").strip()
+            if aid and aid in suppressed_ids:
+                continue      # same episode already counted on another row
+            ov = dedup_overrides.get(aid) if aid else None
             kind = str(r.get("Drop-off Type") or r.get("dropoff_type")
                        or "").strip().lower()
             physio_full = str(r.get("Physio") or r.get("physio") or "?").strip()
+            if ov:
+                kind = ov["kind"] or kind
+                physio_full = ov["physio"] or physio_full
             display = config.PRACTITIONER_DISPLAY_NAME.get(physio_full, physio_full)
             # IADNRs where the patient rebooked within 30 days are reactivations,
             # not net losses: still logged as IADNR, but counted separately here
@@ -2777,9 +2877,24 @@ def write_to_sheet(rows):
         by_tab.setdefault(tab_name, []).append(r)
 
     appt_id_col_index = SHEET_COLUMNS.index("appointment_id") + 1  # 1-indexed for gspread
+
+    # Duplicate guard across EVERY tab, not just the one being written to. The
+    # per-tab check missed appointments that moved week between runs: Assumpta
+    # McDonnell's 6 May cancellation was written to W/C 27 Apr and again to
+    # W/C 11 May, and Katie Jo Kelly's 7 May appointment was logged as a DNA on
+    # W/C 04 May and as a cancellation on W/C 11 May once its status changed.
+    # Each was then counted twice in clinic and physio stats. (Martin 2026-07-20.)
+    try:
+        global_ids = existing_appointment_ids()
+    except Exception as e:
+        print(f"  WARN couldn't build global duplicate guard ({e}) — "
+              f"falling back to per-tab check only")
+        global_ids = set()
+
     for tab_name, tab_rows in by_tab.items():
         ws, created = get_or_create_tab(sh, tab_name)
         existing_ids = set(ws.col_values(appt_id_col_index)) if not created else set()
+        existing_ids |= global_ids
         new_rows = [r for r in tab_rows if r["appointment_id"] not in existing_ids]
         new_rows.sort(key=dropoff_event_dt)
         if new_rows:
@@ -2910,11 +3025,19 @@ def main():
             date_override = sys.argv[i + 1]
             break
 
+    # ALWAYS skip appointments already in the sheet. The --date path used to
+    # omit this, so a manual re-run for a day re-wrote rows that already
+    # existed — that is how Assumpta McDonnell's 6 May cancellation landed on
+    # both W/C 27 Apr and W/C 11 May, and how Katie Jo Kelly's 7 May
+    # appointment was logged once as a DNA and again as a cancellation after
+    # its status changed in Cliniko. Both were counted twice in clinic and
+    # physio stats. (Martin 2026-07-20.)
+    already = existing_appointment_ids()
     if date_override:
-        rows, excluded = collect_dropoffs(date_override=date_override)
+        rows, excluded = collect_dropoffs(date_override=date_override,
+                                          skip_appointment_ids=already)
     else:
         # Daily cron: rolling re-scan, skipping anything already in the sheet
-        already = existing_appointment_ids()
         rows, excluded = collect_dropoffs(lookback_days=DAILY_LOOKBACK_DAYS,
                                           skip_appointment_ids=already)
 

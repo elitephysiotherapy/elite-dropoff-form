@@ -185,6 +185,170 @@ def session_number_for(appt_id, episode_appts):
     return None
 
 
+# ---------------- Canonical IADNR engine ----------------
+# ONE definition of "this patient is an IADNR", shared by the Performance
+# Dashboard and the Weekly Drop-off Analysis so they can never disagree.
+#
+# The rule (Martin 2026-07-20):
+#   * ONE IADNR per patient per EPISODE, however many drop-off events they
+#     generate. Lyn Kelly (IA 3 Jul + cancelled Review 22 Jul) is one lost
+#     patient, not two. Ross Daly generated three rows against three different
+#     physios and is still one.
+#   * ATTRIBUTED to the physio at the patient's last ATTENDED appointment
+#     (via phase1_fetch.responsible_physio_id, which falls back to the booked-with
+#     physio when the patient has no strict-4 IA — that is what makes Peter
+#     McNicholl an IACNA against Aoife rather than an IADNR against Julie).
+#   * ALLOCATED to the week/month of the LAST cancelled/DNA'd appointment, or to
+#     the IA date when a review was never booked at all (Patrick Harvey).
+#
+# Allocation is deliberately RETROSPECTIVE: a stale cancellation weeks later
+# moves the patient's IADNR forward. Ross Daly was lost on 10 Jun but his 27 Jul
+# cancellation moves him out of June and into July. Monthly figures are
+# therefore not final at month end — Martin confirmed this is intended.
+
+# Rules apply from JUNE 2026 onward — May and earlier are Martin's manual
+# figures and are deliberately left alone (Martin 2026-07-20).
+DROPOFF_RULES_FROM = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+
+def episode_dropoff(history, now_utc=None):
+    """The patient's SINGLE drop-off for their current episode, or None.
+
+    One episode of care produces at most one entry in the stats, against one
+    physio, however many times the patient cancels (Martin 2026-07-20). Counting
+    per event double-counted lost patients (Lyn Kelly, Odhran Nugent), split one
+    patient across physios who never treated them (Ross Daly hit Erin, Molaí AND
+    Shannagh) and counted the same loss in two months (Cormac Currie).
+
+    Returns {"kind", "physio_id", "alloc_at", "event"}:
+      kind      — iadnr / cancelled / did_not_attend / iacna / iadna, decided by
+                  classify_dropoff on the FINAL drop-off event, so the
+                  responsible-physio rule and the 180-day gate stay in one place.
+      physio_id — physio at the patient's last ATTENDED appointment.
+      alloc_at  — the date deciding which week/month it lands in: the LAST
+                  cancelled/DNA'd appointment, or the IA itself when a review was
+                  never booked at all.
+
+    Allocation is deliberately RETROSPECTIVE — a stale cancellation weeks later
+    moves the patient forward (Ross Daly leaves June for July), so a month is not
+    final until the patient stops cancelling. Martin confirmed this is intended.
+
+    Sports Massage and classes are excluded: they never reach clinic or physio
+    clinical stats, though Sports Massage still appears on the weekly list.
+    """
+    import config
+    import phase1_fetch as p1
+    if not history:
+        return None
+    now_utc = now_utc or datetime.now(timezone.utc)
+    _, episode, _ = find_episode(history)
+    if not episode:
+        return None
+
+    excluded = ({str(x) for x in config.EXCLUDED_FROM_TOTAL_APPTS} |
+                {str(x) for x in config.EXCLUDED_FROM_DROPOFF_STATS})
+    in_ep = [a for a in episode
+             if str(id_from_link(a.get("appointment_type"))) not in excluded]
+    if not in_ep:
+        return None
+
+    def _started(a):
+        d = parse_iso(a.get("starts_at"))
+        return d is not None and d <= now_utc
+
+    attended = [a for a in in_ep
+                if _started(a) and not a.get("cancelled_at") and not a.get("did_not_arrive")]
+
+    if attended:
+        last_att = attended[-1]
+        la = last_att.get("starts_at") or ""
+        drops = [a for a in in_ep
+                 if (a.get("starts_at") or "") > la
+                 and (a.get("cancelled_at") or a.get("did_not_arrive"))]
+        # No drop-off events after their last visit -> the visit itself is the
+        # drop-off ("attended IA, never rebooked"), allocated to that date.
+        event = drops[-1] if drops else last_att
+    else:
+        # Never attended this episode — pre-IA. The last cancellation/DNA stands.
+        drops = [a for a in in_ep if a.get("cancelled_at") or a.get("did_not_arrive")]
+        if not drops:
+            return None
+        event = drops[-1]
+
+    kind = p1.classify_dropoff(event, id_from_link(event.get("appointment_type")), history)
+    if not kind:
+        return None          # reschedule / reactivated / not a drop-off
+
+    return {"kind": kind,
+            "physio_id": p1.responsible_physio_id(event, history),
+            "alloc_at": event.get("starts_at"),
+            "event": event}
+
+
+def dropoff_audit(start_utc, end_utc, patient_ids=None, appts=None):
+    """Every drop-off counted in [start, end), one row per patient-episode.
+
+    The audit trail behind the Performance Dashboard: each counted drop-off with
+    the patient, classification, physio and the appointment that drove it, so any
+    figure on the Dashboard can be traced to named patients. These numbers set
+    performance pay, so they have to be checkable, not just correct.
+
+    Returns a list of dicts sorted by allocation date.
+    """
+    import phase1_fetch as p1
+    if patient_ids is None:
+        s_iso = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        e_iso = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        seen = {}
+        for extra in ([], [("q[]", "cancelled_at:?")]):
+            for a in fetch_all("/individual_appointments",
+                               [("q[]", f"starts_at:>={s_iso}"),
+                                ("q[]", f"starts_at:<{e_iso}")] + extra):
+                seen[str(a["id"])] = a
+        patient_ids = {id_from_link(a.get("patient")) for a in seen.values()}
+        patient_ids.discard(None)
+
+    pracs = all_practitioners()
+    rows = []
+    for pid in patient_ids:
+        try:
+            hist = fetch_patient_full_history(pid)
+            res = episode_dropoff(hist)
+        except Exception as e:
+            print(f"  WARN audit failed for patient {pid}: {e}")
+            continue
+        if not res:
+            continue
+        alloc = parse_iso(res["alloc_at"])
+        if alloc is None or not (start_utc <= alloc < end_utc):
+            continue
+        if alloc < DROPOFF_RULES_FROM:
+            continue
+        ev = res["event"]
+        prac = pracs.get(str(res["physio_id"])) or {}
+        anchor_appt, episode, _ = find_episode(hist)
+        rows.append({
+            "patient": p1.full_patient_name(ev.get("patient_name")),
+            "patient_id": pid,
+            "kind": res["kind"],
+            "physio": f'{prac.get("first_name","?")} {prac.get("last_name","")}'.strip(),
+            "allocated_to": p1.fmt_local_dt(res["alloc_at"]),
+            "episode_started": p1.fmt_local_dt((anchor_appt or {}).get("starts_at")),
+            "driving_appointment_id": str(ev.get("id")),
+            "driving_appointment": p1.fmt_local_dt(ev.get("starts_at")),
+            "events_in_episode": sum(1 for a in episode
+                                     if a.get("cancelled_at") or a.get("did_not_arrive")),
+        })
+    rows.sort(key=lambda r: r["allocated_to"])
+    return rows
+
+
+def episode_iadnr(history, now_utc=None):
+    """Back-compat shim: the episode drop-off only when it is an IADNR."""
+    r = episode_dropoff(history, now_utc)
+    return r if r and r["kind"] == "iadnr" else None
+
+
 # ---------------- Notes fetch & extraction ----------------
 
 def fetch_episode_notes(patient_id, anchor_dt):
@@ -837,7 +1001,9 @@ def monthly_stats_per_physio(start_utc, end_utc):
     # patient (chronologically first), so iterating appts in date order means
     # the IA physio gets credited first; subsequent drop-off events for the
     # same patient are skipped.
-    iadnr_patients_counted = set()
+    # Candidate patients for the episode drop-off pass below (one per patient,
+    # per episode — IADNR, CNA and DNA alike). Martin 2026-07-20.
+    iadnr_candidates = set()
     appts.sort(key=lambda a: a.get("starts_at") or "")
 
     def _is_iadnr_event(a):
@@ -940,6 +1106,12 @@ def monthly_stats_per_physio(start_utc, end_utc):
 
     for a in appts:
         type_id = id_from_link(a.get("appointment_type"))
+        # Any patient with an appointment this month is a candidate for the
+        # episode-level IADNR pass at the end (their allocation date may or
+        # may not land inside this window).
+        _cand = id_from_link(a.get("patient"))
+        if _cand:
+            iadnr_candidates.add(_cand)
         is_excluded = type_id in config.EXCLUDED_FROM_TOTAL_APPTS
         is_cancelled = bool(a.get("cancelled_at"))
         is_dna = bool(a.get("did_not_arrive"))
@@ -992,13 +1164,8 @@ def monthly_stats_per_physio(start_utc, end_utc):
                 pid = id_from_link(a.get("patient"))
                 if _no_attendance_this_episode(a) or _never_assessed(a):
                     pass  # pre-IA (no real IA attended) — not physio-responsible
-                elif _is_iadnr_event(a):
-                    if pid and pid not in iadnr_patients_counted:
-                        target["iadnrs"] += 1
-                        iadnr_patients_counted.add(pid)
-                    # else: same patient already counted via their IA event — skip
                 else:
-                    target["cnas_review"] += 1
+                    pass  # counted once per episode by the pass below
         elif is_dna:
             if a["id"] not in true_dna_ids:
                 continue  # rescheduled OR duplicate DNA — excluded
@@ -1010,12 +1177,8 @@ def monthly_stats_per_physio(start_utc, end_utc):
                 pid = id_from_link(a.get("patient"))
                 if _no_attendance_this_episode(a) or _never_assessed(a):
                     pass  # pre-IA (no real IA attended) — not physio-responsible
-                elif _is_iadnr_event(a):
-                    if pid and pid not in iadnr_patients_counted:
-                        target["iadnrs"] += 1
-                        iadnr_patients_counted.add(pid)
                 else:
-                    target["dnas_review"] += 1
+                    pass  # counted once per episode by the pass below
         else:  # attended
             stats["total_apts"] += 1
             if is_np:
@@ -1037,20 +1200,9 @@ def monthly_stats_per_physio(start_utc, end_utc):
                 # inflated every physio's mid-month IADNR count (Shannagh: 9→4,
                 # July 2026). No-op for a completed past month, where every IA
                 # start is already <= now. (Martin 2026-07-13.)
-                ia_dt = parse_iso(a.get("starts_at"))
-                ia_occurred = ia_dt is not None and ia_dt <= datetime.now(timezone.utc)
-                if pid and ia_occurred and pid not in iadnr_patients_counted:
-                    a_start = a.get("starts_at") or ""
-                    history = _get_history(pid)
-                    has_later_valid = any(
-                        (h.get("starts_at") or "") > a_start
-                        and not h.get("cancelled_at")
-                        and not h.get("did_not_arrive")
-                        for h in (history or [])
-                    )
-                    if not has_later_valid:
-                        stats["iadnrs"] += 1
-                        iadnr_patients_counted.add(pid)
+                # "Attended IA, never rebooked" is an IADNR too, but it is counted
+                # by the episode pass below so it can be deduped against the same
+                # patient's later cancellations and allocated to the right month.
             if type_id == config.GENPOP_INITIAL_TYPE_ID:
                 stats["gen_pop_initial"] += 1
             elif type_id == config.GENPOP_REVIEW_TYPE_ID:
@@ -1093,6 +1245,41 @@ def monthly_stats_per_physio(start_utc, end_utc):
         avail = config.monthly_hours_on(stats["display"], start_utc.date(), end_utc.date())
         stats["available_hours"] = avail
         stats["util_pct"] = (used_hrs / avail * 100) if avail else None
+
+    # ---- IADNR pass: one per patient per EPISODE (Martin 2026-07-20) ----
+    # Counting IADNRs off individual events double-counted a lost patient who
+    # generated several drop-offs (Lyn Kelly, Odhran Nugent), split one patient
+    # across physios who never treated them (Ross Daly hit Erin, Molaí AND
+    # Shannagh), and counted the same loss in two months (Cormac Currie in May
+    # and June). episode_iadnr resolves each patient once and returns both the
+    # responsible physio and the allocation date, so the drop-off lands in the
+    # month of their LAST cancellation. That allocation is retrospective by
+    # design: a stale cancellation weeks later moves the patient forward, which
+    # is why Ross Daly leaves June for July.
+    #
+    # Reactivated patients fall out here (episode_iadnr returns None once they
+    # hold a live future booking) — same as the old behaviour. The Weekly
+    # Drop-off Analysis is where reactivations are shown split out.
+    BUCKET = {"iadnr": "iadnrs", "cancelled": "cnas_review",
+              "did_not_attend": "dnas_review"}
+    for pid in iadnr_candidates:
+        try:
+            res = episode_dropoff(_get_history(pid))
+        except Exception as e:
+            print(f"  WARN episode_dropoff failed for patient {pid}: {e}")
+            continue
+        if not res:
+            continue
+        bucket = BUCKET.get(res["kind"])
+        if not bucket:
+            continue          # iacna / iadna stay pre-IA, counted elsewhere
+        alloc = parse_iso(res["alloc_at"])
+        if alloc is None or not (start_utc <= alloc < end_utc):
+            continue          # belongs to a different month
+        if alloc < DROPOFF_RULES_FROM:
+            continue          # May and earlier are Martin's manual figures
+        disp, full = _practitioner_display(res["physio_id"])
+        physios.setdefault(disp, _new(disp, full))[bucket] += 1
 
     return physios
 
