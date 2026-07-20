@@ -206,11 +206,12 @@ def session_number_for(appt_id, episode_appts):
 # cancellation moves him out of June and into July. Monthly figures are
 # therefore not final at month end — Martin confirmed this is intended.
 
-# Rules apply from JUNE 2026 onward — May and earlier are Martin's manual
-# figures and are deliberately left alone (Martin 2026-07-20).
-DROPOFF_RULES_FROM = datetime(2026, 6, 1, tzinfo=timezone.utc)
-
-
+# NOTE: the episode rules apply to ALL history, not just June onward. Martin runs
+# the clinic on June-2026-onward figures (May and earlier are his own manual
+# numbers), but the rules are deliberately NOT date-gated: gating would have left
+# pre-June months rendering as zero rather than their old values, since the old
+# per-event counting has been removed. Pre-June months just recompute on the new
+# rules; Martin doesn't rely on them. (2026-07-20.)
 def episode_dropoff(history, now_utc=None):
     """The patient's SINGLE drop-off for their current episode, or None.
 
@@ -321,8 +322,6 @@ def dropoff_audit(start_utc, end_utc, patient_ids=None, appts=None):
             continue
         alloc = parse_iso(res["alloc_at"])
         if alloc is None or not (start_utc <= alloc < end_utc):
-            continue
-        if alloc < DROPOFF_RULES_FROM:
             continue
         ev = res["event"]
         prac = pracs.get(str(res["physio_id"])) or {}
@@ -1276,8 +1275,6 @@ def monthly_stats_per_physio(start_utc, end_utc):
         alloc = parse_iso(res["alloc_at"])
         if alloc is None or not (start_utc <= alloc < end_utc):
             continue          # belongs to a different month
-        if alloc < DROPOFF_RULES_FROM:
-            continue          # May and earlier are Martin's manual figures
         disp, full = _practitioner_display(res["physio_id"])
         physios.setdefault(disp, _new(disp, full))[bucket] += 1
 
