@@ -132,8 +132,17 @@ def all_practitioners():
     return _ALL_PRACS_CACHE[0]
 
 
-def fetch_patient_full_history(patient_id):
-    """Patient's full appointment history (live + cancelled), sorted ascending."""
+def fetch_patient_full_history(patient_id, cache=None):
+    """Patient's full appointment history (live + cancelled), sorted ascending.
+
+    Pass a dict as `cache` to memoize by patient_id across calls — a patient's
+    history is stable within a single run, so sharing one cache between the
+    weekly analysis's reactivation lookup and its episode dedup fetches each
+    history ONCE instead of twice. Omit it (default) for the uncached behaviour
+    every other caller relies on. (Martin 2026-07-20.)"""
+    key = str(patient_id)
+    if cache is not None and key in cache:
+        return cache[key]
     live = list(fetch_all("/individual_appointments", [("q[]", f"patient_id:={patient_id}")]))
     cancelled = list(fetch_all("/individual_appointments", [
         ("q[]", f"patient_id:={patient_id}"),
@@ -142,7 +151,10 @@ def fetch_patient_full_history(patient_id):
     by_id = {a["id"]: a for a in live}
     for a in cancelled:
         by_id[a["id"]] = a
-    return sorted(by_id.values(), key=lambda a: a.get("starts_at") or "")
+    result = sorted(by_id.values(), key=lambda a: a.get("starts_at") or "")
+    if cache is not None:
+        cache[key] = result
+    return result
 
 
 def find_episode(all_appts, gap_days=GAP_DAYS_FOR_NEW_EPISODE):

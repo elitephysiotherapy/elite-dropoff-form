@@ -2455,7 +2455,7 @@ def write_physio_trends_tab(months_back=12):
     return ws
 
 
-def _iadnr_reactivation_lookup(sh, window_days=None):  # window_days: unused, kept for callers
+def _iadnr_reactivation_lookup(sh, window_days=None, hist_cache=None):  # window_days: unused
     """Map {appointment_id: True/False} for every IADNR row across the W/C tabs.
     True = the patient rebooked inside the canonical reactivation windows
     (any type within 42 days, or a follow-up within 90) of the drop-off
@@ -2485,14 +2485,15 @@ def _iadnr_reactivation_lookup(sh, window_days=None):  # window_days: unused, ke
                 continue
         return None
 
-    hist_cache = {}
+    # Shared with the episode dedup so a patient's history is fetched once, not
+    # twice, across the whole weekly-analysis run (Martin 2026-07-20).
+    if hist_cache is None:
+        hist_cache = {}
     def hist(pid):
-        if pid not in hist_cache:
-            try:
-                hist_cache[pid] = p2.fetch_patient_full_history(pid)
-            except Exception:
-                hist_cache[pid] = []
-        return hist_cache[pid]
+        try:
+            return p2.fetch_patient_full_history(pid, cache=hist_cache)
+        except Exception:
+            return []
 
     name_cache = {}
     def by_name(first, last):
@@ -2617,9 +2618,13 @@ def write_weekly_dropoff_analysis_tab():
             return datetime.min
     ordered = sorted(weeks.keys(), key=week_date, reverse=True)
 
-    # Which IADNRs rebooked within 30 days (reactivations, not net losses).
+    # One patient-history cache shared by the reactivation lookup and the episode
+    # dedup below, so each history is fetched once per run, not twice.
+    _weekly_hist_cache = {}
+
+    # Which IADNRs rebooked (reactivations, not net losses).
     try:
-        react_lookup = _iadnr_reactivation_lookup(sh)
+        react_lookup = _iadnr_reactivation_lookup(sh, hist_cache=_weekly_hist_cache)
     except Exception as e:
         print(f"  WARN reactivation lookup failed, treating all as net loss: {e}")
         react_lookup = {}
@@ -2695,7 +2700,8 @@ def write_weekly_dropoff_analysis_tab():
             if not pid:
                 continue
             try:
-                res = p2.episode_dropoff(p2.fetch_patient_full_history(pid))
+                res = p2.episode_dropoff(
+                    p2.fetch_patient_full_history(pid, cache=_weekly_hist_cache))
             except Exception as e:
                 print(f"  WARN episode dedup failed for {name}: {e}")
                 continue
