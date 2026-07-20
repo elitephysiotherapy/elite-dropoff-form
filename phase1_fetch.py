@@ -243,7 +243,14 @@ def still_booked_in(appt, history):
     )
 
 
-NEW_EPISODE_GAP_DAYS = 60  # >60 days since last attended visit = new episode of care (Martin 2026-07)
+# >180 days since last attended visit = new episode of care. Was 60 (Martin
+# 2026-07-13), raised to 180 on 2026-07-20 to match phase2's
+# GAP_DAYS_FOR_NEW_EPISODE: 60 days was cutting off patients the physio HAD
+# genuinely treated and then lost — Ciaran Moran (118d), Aileen Wilson (91d),
+# Aidan Hughes (83d), Peter Scullion (65d) are all real IADNRs that 60 days
+# wrongly demoted to pre-IA. 180 days still catches the true returners
+# (Paddy Kelly 286d, Julieann Bell 2358d).
+NEW_EPISODE_GAP_DAYS = 180
 
 
 def _appt_start_dt(a):
@@ -297,31 +304,35 @@ def is_ia_only_patient_at(appt, history):
     return attended_before <= 1
 
 
-def attended_ia_in_episode(appt, history):
-    """Has the patient ATTENDED a real IA in their current episode, before `appt`?
+def responsible_physio_attended(appt, history):
+    """Has the physio this drop-off will be ATTRIBUTED to actually attended with
+    the patient before it?
 
-    "Real IA" = the wider-8 assessment types (strict 4 + Sports & MSK Consult,
-    Mummy MOT, Pelvic Health, Club Consultation). Diagnostic-only types
-    (Ultrasound Assessment, Profiling, Injury Update Testing) and Sports Massage
-    are NOT assessments — a physio doing one hasn't taken the patient on.
+    This is the gate for IADNR (Martin 2026-07-20). An IADNR charges a physio
+    with losing a patient, so it only holds if that physio had the patient in
+    front of them. What was attended doesn't matter — a diagnostic counts:
 
-    This is the gate for IADNR. Without it, a patient whose only attendance was
-    a diagnostic looked like "attended their IA, then dropped" to
-    is_ia_only_patient_at's `<= 1` count, and their next cancellation was booked
-    as a physio-owned IADNR. (Peter McNicholl: attended only an Ultrasound with
-    Julie, cancelled the follow-up, landed as an IADNR against Aoife. Martin
-    2026-07-20 — that should be an IACNA, which doesn't touch clinical stats.)"""
-    import phase2 as p2
-    _, episode, _ = p2.find_episode(history)
-    if not episode:
+      - Aidan Hughes attended an Ultrasound with Martin, then cancelled an
+        Injection with Martin. Martin saw him -> IADNR for Martin.
+      - Peter McNicholl attended an Ultrasound with JULIE, then cancelled a
+        Review with AOIFE. Aoife never saw him -> IACNA for Aoife.
+
+    Structurally identical events; the physio is what separates them. An earlier
+    version of this gate asked whether an IA *type* had been attended, which got
+    Peter right and Aidan wrong.
+
+    The "has the episode gone cold" half of the rule is handled separately by
+    no_attendance_this_episode (NEW_EPISODE_GAP_DAYS)."""
+    rp = responsible_physio_id(appt, history)
+    if not rp:
         return False
     appt_start = appt.get("starts_at") or ""
     return any(
         (a.get("starts_at") or "") < appt_start
         and not a.get("cancelled_at")
         and not a.get("did_not_arrive")
-        and id_from_link(a.get("appointment_type")) in _IA_TYPES_FOR_CLASSIFY
-        for a in episode
+        and id_from_link(a.get("practitioner")) == rp
+        for a in history or []
     )
 
 
@@ -466,12 +477,11 @@ def classify_dropoff(appt, type_id, history):
     # (IACNA/IADNA), not a physio-responsible IADNR/CNA/DNA. This is what stops a
     # cancelled first-ever Ultrasound (or any never-attended first booking) being
     # mislabelled IADNR against the scheduled physio (Rebecca McConnell, 2026-07).
-    # An IADNR also requires the patient to have ATTENDED a real IA in this
-    # episode. If their only attendance was a diagnostic (Ultrasound, Profiling,
-    # Injury Update Testing) or a Sports Massage, no physio ever assessed them,
-    # so an early drop is pre-IA (IACNA/IADNA against the booked-with physio),
-    # not a physio-owned retention failure. An established patient with no IA on
-    # record stays a plain review CNA/DNA as before.
+    # An IADNR also requires that the physio it gets attributed to actually SAW
+    # the patient. If the booked-with physio never had them in front of them,
+    # the drop is pre-IA (IACNA/IADNA) — it belongs on the list for reception,
+    # but not against anyone's clinical stats. An established patient stays a
+    # plain review CNA/DNA as before.
     if is_cancelled:
         if still_booked_in(appt, history):
             return None  # reschedule — still has care booked in the diary
@@ -479,14 +489,14 @@ def classify_dropoff(appt, type_id, history):
             return "iacna"
         if not is_ia_only_patient_at(appt, history):
             return "cancelled"
-        return "iadnr" if attended_ia_in_episode(appt, history) else "iacna"
+        return "iadnr" if responsible_physio_attended(appt, history) else "iacna"
 
     if is_dna:
         if no_attendance_this_episode(appt, history):
             return "iadna"
         if not is_ia_only_patient_at(appt, history):
             return "did_not_attend"
-        return "iadnr" if attended_ia_in_episode(appt, history) else "iadna"
+        return "iadnr" if responsible_physio_attended(appt, history) else "iadna"
 
     return None  # attended non-IA — not a drop-off
 

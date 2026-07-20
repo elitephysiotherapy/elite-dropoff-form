@@ -863,47 +863,40 @@ def monthly_stats_per_physio(start_utc, end_utc):
             and not h.get("cancelled_at")
             and not h.get("did_not_arrive")
         )
-        if attended_before > 1:
-            return False
-        # Mirrors phase1_fetch.attended_ia_in_episode: an IADNR requires a real
-        # IA (wider-8) to have been ATTENDED. A patient whose only attendance was
-        # a diagnostic (Ultrasound, Profiling, Injury Update Testing) or a Sports
-        # Massage was never assessed, so their drop is pre-IA — it belongs in the
-        # IACNA/IADNA bucket, not against a physio's clinical stats.
-        # (Peter McNicholl, Martin 2026-07-20.)
-        return any(
-            (h.get("starts_at") or "") < a_start
-            and not h.get("cancelled_at")
-            and not h.get("did_not_arrive")
-            and id_from_link(h.get("appointment_type")) in config.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS
-            for h in episode
-        )
+        # The "did the responsible physio actually see them" half of the rule
+        # is applied by _never_assessed at the call sites, so this stays the
+        # pure "dropped early in the episode" test.
+        return attended_before <= 1
 
     def _never_assessed(a):
-        """True if the patient has attended NO real IA (wider-8) in this episode
-        before the event — only diagnostics/massage, or nothing at all. Such a
-        drop-off is pre-IA: it must stay out of every clinical stat (IADNR, CNA %,
-        DNA %), the same way _no_attendance_this_episode does. Martin 2026-07-20."""
+        """True if the physio this drop-off is attributed to never actually
+        ATTENDED with the patient. Mirrors phase1_fetch.responsible_physio_attended
+        (inverted): an IADNR charges a physio with losing a patient, so it only
+        holds if that physio had them in front of them. What was attended is
+        irrelevant — an Ultrasound counts (Aidan Hughes). Otherwise the drop is
+        pre-IA and must stay out of every clinical stat (IADNR, CNA %, DNA %).
+        Martin 2026-07-20."""
         pid = id_from_link(a.get("patient"))
         if not pid:
             return False
         history = _get_history(pid)
-        _, episode, _ = find_episode(history)
-        if not episode:
-            return False
+        rp = _responsible_prac_id(a)
+        if not rp:
+            return True
         a_start = a.get("starts_at") or ""
         return not any(
             (h.get("starts_at") or "") < a_start
             and not h.get("cancelled_at")
             and not h.get("did_not_arrive")
-            and id_from_link(h.get("appointment_type")) in config.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS
-            for h in episode
+            and str(id_from_link(h.get("practitioner"))) == str(rp)
+            for h in history or []
         )
 
     def _no_attendance_this_episode(a):
         """True if the patient has NOT attended anything in their current episode
-        of care before this event. A gap of more than 60 days since the last
-        attended visit starts a new episode (Martin 2026-07), so a never-attended
+        of care before this event. A gap of more than GAP_DAYS_FOR_NEW_EPISODE
+        days since the last attended visit starts a new episode (60 -> 180 on
+        2026-07-20, Martin), so a never-attended
         patient OR a long-gap return that cancels/DNAs before attending is pre-IA
         (IACNA/IADNA) — not a physio-responsible IADNR or review CNA/DNA."""
         pid = id_from_link(a.get("patient"))
@@ -920,7 +913,7 @@ def monthly_stats_per_physio(start_utc, end_utc):
         ev, ls = parse_iso(a.get("starts_at")), parse_iso(last.get("starts_at"))
         if ev is None or ls is None:
             return False
-        return (ev - ls).days > 60
+        return (ev - ls).days > GAP_DAYS_FOR_NEW_EPISODE
 
     def _responsible_prac_id(a):
         """For a CNA/DNA on a NON-IA (review) appointment, return the physio

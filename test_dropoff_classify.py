@@ -124,17 +124,53 @@ REVIEW     = "382563815511823515"    # 2. Review Appointment
 REAL_IA    = "382563815654429852"    # 1. Initial Appointment
 SPORTS_MASSAGE = "752219543803270402"
 
-us_attended = appt("US", "2026-07-09T13:00:00Z", type_id=ULTRASOUND)
-rev_cancel  = appt("RV", "2026-07-21T11:00:00Z", cancelled="2026-07-17T12:07:00Z",
-                   type_id=REVIEW)
-peter = [us_attended, rev_cancel]
-results.append(check("ultrasound-only patient cancels follow-up -> iacna, not iadnr",
-                     p1.classify_dropoff(rev_cancel, REVIEW, peter), "iacna"))
+def appt_with(prac, **kw):
+    a = appt(**kw)
+    a["practitioner"] = {"links": {"self": f"https://x/practitioners/{prac}"}}
+    return a
 
-# Same shape but DNA'd instead of cancelled -> iadna, not iadnr
-rev_dna = appt("RV2", "2026-07-21T11:00:00Z", dna=True, type_id=REVIEW)
-results.append(check("ultrasound-only patient DNAs follow-up -> iadna, not iadnr",
-                     p1.classify_dropoff(rev_dna, REVIEW, [us_attended, rev_dna]), "iadna"))
+JULIE, AOIFE, MARTIN = "111", "222", "333"
+
+# Peter McNicholl: Ultrasound attended with JULIE, Review cancelled with AOIFE.
+# Aoife never had him in front of her -> IACNA, off her clinical stats.
+us_julie   = appt_with(JULIE, id="US", starts="2026-07-09T13:00:00Z", type_id=ULTRASOUND)
+rev_aoife  = appt_with(AOIFE, id="RV", starts="2026-07-21T11:00:00Z",
+                       cancelled="2026-07-17T12:07:00Z", type_id=REVIEW)
+results.append(check("cancels with a physio who never saw them -> iacna",
+                     p1.classify_dropoff(rev_aoife, REVIEW, [us_julie, rev_aoife]), "iacna"))
+
+rev_aoife_dna = appt_with(AOIFE, id="RV2", starts="2026-07-21T11:00:00Z", dna=True,
+                          type_id=REVIEW)
+results.append(check("DNAs with a physio who never saw them -> iadna",
+                     p1.classify_dropoff(rev_aoife_dna, REVIEW, [us_julie, rev_aoife_dna]),
+                     "iadna"))
+
+# Aidan Hughes: Ultrasound attended with MARTIN, Injection cancelled with MARTIN.
+# Structurally identical to Peter EXCEPT the physio saw him -> IADNR.
+# An earlier gate asked "was an IA *type* attended" and got this one wrong.
+INJECTION = "1206575759565526894"
+us_martin  = appt_with(MARTIN, id="US3", starts="2026-03-10T09:10:00Z", type_id=ULTRASOUND)
+inj_cancel = appt_with(MARTIN, id="INJ", starts="2026-06-02T09:10:00Z",
+                       cancelled="2026-06-01T09:00:00Z", type_id=INJECTION)
+results.append(check("cancels with the physio who DID see them (diagnostic) -> iadnr",
+                     p1.classify_dropoff(inj_cancel, INJECTION, [us_martin, inj_cancel]),
+                     "iadnr"))
+
+# ---- 10. Episode gap: 180 days, not 60 (Martin 2026-07-20) ----
+# Ciaran Moran (118d), Aileen Wilson (91d), Peter Scullion (65d) are real IADNRs
+# that the old 60-day gate wrongly demoted to pre-IA. Paddy Kelly (286d) and
+# Julieann Bell (2358d) are genuine returners and stay pre-IA.
+ia_120 = appt_with(MARTIN, id="G1", starts="2026-02-11T09:00:00Z", type_id=REAL_IA)
+cx_120 = appt_with(MARTIN, id="G2", starts="2026-06-11T09:00:00Z",
+                   cancelled="2026-06-10T09:00:00Z", type_id=REVIEW)
+results.append(check("120-day gap, same physio -> still iadnr (was iacna at 60d)",
+                     p1.classify_dropoff(cx_120, REVIEW, [ia_120, cx_120]), "iadnr"))
+
+ia_286 = appt_with(MARTIN, id="G3", starts="2025-08-27T09:00:00Z", type_id=REAL_IA)
+cx_286 = appt_with(MARTIN, id="G4", starts="2026-06-09T09:00:00Z",
+                   cancelled="2026-06-08T09:00:00Z", type_id=REVIEW)
+results.append(check("286-day gap -> iacna (episode has genuinely ended)",
+                     p1.classify_dropoff(cx_286, REVIEW, [ia_286, cx_286]), "iacna"))
 
 # ---- 7. The IADNR hard rule is untouched: real IA attended, then dropped ----
 # Rhonda Wilson: attended an Initial Appointment with Aoife on 3 Jul, then
