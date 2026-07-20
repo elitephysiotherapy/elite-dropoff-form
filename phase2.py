@@ -863,7 +863,42 @@ def monthly_stats_per_physio(start_utc, end_utc):
             and not h.get("cancelled_at")
             and not h.get("did_not_arrive")
         )
-        return attended_before <= 1
+        if attended_before > 1:
+            return False
+        # Mirrors phase1_fetch.attended_ia_in_episode: an IADNR requires a real
+        # IA (wider-8) to have been ATTENDED. A patient whose only attendance was
+        # a diagnostic (Ultrasound, Profiling, Injury Update Testing) or a Sports
+        # Massage was never assessed, so their drop is pre-IA — it belongs in the
+        # IACNA/IADNA bucket, not against a physio's clinical stats.
+        # (Peter McNicholl, Martin 2026-07-20.)
+        return any(
+            (h.get("starts_at") or "") < a_start
+            and not h.get("cancelled_at")
+            and not h.get("did_not_arrive")
+            and id_from_link(h.get("appointment_type")) in config.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS
+            for h in episode
+        )
+
+    def _never_assessed(a):
+        """True if the patient has attended NO real IA (wider-8) in this episode
+        before the event — only diagnostics/massage, or nothing at all. Such a
+        drop-off is pre-IA: it must stay out of every clinical stat (IADNR, CNA %,
+        DNA %), the same way _no_attendance_this_episode does. Martin 2026-07-20."""
+        pid = id_from_link(a.get("patient"))
+        if not pid:
+            return False
+        history = _get_history(pid)
+        _, episode, _ = find_episode(history)
+        if not episode:
+            return False
+        a_start = a.get("starts_at") or ""
+        return not any(
+            (h.get("starts_at") or "") < a_start
+            and not h.get("cancelled_at")
+            and not h.get("did_not_arrive")
+            and id_from_link(h.get("appointment_type")) in config.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS
+            for h in episode
+        )
 
     def _no_attendance_this_episode(a):
         """True if the patient has NOT attended anything in their current episode
@@ -962,8 +997,8 @@ def monthly_stats_per_physio(start_utc, end_utc):
                 resp_disp, resp_full = _practitioner_display(_responsible_prac_id(a))
                 target = physios.setdefault(resp_disp, _new(resp_disp, resp_full))
                 pid = id_from_link(a.get("patient"))
-                if _no_attendance_this_episode(a):
-                    pass  # pre-IA (never attended this episode) — not physio-responsible
+                if _no_attendance_this_episode(a) or _never_assessed(a):
+                    pass  # pre-IA (no real IA attended) — not physio-responsible
                 elif _is_iadnr_event(a):
                     if pid and pid not in iadnr_patients_counted:
                         target["iadnrs"] += 1
@@ -980,8 +1015,8 @@ def monthly_stats_per_physio(start_utc, end_utc):
                 resp_disp, resp_full = _practitioner_display(_responsible_prac_id(a))
                 target = physios.setdefault(resp_disp, _new(resp_disp, resp_full))
                 pid = id_from_link(a.get("patient"))
-                if _no_attendance_this_episode(a):
-                    pass  # pre-IA (never attended this episode) — not physio-responsible
+                if _no_attendance_this_episode(a) or _never_assessed(a):
+                    pass  # pre-IA (no real IA attended) — not physio-responsible
                 elif _is_iadnr_event(a):
                     if pid and pid not in iadnr_patients_counted:
                         target["iadnrs"] += 1

@@ -198,12 +198,46 @@ def id_from_link(rel):
 
 
 def has_future_booking_in_history(appt, history):
-    """True if patient has any non-cancelled appointment with start > this appt's start."""
+    """True if patient has any non-cancelled appointment with start > this appt's start.
+
+    Only valid for an ATTENDED appointment (the IADNR "did they rebook after their IA?"
+    test), where the appointment's start is effectively "now". Do NOT use it for a
+    cancellation — see still_booked_in."""
     appt_id = str(appt.get("id"))
     appt_start = appt.get("starts_at") or ""
     return any(
         (a.get("starts_at") or "") > appt_start
         and not a.get("cancelled_at")
+        and str(a.get("id")) != appt_id
+        for a in history
+    )
+
+
+def _now_utc():
+    return datetime.now(timezone.utc)
+
+
+def still_booked_in(appt, history):
+    """True if the patient STILL has an appointment in the diary — so they rescheduled
+    or kept other care and there is nothing for a physio to chase.
+
+    The reference point is NOW, not the cancelled appointment's own start. The old test
+    asked "is there a booking later than the slot they cancelled?", which breaks for a
+    patient who cancels the FURTHEST-OUT appointments in their diary: they hold nothing
+    after the cancelled slot, so they were flagged as a drop-off while still actively
+    attending. (Niamh O'Donnell, Jul 2026 — bulk-cancelled her standing 13:30 series on
+    7 Jul, kept a 16 Jul evening slot and rebooked 27 Jul + 10 Aug. Sessions 57/60/61.)
+
+    Deliberately NOT the stricter "no future appointment at end of the cancellation day"
+    rule that reactivations.py uses to COUNT drop-offs: someone who cancels and rebooks
+    three days later is a genuine drop-off-then-reactivation for the stats, but there is
+    no point DMing their physio to chase them — they are already back in the diary."""
+    now_iso = _now_utc().strftime("%Y-%m-%dT%H:%M:%SZ")
+    appt_id = str(appt.get("id"))
+    return any(
+        (a.get("starts_at") or "") > now_iso
+        and not a.get("cancelled_at")
+        and not a.get("did_not_arrive")
         and str(a.get("id")) != appt_id
         for a in history
     )
@@ -261,6 +295,34 @@ def is_ia_only_patient_at(appt, history):
         and not a.get("did_not_arrive")
     )
     return attended_before <= 1
+
+
+def attended_ia_in_episode(appt, history):
+    """Has the patient ATTENDED a real IA in their current episode, before `appt`?
+
+    "Real IA" = the wider-8 assessment types (strict 4 + Sports & MSK Consult,
+    Mummy MOT, Pelvic Health, Club Consultation). Diagnostic-only types
+    (Ultrasound Assessment, Profiling, Injury Update Testing) and Sports Massage
+    are NOT assessments — a physio doing one hasn't taken the patient on.
+
+    This is the gate for IADNR. Without it, a patient whose only attendance was
+    a diagnostic looked like "attended their IA, then dropped" to
+    is_ia_only_patient_at's `<= 1` count, and their next cancellation was booked
+    as a physio-owned IADNR. (Peter McNicholl: attended only an Ultrasound with
+    Julie, cancelled the follow-up, landed as an IADNR against Aoife. Martin
+    2026-07-20 — that should be an IACNA, which doesn't touch clinical stats.)"""
+    import phase2 as p2
+    _, episode, _ = p2.find_episode(history)
+    if not episode:
+        return False
+    appt_start = appt.get("starts_at") or ""
+    return any(
+        (a.get("starts_at") or "") < appt_start
+        and not a.get("cancelled_at")
+        and not a.get("did_not_arrive")
+        and id_from_link(a.get("appointment_type")) in _IA_TYPES_FOR_CLASSIFY
+        for a in episode
+    )
 
 
 def responsible_physio_id(appt, history):
@@ -368,20 +430,22 @@ _IA_TYPES_FOR_CLASSIFY = _p2_module.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS
 
 def classify_dropoff(appt, type_id, history):
     """Returns one of: 'iacna', 'iadna', 'iadnr', 'cancelled', 'did_not_attend', None."""
-    # Sports Massage cancels/DNAs are not tracked as drop-offs — they've never
-    # counted toward physio stats in Martin's manual tracker, so we keep them
-    # out of the sheet entirely too (no Slack notifications either).
-    if type_id in config.EXCLUDED_FROM_DROPOFF_STATS:
-        return None
+    # Sports Massage IS a drop-off for the weekly list — reception still needs to
+    # see and chase it — but it must never reach clinic or individual physio
+    # clinical stats. The stats exclusion lives in phase2 (Weekly Snapshot,
+    # Performance Dashboard, monthly per-physio), which filters
+    # EXCLUDED_FROM_DROPOFF_STATS at source, so classifying it here is safe.
+    # (Martin 2026-07-20 — previously returned None, keeping it out of the sheet
+    # entirely.) Slack DMs are suppressed separately in the notifier.
     is_ia = type_id in _IA_TYPES_FOR_CLASSIFY
     is_cancelled = bool(appt.get("cancelled_at"))
     is_dna = bool(appt.get("did_not_arrive"))
 
     if is_ia:
         if is_cancelled:
-            # Reschedule rule applies uniformly: if patient has another future booking
+            # Reschedule rule applies uniformly: if patient still held a future booking
             # (incl. another IA), it's a reschedule, not IACNA. Anna Carberry case.
-            if has_future_booking_in_history(appt, history):
+            if still_booked_in(appt, history):
                 return None
             return "iacna"
         if is_dna:
@@ -402,17 +466,27 @@ def classify_dropoff(appt, type_id, history):
     # (IACNA/IADNA), not a physio-responsible IADNR/CNA/DNA. This is what stops a
     # cancelled first-ever Ultrasound (or any never-attended first booking) being
     # mislabelled IADNR against the scheduled physio (Rebecca McConnell, 2026-07).
+    # An IADNR also requires the patient to have ATTENDED a real IA in this
+    # episode. If their only attendance was a diagnostic (Ultrasound, Profiling,
+    # Injury Update Testing) or a Sports Massage, no physio ever assessed them,
+    # so an early drop is pre-IA (IACNA/IADNA against the booked-with physio),
+    # not a physio-owned retention failure. An established patient with no IA on
+    # record stays a plain review CNA/DNA as before.
     if is_cancelled:
-        if has_future_booking_in_history(appt, history):
-            return None  # reschedule
+        if still_booked_in(appt, history):
+            return None  # reschedule — still has care booked in the diary
         if no_attendance_this_episode(appt, history):
             return "iacna"
-        return "iadnr" if is_ia_only_patient_at(appt, history) else "cancelled"
+        if not is_ia_only_patient_at(appt, history):
+            return "cancelled"
+        return "iadnr" if attended_ia_in_episode(appt, history) else "iacna"
 
     if is_dna:
         if no_attendance_this_episode(appt, history):
             return "iadna"
-        return "iadnr" if is_ia_only_patient_at(appt, history) else "did_not_attend"
+        if not is_ia_only_patient_at(appt, history):
+            return "did_not_attend"
+        return "iadnr" if attended_ia_in_episode(appt, history) else "iadna"
 
     return None  # attended non-IA — not a drop-off
 
@@ -526,6 +600,21 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
     import phase2 as p2
     history_cache = {}
 
+    # Bulk cancellations that ALREADY have a row from an earlier run. Keyed on the
+    # Cliniko patient id — never the patient name, because duplicate patient records
+    # share names. Built from the window we just fetched, so it costs no extra calls.
+    #
+    # Without this, the rolling re-scan skips the one appointment already in the sheet
+    # and lets the NEXT appointment of the same bulk cancel through the dedup below —
+    # leaking one more row, and one more Slack DM, every single morning.
+    already_logged_keys = set()
+    for a in appts:
+        if str(a.get("id")) not in skip_appointment_ids or not a.get("cancelled_at"):
+            continue
+        logged_pid = id_from_link(a.get("patient"))
+        if logged_pid:
+            already_logged_keys.add((logged_pid, fmt_local_dt(a["cancelled_at"])[:10]))
+
     rows = []
     excluded_reschedules = []
     for a in appts:
@@ -614,12 +703,21 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
 
     # Same-day bulk-cancel dedup — if one patient cancels multiple future appts in a single
     # call, keep only the row for the EARLIEST upcoming appointment. Reception calls them once.
-    rows = _dedup_same_day_cancellations(rows)
+    rows = _dedup_same_day_cancellations(rows, already_logged_keys=already_logged_keys)
     return rows, excluded_reschedules
 
 
-def _dedup_same_day_cancellations(rows):
-    """Keep one row per (patient_id, cancellation date) — the one for the earliest appt."""
+def _dedup_same_day_cancellations(rows, already_logged_keys=None):
+    """Keep one row per (patient_id, cancellation date) — the one for the earliest appt.
+
+    `already_logged_keys` is the set of (patient_id, YYYY-MM-DD) bulk cancellations that
+    already have a row from an EARLIER run. Without it this dedup only sees the current
+    run's new rows: the daily re-scan skips the appointment already in the sheet, so the
+    next-earliest appointment of the SAME bulk cancellation survives the dedup and gets
+    written — leaking one more row, and one more Slack DM, every morning. That's how one
+    7 Jul bulk cancel DM'd Martin about Niamh O'Donnell on the 8th, 9th and 10th as
+    sessions 57, 60 and 61."""
+    already_logged_keys = already_logged_keys or set()
     by_key = {}
     others = []
     for r in rows:
@@ -628,6 +726,8 @@ def _dedup_same_day_cancellations(rows):
         if not canc_date or not pid:
             others.append(r)
             continue
+        if (pid, canc_date[:10]) in already_logged_keys:
+            continue  # this bulk cancellation already has a row from an earlier run
         key = (pid, canc_date[:10])  # group by patient + cancellation calendar day
         existing = by_key.get(key)
         if existing is None or r["appointment_date"] < existing["appointment_date"]:

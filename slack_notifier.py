@@ -302,7 +302,14 @@ def send_all(rows, ia_rebook_mtd_pct=None, leads_summary=None, summary_rows=None
     # Physio DMs + reception call list are driven off NEW rows only — we don't
     # re-ping people about drop-offs already captured and actioned. The Ops
     # Manager summary, by contrast, reports yesterday's full picture.
-    notify_physios(rows)
+    #
+    # Sports Massage drop-offs now appear in the sheet (Martin 2026-07-20) but
+    # aren't clinical, so they don't earn a physio a chase-up DM. They stay in
+    # the reception call list and the Ops Manager summary.
+    clinical_rows = [r for r in rows
+                     if str(r.get("_appointment_type_id")) not in
+                     {str(x) for x in config.EXCLUDED_FROM_DROPOFF_STATS}]
+    notify_physios(clinical_rows)
     notify_reception(rows)
     notify_ops_manager(rows, ia_rebook_mtd_pct=ia_rebook_mtd_pct,
                        leads_summary=leads_summary, summary_rows=summary_rows)
