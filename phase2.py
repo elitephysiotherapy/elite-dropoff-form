@@ -1117,11 +1117,18 @@ def monthly_stats_per_physio(start_utc, end_utc):
 
     for a in appts:
         type_id = id_from_link(a.get("appointment_type"))
-        # Any patient with an appointment this month is a candidate for the
-        # episode-level IADNR pass at the end (their allocation date may or
-        # may not land inside this window).
+        # Candidates for the episode drop-off pass at the end. ONLY patients who
+        # could actually have dropped off this month: a drop-off is always driven
+        # by a cancellation, a DNA, or an attended IA that was never rebooked —
+        # and the allocation date IS that event's date, so anything landing in
+        # this window has its driving event in this window. An ordinary attended
+        # review can never drive one, so including every patient with any
+        # appointment (as this did originally) meant ~600 full-history fetches a
+        # month instead of ~80 — about 7 minutes of needless Cliniko calls per
+        # month, times three months on the rolling Dashboard. (Martin 2026-07-21.)
         _cand = id_from_link(a.get("patient"))
-        if _cand:
+        if _cand and (a.get("cancelled_at") or a.get("did_not_arrive")
+                      or type_id in config.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS):
             iadnr_candidates.add(_cand)
         is_excluded = type_id in config.EXCLUDED_FROM_TOTAL_APPTS
         is_cancelled = bool(a.get("cancelled_at"))
@@ -1233,6 +1240,33 @@ def monthly_stats_per_physio(start_utc, end_utc):
         if s_dt and e_dt:
             stats["used_minutes"] += (e_dt - s_dt).total_seconds() / 60
 
+    # NOTE: this MUST run BEFORE the derived-metrics loop below. The
+    # percentages (DNA %, CNA %, Drop off %, IA Rebook %) are computed from
+    # cnas_review / dnas_review / iadnrs, and those are populated HERE. When
+    # this pass sat after the loop, every per-physio percentage rendered from
+    # zeroed counts — DNA/CNA/Drop-off all 0.0%% and IA Rebook 100%% on the
+    # live Dashboard, while the raw IADNR column (read later) looked right.
+    # (Martin 2026-07-21.)
+    BUCKET = {"iadnr": "iadnrs", "cancelled": "cnas_review",
+              "did_not_attend": "dnas_review"}
+    for pid in iadnr_candidates:
+        try:
+            res = episode_dropoff(_get_history(pid))
+        except Exception as e:
+            print(f"  WARN episode_dropoff failed for patient {pid}: {e}")
+            continue
+        if not res:
+            continue
+        bucket = BUCKET.get(res["kind"])
+        if not bucket:
+            continue          # iacna / iadna stay pre-IA, counted elsewhere
+        alloc = parse_iso(res["alloc_at"])
+        if alloc is None or not (start_utc <= alloc < end_utc):
+            continue          # belongs to a different month
+        disp, full = _practitioner_display(res["physio_id"])
+        physios.setdefault(disp, _new(disp, full))[bucket] += 1
+
+
     # Derived metrics
     for stats in physios.values():
         review = stats["total_apts"] - stats["nps"]
@@ -1271,25 +1305,6 @@ def monthly_stats_per_physio(start_utc, end_utc):
     # Reactivated patients fall out here (episode_iadnr returns None once they
     # hold a live future booking) — same as the old behaviour. The Weekly
     # Drop-off Analysis is where reactivations are shown split out.
-    BUCKET = {"iadnr": "iadnrs", "cancelled": "cnas_review",
-              "did_not_attend": "dnas_review"}
-    for pid in iadnr_candidates:
-        try:
-            res = episode_dropoff(_get_history(pid))
-        except Exception as e:
-            print(f"  WARN episode_dropoff failed for patient {pid}: {e}")
-            continue
-        if not res:
-            continue
-        bucket = BUCKET.get(res["kind"])
-        if not bucket:
-            continue          # iacna / iadna stay pre-IA, counted elsewhere
-        alloc = parse_iso(res["alloc_at"])
-        if alloc is None or not (start_utc <= alloc < end_utc):
-            continue          # belongs to a different month
-        disp, full = _practitioner_display(res["physio_id"])
-        physios.setdefault(disp, _new(disp, full))[bucket] += 1
-
     return physios
 
 
