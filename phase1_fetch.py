@@ -1292,13 +1292,7 @@ def write_ia_rebook_rate_tab(months_back=3):
 
     # All compute succeeded — now touch the sheet atomically.
     sh = open_spreadsheet()
-    try:
-        ws = sh.worksheet("IA Rebook Rate")
-        ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="IA Rebook Rate", rows=300, cols=6)
-
-    ws.update(values=out, range_name="A1", value_input_option="RAW")
+    ws = write_tab_atomically(sh, "IA Rebook Rate", out, rows=300, cols=6)
     return ws
 
 
@@ -1453,6 +1447,31 @@ def compute_nps_by_physio(start_dt, end_dt):
         nps = round((c["promoters"] - c["detractors"]) / total * 100)
         out[phys] = {"nps": nps, "responses": total, **c}
     return out
+
+
+def write_tab_atomically(sh, title, out, rows=400, cols=15):
+    """Replace a tab's contents in ONE update — never clearing first.
+
+    ws.clear() leaves the tab visibly EMPTY until the write lands. On a slow
+    rebuild that is minutes of blank sheet: the Performance Dashboard sat empty
+    from ~07:22 to 07:37 on 2026-07-21, which reads as a broken system to anyone
+    looking. Padding the new grid to cover whatever the old one occupied and
+    writing once means the tab always shows either the old content or the new.
+    (Martin 2026-07-21.)
+    """
+    prev_rows = prev_cols = 0
+    try:
+        ws = sh.worksheet(title)
+        prev = ws.get_all_values()
+        prev_rows = len(prev)
+        prev_cols = max((len(r) for r in prev), default=0)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=title, rows=rows, cols=cols)
+    width = max(max((len(r) for r in out), default=0), prev_cols)
+    padded = [list(r) + [""] * (width - len(r)) for r in out]
+    padded.extend([""] * width for _ in range(max(0, prev_rows - len(padded))))
+    ws.update(values=padded, range_name="A1", value_input_option="RAW")
+    return ws
 
 
 def write_performance_dashboard_tab():
@@ -1816,13 +1835,7 @@ def write_weekly_snapshot_tab(weeks_back=1):
 
     # All compute succeeded — now touch the sheet atomically.
     sh = open_spreadsheet()
-    try:
-        ws = sh.worksheet("Weekly Snapshot")
-        ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Weekly Snapshot", rows=200, cols=12)
-
-    ws.update(values=out, range_name="A1", value_input_option="RAW")
+    ws = write_tab_atomically(sh, "Weekly Snapshot", out, rows=200, cols=12)
     return ws
 
 
@@ -1927,13 +1940,7 @@ def write_weekly_team_stats_tab(weeks_back=4):
     out.append(["Colour key: green = meets standard, yellow = within 10%, red = below."])
 
     sh = open_spreadsheet()
-    try:
-        ws = sh.worksheet("Weekly Team Stats")
-        ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Weekly Team Stats", rows=400, cols=4)
-
-    ws.update(values=out, range_name="A1", value_input_option="RAW")
+    ws = write_tab_atomically(sh, "Weekly Team Stats", out, rows=400, cols=4)
 
     if format_cells:
         def col_letter(idx):
@@ -2873,12 +2880,7 @@ def write_weekly_dropoff_analysis_tab():
                 "that week (from Cliniko) — the denominators for the drop-offs: "
                 "read IADNRs against IAs performed, and CNAs+DNAs against Review appts."])
 
-    try:
-        ws = sh.worksheet("Weekly Drop-off Analysis")
-        ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Weekly Drop-off Analysis", rows=600, cols=26)
-    ws.update(values=out, range_name="A1", value_input_option="RAW")
+    ws = write_tab_atomically(sh, "Weekly Drop-off Analysis", out, rows=600, cols=26)
     return ws
 
 
