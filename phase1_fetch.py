@@ -1449,6 +1449,95 @@ def compute_nps_by_physio(start_dt, end_dt):
     return out
 
 
+# Drop-off kinds owned by the responsible physio (pre-IA IACNA/IADNA are not).
+PHYSIO_RESPONSIBLE_KINDS = ("iadnr", "cancelled", "did_not_attend")
+
+
+def episode_dedup_for_rows(records, hist_cache=None):
+    """Episode-level dedup over drop-off sheet ROWS.
+
+    Shared by every tab that counts from the W/C tabs, so they cannot disagree
+    with each other or with the Performance Dashboard: one episode of care = one
+    entry, against one physio, however many rows it generated.
+
+    Returns (suppressed_ids, overrides):
+      suppressed_ids — appointment_ids that must NOT be counted (the losing rows
+                       of a multi-row patient).
+      overrides      — {appointment_id: {"kind", "physio"}} for the surviving row,
+                       so it carries the engine's classification and physio rather
+                       than whatever the row was first written with.
+
+    Only patients with MORE THAN ONE physio-responsible row are resolved against
+    Cliniko — a single row is already one-per-episode — which keeps this to a few
+    dozen history fetches instead of several hundred.
+    """
+    import phase2 as p2
+    counts, rows_by_patient = {}, {}
+    for r in records:
+        if str(r.get("Drop-off Type") or "").strip().lower() not in PHYSIO_RESPONSIBLE_KINDS:
+            continue
+        name = str(r.get("Patient Name") or "").strip()
+        aid = str(r.get("appointment_id") or "").strip()
+        if not name or not aid:
+            continue
+        counts[name] = counts.get(name, 0) + 1
+        rows_by_patient.setdefault(name, []).append(aid)
+    multi = {n for n, c in counts.items() if c > 1}
+    if not multi:
+        return set(), {}
+
+    # One windowed fetch maps appointment_id -> patient. Resolving by id rather
+    # than by name avoids duplicate/renamed patient records, and a direct GET on
+    # a cancelled appointment 404s, so it cannot be used here.
+    wanted = {a for n in multi for a in rows_by_patient[n]}
+    idx = {}
+    try:
+        base = [("q[]", "starts_at:>=2026-02-01T00:00:00Z"),
+                ("q[]", "starts_at:<2027-01-01T00:00:00Z")]
+        for extra in ([], [("q[]", "cancelled_at:?")]):
+            for a in p2.fetch_all("/individual_appointments", base + extra):
+                if str(a["id"]) in wanted:
+                    idx[str(a["id"])] = a
+    except Exception as e:
+        print(f"  WARN episode dedup: appointment fetch failed ({e}) — "
+              f"counting rows, not episodes")
+        return set(), {}
+
+    if hist_cache is None:
+        hist_cache = {}
+    suppressed, overrides = set(), {}
+    pracs = p2.all_practitioners()
+    for name in sorted(multi):
+        aids = rows_by_patient[name]
+        appt = next((idx[a] for a in aids if a in idx), None)
+        if not appt:
+            continue
+        pid = p2.id_from_link(appt.get("patient"))
+        if not pid:
+            continue
+        try:
+            res = p2.episode_dropoff(
+                p2.fetch_patient_full_history(pid, cache=hist_cache))
+        except Exception as e:
+            print(f"  WARN episode dedup failed for {name}: {e}")
+            continue
+        if not res:
+            continue          # reactivated / not a drop-off — leave rows alone
+        keep = str(res["event"].get("id"))
+        for a in aids:
+            if a != keep:
+                suppressed.add(a)
+        prac = pracs.get(str(res["physio_id"])) or {}
+        overrides[keep] = {
+            "kind": res["kind"],
+            "physio": f'{prac.get("first_name","")} {prac.get("last_name","")}'.strip(),
+        }
+    if suppressed:
+        print(f"  Episode dedup: {len(multi)} multi-row patients -> "
+              f"{len(suppressed)} duplicate row(s) not counted")
+    return suppressed, overrides
+
+
 def write_tab_atomically(sh, title, out, rows=400, cols=15):
     """Replace a tab's contents in ONE update — never clearing first.
 
@@ -2141,36 +2230,56 @@ def _funnel_for_month(year, month, unbooked_by_month):
 def write_monthly_summary_tab():
     """Refresh Monthly Summary tab — multi-month stacked, current month first,
     aggregated from all W/C tabs in the sheet."""
+    import phase2 as p2
     now = datetime.now(LONDON)
     sh = open_spreadsheet()
     types = ("iacna", "iadna", "iadnr", "cancelled", "did_not_attend")
 
     # Collect rows grouped by YYYY-MM
-    rows_by_month = {}
+    all_records = []
     for ws in sh.worksheets():
         if not ws.title.startswith("W/C "):
             continue
         try:
-            records = ws.get_all_records()
+            all_records.extend(ws.get_all_records())
         except Exception as e:
             print(f"  WARN couldn't read {ws.title}: {e}")
             continue
-        for row in records:
-            appt_date = str(row.get("Appointment Date") or row.get("appointment_date") or "")
-            canc_date = str(row.get("Cancellation Date") or row.get("cancellation_date") or "")
-            # Event date: cancellation_date if set (cancellations), else appointment_date.
-            # Matches the W/C tab grouping convention.
-            event_date = canc_date if canc_date else appt_date
-            if len(event_date) < 7:
-                continue
-            month_key = event_date[:7]
-            rows_by_month.setdefault(month_key, []).append(row)
 
-    try:
-        ws = sh.worksheet("Monthly Summary")
-        ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Monthly Summary", rows=400, cols=8)
+    # Episode-level dedup — the SAME helper the Weekly Drop-off Analysis uses, so
+    # this tab agrees with it and with the Performance Dashboard. Counting raw
+    # rows made June read 164 physio-responsible drop-offs here against 111 on the
+    # Dashboard: one lost patient generating several rows was counted several
+    # times. (Martin 2026-07-21 — Weekly Snapshot deliberately still counts
+    # EVENTS, since a patient who cancels four times really did cost four slots.)
+    supp, ovr = episode_dedup_for_rows(all_records)
+
+    rows_by_month = {}
+    for row in all_records:
+        aid = str(row.get("appointment_id") or "").strip()
+        if aid and aid in supp:
+            continue                      # same episode already counted
+        # Reactivated patients are NOT losses — the Performance Dashboard drops
+        # them, so this tab must too or the two disagree. June: 148 counted rows
+        # included 39 reactivated, leaving 109 against the Dashboard's 111.
+        # Deliberately NOT done inside episode_dedup_for_rows: the Weekly
+        # Drop-off Analysis needs these rows kept so it can show reactivated
+        # separately from net losses. (Martin 2026-07-20/21.)
+        if str(row.get("Reactivation Status") or "").strip().lower() in ("reactivated", "rebooked"):
+            continue
+        o = ovr.get(aid) if aid else None
+        if o and o.get("kind"):
+            row = {**row, "Drop-off Type": o["kind"]}
+            if o.get("physio"):
+                row["Physio"] = o["physio"]
+        # Allocate by APPOINTMENT date — when the appointment was SUPPOSED to
+        # happen — matching the Dashboard. Grouping by cancellation date instead
+        # put a late-June cancellation of a July slot in June here and July there.
+        appt_date = str(row.get("Appointment Date") or row.get("appointment_date") or "")
+        if len(appt_date) < 7:
+            continue
+        rows_by_month.setdefault(appt_date[:7], []).append(row)
+
 
     out = []
     out.append(["Monthly Summary"])
@@ -2232,18 +2341,40 @@ def write_monthly_summary_tab():
         out.append([f"=== {month_label}{suffix} ==="])
         out.append(["Physio", "IACNA", "IADNA", "IADNR", "Cancelled", "DNA", "Total"])
 
+        # Built from monthly_stats_per_physio — the SAME function the Performance
+        # Dashboard uses — so the two tabs match exactly, by construction rather
+        # than by imitation. Physios read their own row here to see the breakdown
+        # behind their Dashboard number, so counting sheet rows was never good
+        # enough: it double-counted repeat cancellers, kept patients who had since
+        # reactivated, and used the row's original physio instead of the engine's
+        # attribution (7 of 10 physios disagreed for June). (Martin 2026-07-21.)
+        m_start = datetime.strptime(month_key + "-01", "%Y-%m-%d").replace(tzinfo=LONDON)
+        m_end = (m_start + timedelta(days=32)).replace(day=1)
+        try:
+            stats = p2.monthly_stats_per_physio(
+                m_start.astimezone(timezone.utc), m_end.astimezone(timezone.utc))
+        except Exception as e:
+            print(f"  WARN Monthly Summary: stats failed for {month_key}: {e}")
+            out.append([f"(stats unavailable for {month_key})"])
+            out.append([])
+            continue
+
         counts = {}
-        for row in rows_by_month[month_key]:
-            physio = row.get("Physio") or row.get("physio") or "?"
-            kind = row.get("Drop-off Type") or row.get("dropoff_type") or ""
-            counts.setdefault(physio, {k: 0 for k in types})
-            if kind in counts[physio]:
-                counts[physio][kind] += 1
+        for display, st in stats.items():
+            counts[display] = {
+                "iacna": st.get("iacnas", 0) or 0,
+                "iadna": st.get("iadnas", 0) or 0,
+                "iadnr": st.get("iadnrs", 0) or 0,
+                "cancelled": st.get("cnas_review", 0) or 0,
+                "did_not_attend": st.get("dnas_review", 0) or 0,
+            }
 
         grand = {k: 0 for k in types}
         for physio in sorted(counts.keys()):
             c = counts[physio]
             total = sum(c.values())
+            if total == 0:
+                continue
             out.append([physio, c["iacna"], c["iadna"], c["iadnr"], c["cancelled"],
                         c["did_not_attend"], total])
             for k in types:
@@ -2257,8 +2388,9 @@ def write_monthly_summary_tab():
     out.append(["  IADNA = IA did-not-attend. Physio not responsible."])
     out.append(["  IADNR = Attended IA but never returned (no-rebook + cancelled/DNA'd first follow-up)."])
     out.append(["  Cancelled / DNA = established patient drop-offs (≥2 attended sessions in current episode)."])
-    ws.update(values=out, range_name="A1", value_input_option="RAW")
-    return ws
+    out.append(["  One episode of care = ONE entry, against one physio, allocated to the month the "
+                "cancelled/DNA'd appointment was due — same basis as the Performance Dashboard."])
+    return write_tab_atomically(sh, "Monthly Summary", out, rows=400, cols=8)
 
 
 def write_physio_trends_tab(months_back=12):
@@ -2670,78 +2802,9 @@ def write_weekly_dropoff_analysis_tab():
     # against Cliniko; a single row is already one-per-episode. That keeps this
     # to ~50 patients instead of ~460, which matters because it runs on the
     # daily refresh.
-    def _episode_dedup(weeks):
-        """Returns (suppressed_ids, overrides).
-
-        suppressed_ids — appointment_ids that must NOT be counted (the losing
-                         rows of a multi-row patient).
-        overrides      — {appointment_id: {"kind", "physio"}} for the surviving
-                         row, so it carries the right classification and physio.
-        """
-        counts, rows_by_patient = {}, {}
-        for title, rws in weeks.items():
-            for r in rws:
-                kind = str(r.get("Drop-off Type") or "").strip().lower()
-                if kind not in PHYS_RESP:
-                    continue
-                name = str(r.get("Patient Name") or "").strip()
-                aid = str(r.get("appointment_id") or "").strip()
-                if not name or not aid:
-                    continue
-                counts[name] = counts.get(name, 0) + 1
-                rows_by_patient.setdefault(name, []).append(aid)
-        multi = {n for n, c in counts.items() if c > 1}
-        if not multi:
-            return set(), {}
-
-        # One windowed fetch gives appointment_id -> patient, avoiding fragile
-        # name lookups (and GET /individual_appointments/<id> 404s on cancelled
-        # appointments, so it cannot be used here).
-        wanted = {a for n in multi for a in rows_by_patient[n]}
-        idx = {}
-        try:
-            base = [("q[]", "starts_at:>=2026-02-01T00:00:00Z"),
-                    ("q[]", "starts_at:<2027-01-01T00:00:00Z")]
-            for extra in ([], [("q[]", "cancelled_at:?")]):
-                for a in p2.fetch_all("/individual_appointments", base + extra):
-                    if str(a["id"]) in wanted:
-                        idx[str(a["id"])] = a
-        except Exception as e:
-            print(f"  WARN episode dedup: appointment fetch failed ({e}) — "
-                  f"weekly tallies will count rows, not episodes")
-            return set(), {}
-
-        suppressed, overrides = set(), {}
-        pracs = p2.all_practitioners()
-        for name in sorted(multi):
-            aids = rows_by_patient[name]
-            appt = next((idx[a] for a in aids if a in idx), None)
-            if not appt:
-                continue
-            pid = p2.id_from_link(appt.get("patient"))
-            if not pid:
-                continue
-            try:
-                res = p2.episode_dropoff(
-                    p2.fetch_patient_full_history(pid, cache=_weekly_hist_cache))
-            except Exception as e:
-                print(f"  WARN episode dedup failed for {name}: {e}")
-                continue
-            if not res:
-                continue          # reactivated / not a drop-off — leave rows alone
-            keep = str(res["event"].get("id"))
-            for a in aids:
-                if a != keep:
-                    suppressed.add(a)
-            prac = pracs.get(str(res["physio_id"])) or {}
-            full = f'{prac.get("first_name","")} {prac.get("last_name","")}'.strip()
-            overrides[keep] = {"kind": res["kind"], "physio": full}
-        if suppressed:
-            print(f"  Episode dedup: {len(multi)} multi-row patients -> "
-                  f"{len(suppressed)} duplicate row(s) not counted")
-        return suppressed, overrides
-
-    suppressed_ids, dedup_overrides = _episode_dedup(weeks)
+    suppressed_ids, dedup_overrides = episode_dedup_for_rows(
+        [r for rws in weeks.values() for r in rws],
+        hist_cache=_weekly_hist_cache)
 
     def analyse(rows, react_lookup):
         per = {}

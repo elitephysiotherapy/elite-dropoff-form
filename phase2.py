@@ -838,7 +838,24 @@ def weekly_stats_per_physio(start_utc, end_utc):
 
 # ---------------- Per-Physio Monthly Stats (Performance Dashboard) ----------------
 
-def monthly_stats_per_physio(start_utc, end_utc):
+_MONTHLY_STATS_CACHE = {}
+
+
+def monthly_stats_per_physio(start_utc, end_utc, _cache=_MONTHLY_STATS_CACHE):
+    """Per-physio monthly stats. Memoised by window for the life of the process:
+    the daily run builds the Performance Dashboard AND the Monthly Summary from
+    the same months, and this is the expensive call (~4 min/month), so the second
+    consumer gets it free. Patient history doesn't change mid-run.
+    (Martin 2026-07-21.)"""
+    _key = (start_utc.isoformat(), end_utc.isoformat())
+    if _key in _cache:
+        return _cache[_key]
+    _result = _monthly_stats_per_physio_uncached(start_utc, end_utc)
+    _cache[_key] = _result
+    return _result
+
+
+def _monthly_stats_per_physio_uncached(start_utc, end_utc):
     """Compute KPIs per practitioner for the given month window.
 
     Returns: dict keyed by display_name → {nps, total_apts, cnas_review, dnas_review,
