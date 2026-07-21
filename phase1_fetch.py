@@ -1698,15 +1698,30 @@ def write_performance_dashboard_tab():
     out.append([])
     out.append(["Colour key: green = meets standard, yellow = within 10% of standard, red = below."])
 
-    # All compute succeeded — now (and only now) touch the sheet atomically.
+    # All compute succeeded — now (and only now) touch the sheet.
+    #
+    # Deliberately NO ws.clear(): clearing leaves the Dashboard visibly EMPTY
+    # between the wipe and the write, and on 2026-07-21 it sat blank from ~07:22
+    # to 07:37 during the morning refresh. Martin reads this tab; a blank tab
+    # looks like a broken system. Instead pad the new grid out to cover whatever
+    # the old one occupied and write it in ONE update — the tab then always shows
+    # either the old content or the new, never nothing. (Martin 2026-07-21.)
     sh = open_spreadsheet()
+    prev_rows = prev_cols = 0
     try:
         ws = sh.worksheet("Performance Dashboard")
-        ws.clear()
+        prev = ws.get_all_values()
+        prev_rows = len(prev)
+        prev_cols = max((len(r) for r in prev), default=0)
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title="Performance Dashboard", rows=400, cols=15)
 
-    ws.update(values=out, range_name="A1", value_input_option="RAW")
+    width = max(max((len(r) for r in out), default=0), prev_cols)
+    padded = [list(r) + [""] * (width - len(r)) for r in out]
+    # Blank rows to overwrite anything the previous, longer grid left behind.
+    padded.extend([""] * width for _ in range(max(0, prev_rows - len(padded))))
+
+    ws.update(values=padded, range_name="A1", value_input_option="RAW")
 
     # Apply colour formatting in one batch_format call
     if format_cells:
