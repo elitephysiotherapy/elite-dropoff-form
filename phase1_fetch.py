@@ -1548,10 +1548,16 @@ def write_tab_atomically(sh, title, out, rows=400, cols=15):
     writing once means the tab always shows either the old content or the new.
     (Martin 2026-07-21.)
     """
+    from bookings_fetch import _gs_retry   # shared 429/5xx backoff (Sheets quota)
     prev_rows = prev_cols = 0
     try:
         ws = sh.worksheet(title)
-        prev = ws.get_all_values()
+        # The read and the write are BOTH retried: the 07:00 London cron runs at
+        # 06:00 UTC, when several weekly Render jobs share the GCP Sheets quota,
+        # and an un-retried 429 here threw and left the tab stale for a day
+        # (Weekly Team Stats, 2026-07-23). _gs_retry backs off on 429/5xx.
+        # (Martin 2026-07-26.)
+        prev = _gs_retry(ws.get_all_values, f"{title} read")
         prev_rows = len(prev)
         prev_cols = max((len(r) for r in prev), default=0)
     except gspread.exceptions.WorksheetNotFound:
@@ -1559,7 +1565,8 @@ def write_tab_atomically(sh, title, out, rows=400, cols=15):
     width = max(max((len(r) for r in out), default=0), prev_cols)
     padded = [list(r) + [""] * (width - len(r)) for r in out]
     padded.extend([""] * width for _ in range(max(0, prev_rows - len(padded))))
-    ws.update(values=padded, range_name="A1", value_input_option="RAW")
+    _gs_retry(lambda: ws.update(values=padded, range_name="A1",
+                                value_input_option="RAW"), f"{title} write")
     return ws
 
 
@@ -1814,24 +1821,13 @@ def write_performance_dashboard_tab():
     # looks like a broken system. Instead pad the new grid out to cover whatever
     # the old one occupied and write it in ONE update — the tab then always shows
     # either the old content or the new, never nothing. (Martin 2026-07-21.)
+    from bookings_fetch import _gs_retry
     sh = open_spreadsheet()
-    prev_rows = prev_cols = 0
-    try:
-        ws = sh.worksheet("Performance Dashboard")
-        prev = ws.get_all_values()
-        prev_rows = len(prev)
-        prev_cols = max((len(r) for r in prev), default=0)
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Performance Dashboard", rows=400, cols=15)
+    # Same atomic, retry-wrapped writer every other tab uses — no clear, and the
+    # Sheets read/write back off on a transient 429 (Martin 2026-07-26).
+    ws = write_tab_atomically(sh, "Performance Dashboard", out, rows=400, cols=15)
 
-    width = max(max((len(r) for r in out), default=0), prev_cols)
-    padded = [list(r) + [""] * (width - len(r)) for r in out]
-    # Blank rows to overwrite anything the previous, longer grid left behind.
-    padded.extend([""] * width for _ in range(max(0, prev_rows - len(padded))))
-
-    ws.update(values=padded, range_name="A1", value_input_option="RAW")
-
-    # Apply colour formatting in one batch_format call
+    # Apply colour formatting in one batch_format call (also retried).
     if format_cells:
         def col_letter(idx):
             return chr(ord("A") + idx - 1)
@@ -1839,7 +1835,7 @@ def write_performance_dashboard_tab():
         for row_idx, col_idx, rgb in format_cells:
             cell_range = f"{col_letter(col_idx)}{row_idx}"
             batch.append({"range": cell_range, "format": {"backgroundColor": rgb}})
-        ws.batch_format(batch)
+        _gs_retry(lambda: ws.batch_format(batch), "Performance Dashboard format")
 
     return ws
 
@@ -2028,6 +2024,7 @@ def write_weekly_team_stats_tab(weeks_back=4):
     out.append(["  Clinic Average / w/o M&J = team roll-up of the per-physio figures (w/o M&J excludes Marty + Julie)."])
     out.append(["Colour key: green = meets standard, yellow = within 10%, red = below."])
 
+    from bookings_fetch import _gs_retry
     sh = open_spreadsheet()
     ws = write_tab_atomically(sh, "Weekly Team Stats", out, rows=400, cols=4)
 
@@ -2036,7 +2033,7 @@ def write_weekly_team_stats_tab(weeks_back=4):
             return chr(ord("A") + idx - 1)
         batch = [{"range": f"{col_letter(c)}{r}", "format": {"backgroundColor": rgb}}
                  for r, c, rgb in format_cells]
-        ws.batch_format(batch)
+        _gs_retry(lambda: ws.batch_format(batch), "Weekly Team Stats format")
 
     return ws
 
