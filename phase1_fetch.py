@@ -1865,7 +1865,7 @@ def write_weekly_snapshot_tab(weeks_back=1):
     out = []
     out.append(["Weekly Snapshot — clinic-wide"])
     out.append([f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}  |  "
-                f"Clinic capacity: {config.CLINIC_WEEKLY_HOURS} hrs/wk"])
+                f"Clinic capacity: roster-derived per week (excl. annual leave) — see Capacity column"])
     out.append([])
     headers = [
         "Week", "IAs Performed", "IA Rebook %", "Total Appts", "Review Appts",
@@ -1916,7 +1916,7 @@ def write_weekly_snapshot_tab(weeks_back=1):
     out.append(["  DNA+CNA % = combined rate (target <10%)."])
     out.append(["  CNA/DNA 1st % = (IACNA + IADNA) / IAs Performed = pre-IA drop-off rate (target <2%)."])
     out.append(["  Clinic Rebook % = of unique patients seen this week, % with any future booking in the diary."])
-    out.append(["  Utilization % = (attended + DNA appointment hours, excl. cancelled & classes) / weekly capacity."])
+    out.append(["  Utilization % = non-cancelled appointment hours delivered (incl. group sessions) ÷ hours the physios were AVAILABLE that week (roster-derived, excludes anyone on annual leave for the whole week)."])
 
     # All compute succeeded — now touch the sheet atomically.
     sh = open_spreadsheet()

@@ -100,6 +100,10 @@ EXCLUDED_FROM_TOTAL_APPTS = {
 # ===========================================================================
 # Update when team members join/leave or contract hours change.
 
+# DEPRECATED — hand-maintained clinic capacity. No longer read anywhere: the
+# Weekly Snapshot now derives capacity per week from the live roster via
+# clinic_weekly_hours_on() (which excludes annual leave and tracks joiners/
+# leavers automatically). Kept only so external references don't break.
 CLINIC_WEEKLY_HOURS = 198.25       # total available service hours per week
 CLINIC_MONTHLY_HOURS = 891.3       # total available service hours per month
 
@@ -154,9 +158,16 @@ TEAM = [
      "start": "2022-01-01", "end": None, "monthly_hours": 128.6,
      "clinic_email": "sineadmcgill@elitephysiocookstown.co.uk"},
 
+    # ON ANNUAL LEAVE from 13 Jul 2026 (open-ended). While on leave she has ZERO
+    # available hours, so she drops out of the utilisation denominator (both the
+    # Weekly Snapshot and Weekly Team Stats) — utilisation = hours delivered ÷
+    # hours physios were AVAILABLE, and leave is not availability (Martin 2026-07-27).
+    # She is NOT a leaver: her name, history and row all stay. When she's back,
+    # set "to" to her last day off (or delete the "leave" block). Do not delete her.
     {"display": "Erin", "full_names": ["Erin McNicholl"],
      "practitioner_ids": ["1168999178748040474"],
      "start": "2023-01-01", "end": None, "monthly_hours": 128.6,
+     "leave": [{"from": "2026-07-13", "to": None}],
      "clinic_email": "erin@elitephysiocookstown.co.uk"},
 
     # LEFT 2 Jul 2026. Kept here on purpose — this is what preserves her name on
@@ -247,11 +258,30 @@ def _member(display):
     return None
 
 
+def on_leave_whole_period(member, period_start, period_end):
+    """True if `member` was on annual leave for the ENTIRE [period_start, period_end].
+
+    Utilisation is hours delivered ÷ hours the physio was AVAILABLE, and annual
+    leave is not availability — so a physio off for a whole week/month has zero
+    available hours and drops out of the denominator entirely. A part-worked
+    period keeps full capacity (we don't pro-rate mid-period leave here)."""
+    for lv in member.get("leave") or []:
+        lf = _as_date(lv.get("from"))
+        lt = _as_date(lv.get("to"))
+        if lf and lf <= period_start and (lt is None or lt >= period_end):
+            return True
+    return False
+
+
 def monthly_hours_on(display, period_start, period_end):
     """Monthly capacity for `display` during a period — None if they weren't on
-    the team then, which makes utilisation render as "—" instead of a false 0%."""
+    the team then (or were on annual leave for the whole period), which makes
+    utilisation render as "—" instead of a false 0% and removes them from the
+    clinic denominator."""
     m = _member(display)
     if not m or not is_active_in_period(m, period_start, period_end):
+        return None
+    if on_leave_whole_period(m, period_start, period_end):
         return None
     return m.get("monthly_hours")
 
@@ -260,6 +290,20 @@ def weekly_hours_on(display, period_start, period_end):
     """Weekly capacity for `display` during a period (see monthly_hours_on)."""
     hrs = monthly_hours_on(display, period_start, period_end)
     return round(hrs / 4.345, 1) if hrs else None
+
+
+def clinic_weekly_hours_on(period_start, period_end):
+    """Total clinic capacity for a week = sum of every physio's AVAILABLE weekly
+    hours, skipping anyone not on the team then or on annual leave for the whole
+    week. This is the utilisation denominator for the Weekly Snapshot; it tracks
+    the live roster (and reconciles with the Weekly Team Stats roll-up) instead
+    of the old hand-maintained CLINIC_WEEKLY_HOURS constant."""
+    total = 0.0
+    for m in TEAM:
+        h = weekly_hours_on(m["display"], period_start, period_end)
+        if h:
+            total += h
+    return round(total, 2)
 
 
 # ---------------------------------------------------------------------------

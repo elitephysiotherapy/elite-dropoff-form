@@ -685,7 +685,11 @@ def weekly_clinic_stats(start_utc, end_utc):
     n_with_future = sum(1 for pid in patient_ids if _has_any_appt(pid, e_iso))
 
     used_hours = used_minutes / 60
-    util_pct = (used_hours / config.CLINIC_WEEKLY_HOURS) * 100 if config.CLINIC_WEEKLY_HOURS else None
+    # Capacity = sum of physios' AVAILABLE hours this week (roster-derived, excl.
+    # annual leave), so utilisation = hours delivered ÷ hours available and it
+    # reconciles with the Weekly Team Stats roll-up.
+    capacity_hours = config.clinic_weekly_hours_on(start_utc.date(), end_utc.date())
+    util_pct = (used_hours / capacity_hours) * 100 if capacity_hours else None
     # IA Rebook % uses strict 4 IAs only — diagnostic types are excluded
     ia_rebook_pct = (n_ias_rebooked / n_strict_ias_performed * 100) if n_strict_ias_performed else None
     clinic_rebook_pct = (n_with_future / len(patient_ids) * 100) if patient_ids else None
@@ -718,7 +722,7 @@ def weekly_clinic_stats(start_utc, end_utc):
         "patients_with_future": n_with_future,
         "clinic_rebook_pct": clinic_rebook_pct,
         "used_hours": round(used_hours, 1),
-        "capacity_hours": config.CLINIC_WEEKLY_HOURS,
+        "capacity_hours": capacity_hours,
         "utilization_pct": util_pct,
         "n_group_appts": len(group_appts),
     }
