@@ -255,6 +255,17 @@ def _read_weekly_dropoff_analysis(monday: datetime) -> dict:
                 pass
             break
 
+    # Performed-volume context rows — the SAME "Review appts completed" and
+    # "IAs performed this week" the tab shows, so the email's Reviews figure and
+    # drop-off rate reconcile with the sheet instead of a separate live count.
+    for r in section:
+        first = (r[0] or "").strip()
+        val = (r[1] or "").strip() if len(r) > 1 else ""
+        if first == "Review appts completed:" and val.isdigit():
+            out["reviews_completed"] = int(val)
+        elif first == "IAs performed this week:" and val.isdigit():
+            out["ias_performed"] = int(val)
+
     # Stage Drop-off section — cols 6/7
     out["stage"] = _section_pairs(col_label=6, col_count=7)
     # Body Area section — cols 9/10; filter legacy-notes entries
@@ -484,8 +495,11 @@ def _patients_off_course_rows(records: list[dict]) -> list[tuple[str, str]]:
 def _build_html(stats: dict, off_course: list[tuple[str, str]],
                 uncategorised: int) -> str:
     """Assemble the email HTML with placeholder cid: references for inline charts."""
-    rate_dropoff = (stats["dropoffs"] / stats["reviews"] * 100
-                    if stats["reviews"] else 0)
+    # Martin's canonical drop-off rate: Total Drop-offs / (Total Drop-offs +
+    # Review Appts) — the same formula the drop-off sheet's Dashboard uses. NOT
+    # drops / reviews (which overstates it).
+    _denom = stats["dropoffs"] + stats["reviews"]
+    rate_dropoff = (stats["dropoffs"] / _denom * 100) if _denom else 0
     table_rows = "\n".join(
         f"<tr><td>{p}</td><td>{n}</td></tr>" for (p, n) in off_course
     )
@@ -621,20 +635,16 @@ def main() -> int:
     records = _get_wc_records(last_mon)
     print(f"[email]   {len(records)} drop-off rows")
 
-    print("[email] querying Cliniko for IA + Review counts…", flush=True)
-    REVIEW_IDS = {"382563815511823515",   # Review Appointment
-                  "382589431795684515",   # Club Follow Up
-                  "1558531409491006559",  # PHI Review
-                  "1118674366867969498"}  # Mummy MOT Review
-    reviews = _cliniko_count_in_window(last_mon, last_sun, REVIEW_IDS)
+    print("[email] querying Cliniko for IA rebook…", flush=True)
     ias_perf, ias_rebooked, ia_pct = _ia_rebook_rate(last_mon, last_sun)
-    print(f"[email]   reviews={reviews}, ias={ias_perf}, rebooked={ias_rebooked}")
+    print(f"[email]   ias={ias_perf}, rebooked={ias_rebooked}")
 
     counted_records = [r for r in records if _is_counted_dropoff(r)]
 
-    # Headline drop-off total + all three chart datasets — read from the
-    # Weekly Drop-off Analysis tab (Martin's single source of truth,
-    # 2026-06-07). Falls back to W/C-tab counting only if that fails.
+    # Headline drop-off total, review volume + all three chart datasets — read
+    # from the Weekly Drop-off Analysis tab (Martin's single source of truth,
+    # 2026-06-07). Falls back to W/C-tab counting / a live Cliniko count only
+    # if that fails, so the email always reconciles with the sheet.
     analysis = _read_weekly_dropoff_analysis(last_mon)
     if analysis.get("total"):
         dropoffs_total = analysis["total"]
@@ -645,6 +655,20 @@ def main() -> int:
         dropoffs_total = len(counted_records)
         print(f"[email]   drop-off total (W/C fallback):   {dropoffs_total} "
               f"(Weekly Analysis section not found for {last_mon.date()})")
+
+    # Reviews = "Review appts completed" from the same tab (all attended non-IA
+    # appointments), so the drop-off rate below matches the sheet. Fall back to
+    # the narrow 4-type live count only if the tab row is missing.
+    if analysis.get("reviews_completed") is not None:
+        reviews = analysis["reviews_completed"]
+        print(f"[email]   reviews (Weekly Analysis): {reviews}")
+    else:
+        REVIEW_IDS = {"382563815511823515",   # Review Appointment
+                      "382589431795684515",   # Club Follow Up
+                      "1558531409491006559",  # PHI Review
+                      "1118674366867969498"}  # Mummy MOT Review
+        reviews = _cliniko_count_in_window(last_mon, last_sun, REVIEW_IDS)
+        print(f"[email]   reviews (live 4-type fallback): {reviews}")
 
     uncategorised = sum(
         1 for r in counted_records
