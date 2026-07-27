@@ -500,6 +500,15 @@ def _build_html(stats: dict, off_course: list[tuple[str, str]],
     # drops / reviews (which overstates it).
     _denom = stats["dropoffs"] + stats["reviews"]
     rate_dropoff = (stats["dropoffs"] / _denom * 100) if _denom else 0
+
+    # IA line: IAs performed + IADNRs + rebook rate, matching the sheet. Fallback
+    # path has no IADNR count, so it drops that clause.
+    if stats.get("iadnrs") is not None:
+        ia_line = (f"{stats['ias_performed']} IAs performed, {stats['iadnrs']} "
+                   f"IADNRs = {stats['ia_rebook_pct']:.1f}% IA Rebook rate")
+    else:
+        ia_line = (f"{stats['ias_performed']} IAs performed "
+                   f"= {stats['ia_rebook_pct']:.1f}% IA Rebook rate")
     table_rows = "\n".join(
         f"<tr><td>{p}</td><td>{n}</td></tr>" for (p, n) in off_course
     )
@@ -517,7 +526,7 @@ def _build_html(stats: dict, off_course: list[tuple[str, str]],
 
 <p>{stats['reviews']} Reviews, {stats['dropoffs']} drop offs leaves drop off rate at {rate_dropoff:.1f}%</p>
 
-<p>{stats['ias_performed']} IAs performed, {stats['ias_rebooked']} rebooked = {stats['ia_rebook_pct']:.1f}% IA Rebook rate</p>
+<p>{ia_line}</p>
 
 <p><img src="cid:clinical_pie" style="max-width:540px;"></p>
 
@@ -635,10 +644,6 @@ def main() -> int:
     records = _get_wc_records(last_mon)
     print(f"[email]   {len(records)} drop-off rows")
 
-    print("[email] querying Cliniko for IA rebook…", flush=True)
-    ias_perf, ias_rebooked, ia_pct = _ia_rebook_rate(last_mon, last_sun)
-    print(f"[email]   ias={ias_perf}, rebooked={ias_rebooked}")
-
     counted_records = [r for r in records if _is_counted_dropoff(r)]
 
     # Headline drop-off total, review volume + all three chart datasets — read
@@ -670,6 +675,23 @@ def main() -> int:
         reviews = _cliniko_count_in_window(last_mon, last_sun, REVIEW_IDS)
         print(f"[email]   reviews (live 4-type fallback): {reviews}")
 
+    # IAs performed + IADNRs read from the same tab. IA Rebook % = (IAs − IADNRs)
+    # / IAs — Martin's formula (as on the monthly Dashboard). Some IADNRs relate
+    # to IAs from earlier weeks; that timing noise is accepted for this weekly
+    # email. Falls back to the live strict-4 rebook count only if the tab rows
+    # are missing.
+    if analysis.get("ias_performed") and analysis.get("iadnr") is not None:
+        ias_performed = analysis["ias_performed"]
+        iadnrs = analysis["iadnr"]
+        ia_rebook_pct = (ias_performed - iadnrs) / ias_performed * 100
+        print(f"[email]   IAs={ias_performed}, IADNRs={iadnrs}, "
+              f"rebook={ia_rebook_pct:.1f}% (Weekly Analysis)")
+    else:
+        print("[email] querying Cliniko for IA rebook (fallback)…", flush=True)
+        ias_performed, _rebooked, ia_rebook_pct = _ia_rebook_rate(last_mon, last_sun)
+        iadnrs = None
+        print(f"[email]   IAs={ias_performed}, rebook={ia_rebook_pct:.1f}% (live fallback)")
+
     uncategorised = sum(
         1 for r in counted_records
         if not str(r.get("Clinical / Non-Clinical") or "").strip())
@@ -677,9 +699,9 @@ def main() -> int:
     stats = {
         "reviews": reviews,
         "dropoffs": dropoffs_total,
-        "ias_performed": ias_perf,
-        "ias_rebooked": ias_rebooked,
-        "ia_rebook_pct": ia_pct,
+        "ias_performed": ias_performed,
+        "iadnrs": iadnrs,
+        "ia_rebook_pct": ia_rebook_pct,
     }
 
     # Patients off course — the Off-Track Review tab is otherwise only rebuilt
