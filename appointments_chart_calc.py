@@ -105,49 +105,71 @@ def _money_to_float(s):
         return 0.0
 
 
-def _read_revenue_budget(year_months):
-    """Read the GROUP row from Budget_2026 → {(year, month): £}.
+_MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-    Budget_2026 has yearly tabs only; for now we assume Martin keeps the same
-    Budget_2026 tab updated. Tab layout: row 4 has month headers Jan..Dec,
-    row 7 (GROUP) has the figures.
+
+def _read_budget_year_tab(sh, year):
+    """Read the GROUP row from the Budget_<year> tab → {month_num: £}, or None.
+
+    Robust to row position: finds the month-header row (contains Jan..Dec) and
+    the GROUP row (first cell == 'GROUP') by scanning, rather than assuming
+    fixed indices, so both the 2026 and 2025 tab layouts parse.
+    """
+    try:
+        ws = sh.worksheet(f"Budget_{year}")
+    except gspread.WorksheetNotFound:
+        return None
+    rows = ws.get_all_values()
+    name_to_num = {n: i + 1 for i, n in enumerate(_MONTH_NAMES)}
+    month_names = set(_MONTH_NAMES)
+
+    header = next((r for r in rows
+                   if sum(1 for c in r if c and c.strip() in month_names) >= 6), None)
+    group = next((r for r in rows if r and r[0].strip().upper() == "GROUP"), None)
+    if header is None or group is None:
+        return None
+
+    out = {}
+    for i, h in enumerate(header):
+        name = h.strip() if h else ""
+        if name in name_to_num and i < len(group):
+            out[name_to_num[name]] = _money_to_float(group[i])
+    return out
+
+
+def _read_revenue_budget(year_months):
+    """Read GROUP revenue budgets → {(year, month): £}, one tab per calendar year.
+
+    Each year reads its own Budget_<year> tab (e.g. Budget_2025 for 2025 months,
+    Budget_2026 for 2026). If a requested year has no tab, fall back to the
+    nearest available budget year's same calendar month so the line still draws.
+    Tab layout: a month-header row (Jan..Dec) and a GROUP row of £ figures.
     """
     sh = _cfo_sheet()
-    try:
-        ws = sh.worksheet("Budget_2026")
-    except gspread.WorksheetNotFound:
-        print("  WARN no Budget_2026 tab — budget line will be blank")
-        return {}
-    rows = ws.get_all_values()
-    if len(rows) < 7:
-        return {}
-    header = rows[3]  # 4th row → Clinic | Jan | Feb | …
-    group = rows[6]   # 7th row → GROUP | £41,635 | …
-    month_name_to_col = {}
-    for i, h in enumerate(header):
-        if h and h.strip() in {"Jan","Feb","Mar","Apr","May","Jun",
-                                "Jul","Aug","Sep","Oct","Nov","Dec"}:
-            month_name_to_col[h.strip()] = i
-    name_to_num = {n: i+1 for i, n in enumerate(
-        ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"])}
+    wanted_years = sorted({y for (y, _) in year_months})
+
+    by_year = {}
+    for y in wanted_years:
+        tab = _read_budget_year_tab(sh, y)
+        if tab:
+            by_year[y] = tab
+    if not by_year:
+        print("  WARN no Budget_<year> tab found — budget line will be blank")
+        return {(y, m): 0.0 for (y, m) in year_months}
+
+    available = sorted(by_year)
     out = {}
-    # Budget tab is a single calendar year (2026 in the current tab name).
-    # Apply to year 2026; anything outside that — same budget reused (best effort).
-    budget_year = 2026
-    for mname, col in month_name_to_col.items():
-        if col < len(group):
-            out[(budget_year, name_to_num[mname])] = _money_to_float(group[col])
-    # Cross-year fallback: if a requested month is in a different year, reuse the
-    # same calendar-month value from the budget year.
-    backfilled = {}
     for (y, m) in year_months:
-        if (y, m) in out:
-            backfilled[(y, m)] = out[(y, m)]
-        elif (budget_year, m) in out:
-            backfilled[(y, m)] = out[(budget_year, m)]
+        if y in by_year and m in by_year[y]:
+            out[(y, m)] = by_year[y][m]
         else:
-            backfilled[(y, m)] = 0.0
-    return backfilled
+            # nearest available year (by absolute distance) that has this month
+            fallback = min(
+                (yr for yr in available if m in by_year[yr]),
+                key=lambda yr: abs(yr - y), default=None)
+            out[(y, m)] = by_year[fallback][m] if fallback is not None else 0.0
+    return out
 
 
 # ─── Cliniko monthly counts ────────────────────────────────────────────────
