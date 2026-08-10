@@ -197,7 +197,15 @@ TEAM = [
      "start": "2025-11-01", "end": None, "monthly_hours": 128.6,
      "clinic_email": "shannagh@elitephysiocookstown.co.uk"},
 
-    # Joins full-time 1 Aug 2026. She has scattered earlier appointments in
+    # Started seeing patients 10 Aug 2026, full-time. Slack account is on his
+    # clinic address (verified 2026-08-10), so no slack_email override needed.
+    {"display": "Conor", "full_names": ["Conor O'Hagan"],
+     "practitioner_ids": ["2003886838393083747"],
+     "start": "2026-08-10", "end": None, "monthly_hours": 128.6,
+     "clinic_email": "conor@elitephysiocookstown.co.uk"},
+
+    # Starts full-time 11 Aug 2026 (was pencilled in for 1 Aug; confirmed 10 Aug
+    # she actually begins the 11th). She has scattered earlier appointments in
     # Cliniko (a placement: 25 in Nov 2025, a handful since) — those resolve to
     # "Kelly" straight away, but she stays off the dashboard and out of the
     # capacity/DM lists until her start date, then appears on her own.
@@ -208,7 +216,7 @@ TEAM = [
     # the slack_email override once her Slack is moved to the clinic address.
     {"display": "Kelly", "full_names": ["Kelly Scott"],
      "practitioner_ids": ["1810741098981627376"],
-     "start": "2026-08-01", "end": None, "monthly_hours": 128.6,
+     "start": "2026-08-11", "end": None, "monthly_hours": 128.6,
      "clinic_email": "kelly@elitephysiocookstown.co.uk",
      "slack_email": "kellyscott0208@icloud.com"},
 ]
