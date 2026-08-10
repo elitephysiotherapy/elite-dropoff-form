@@ -1840,6 +1840,36 @@ def write_performance_dashboard_tab():
     return ws
 
 
+def _read_snapshot_reactivations(sh):
+    """{'W/C 13 Jul 2026': 8, ...} — the Reactivations already on the Weekly
+    Snapshot tab. Lets the daily refresh preserve settled weeks instead of
+    re-deriving every patient's history each run (same trick as the
+    'Reactivations by Month' tab). Returns {} if the tab or column is absent."""
+    out = {}
+    try:
+        ws = sh.worksheet("Weekly Snapshot")
+        rows = ws.get_all_values()
+    except gspread.exceptions.WorksheetNotFound:
+        return out
+    header_idx = react_col = None
+    for i, row in enumerate(rows):
+        if row and row[0].strip() == "Week" and "Reactivations" in row:
+            header_idx = i
+            react_col = row.index("Reactivations")
+            break
+    if header_idx is None:
+        return out
+    for row in rows[header_idx + 1:]:
+        label = (row[0] if row else "").strip()
+        if not label.startswith("W/C "):
+            continue
+        try:
+            out[label] = int(row[react_col])
+        except (IndexError, ValueError):
+            continue  # blank / "—" / not-yet-computed
+    return out
+
+
 def write_weekly_snapshot_tab(weeks_back=1):
     """Refresh Weekly Snapshot tab — last N completed weeks, most recent first."""
     import phase2 as p2
@@ -1871,23 +1901,46 @@ def write_weekly_snapshot_tab(weeks_back=1):
         "Week", "IAs Performed", "IA Rebook %", "Total Appts", "Review Appts",
         "DNAs", "DNA %", "CNAs", "CNA %", "DNA+CNA %",
         "CNA/DNA 1st %", "Clinic Rebook %",
-        "Used Hours", "Capacity", "Utilization %",
+        "Used Hours", "Capacity", "Utilization %", "Reactivations",
     ]
     out.append(headers)
     out.append([
         "Gold Standard", "—", "≥80%", "—", "—",
         "—", "—", "—", "—", "<10%",
         "<2%", "≥85%",
-        "—", "—", "75-85%",
+        "—", "—", "75-85%", "—",
     ])
 
     def pct(v):
         return f"{v:.1f}%" if v is not None else "—"
 
+    # Reactivations are derived from full patient histories (one Cliniko fetch per
+    # patient who booked that week) — far too heavy to recompute every completed
+    # week on the daily cron. A reactivation is credited in the week its rebooking
+    # was CREATED, so once a week is past it is SETTLED and never changes: recompute
+    # only the most recent completed week each run and carry the rest forward from
+    # what's already on the tab (same approach as 'Reactivations by Month').
+    sh = open_spreadsheet()
+    existing_react = _read_snapshot_reactivations(sh)
+    recompute_labels = {periods[0][2]} if periods else set()
+    import reactivations_by_month as rbm
+
     for week_start_local, week_end_local, label in periods:
         start_utc = week_start_local.astimezone(timezone.utc)
         end_utc = week_end_local.astimezone(timezone.utc)
         s = p2.weekly_clinic_stats(start_utc, end_utc)
+
+        # Reactivations: reuse a settled figure if we have one, else derive it via
+        # the canonical engine (the same total the weekly Sinead DM and EOD use).
+        if label in existing_react and label not in recompute_labels:
+            react = existing_react[label]
+        else:
+            try:
+                react = rbm.collect_month(week_start_local, week_end_local)["total"]
+            except Exception as e:
+                print(f"  WARN reactivations for {label} failed: {e}")
+                react = existing_react.get(label, "—")
+
         out.append([
             label,
             s["ias_performed"],
@@ -1904,6 +1957,7 @@ def write_weekly_snapshot_tab(weeks_back=1):
             s["used_hours"],
             s["capacity_hours"],
             pct(s["utilization_pct"]),
+            react,
         ])
 
     out.append([])
@@ -1917,10 +1971,11 @@ def write_weekly_snapshot_tab(weeks_back=1):
     out.append(["  CNA/DNA 1st % = (IACNA + IADNA) / IAs Performed = pre-IA drop-off rate (target <2%)."])
     out.append(["  Clinic Rebook % = of unique patients seen this week, % with any future booking in the diary."])
     out.append(["  Utilization % = non-cancelled appointment hours delivered (incl. group sessions) ÷ hours the physios were AVAILABLE that week (roster-derived, excludes anyone on annual leave for the whole week)."])
+    out.append(["  Reactivations = drop-off patients (cancelled / no-showed / attended an IA and booked nothing, leaving no future appointment) who then rebooked, regaining a future appointment. Counted once, in the week they rebooked. Same canonical engine as the weekly Sinead DM and the EOD number."])
 
-    # All compute succeeded — now touch the sheet atomically.
-    sh = open_spreadsheet()
-    ws = write_tab_atomically(sh, "Weekly Snapshot", out, rows=200, cols=12)
+    # All compute succeeded — now touch the sheet atomically (sh opened above to
+    # read the settled Reactivations we're carrying forward).
+    ws = write_tab_atomically(sh, "Weekly Snapshot", out, rows=200, cols=16)
     return ws
 
 
