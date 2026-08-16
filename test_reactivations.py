@@ -159,6 +159,28 @@ hist_a = [
 check("comeback IA + quick follow-up = 0 reactivation", count(hist_a), 0)
 check("comeback IA + quick follow-up = 1 new booking", newbookings(hist_a), 1)
 
+# 16. Long-lapsed patient comes back on a NEW EPISODE (out-of-window return),
+#     then cancels it and rebooks days later. The new-episode booking retires the
+#     old drop-off, so the cancellation is a GENUINE new drop-off and the rebook
+#     3 days later is a reactivation. (Martin, 2026-08-16 — Traglach Bradley.)
+hist_t = [
+    appt("a", FU, "2025-03-31T15:30:00Z", "2025-03-06T12:18:00Z", dna=True),      # drop, 16 months out
+    appt("b", SCAN, "2026-06-12T11:00:00Z", "2026-06-10T16:13:00Z",              # return: >42d one-off
+         cancelled="2026-06-12T09:58:00Z"),                                      # ...then cancelled
+    appt("c", SCAN, "2026-06-15T07:00:00Z", "2026-06-13T17:58:00Z"),             # rebooked 3 days later
+]
+check("new-episode return, cancel, rebook = 1 reactivation", count(hist_t), 1)
+check("new-episode return, cancel, rebook = 0 new bookings", newbookings(hist_t), 0)
+
+# 16b. Same shape, but the return IS a reactivation (inside 42d) — the old
+#      "resets only on attendance" rule must still hold: this is ONE comeback.
+hist_u = [
+    appt("a", FU, "2026-05-10T09:00:00Z", "2026-05-01T09:00:00Z", cancelled="2026-05-09T09:00:00Z"),
+    appt("b", FU, "2026-05-20T09:00:00Z", "2026-05-11T09:00:00Z", cancelled="2026-05-19T09:00:00Z"),
+    appt("c", FU, "2026-05-28T09:00:00Z", "2026-05-21T09:00:00Z"),
+]
+check("in-window return, cancel, rebook = 1 (unchanged)", count(hist_u), 1)
+
 print("RESULT  test")
 print("-" * 60)
 allpass = True

@@ -12,7 +12,11 @@ a drop — this applies to CNAs, DNAs and IADNRs alike.
 Reactivation: a drop-off who then books, regaining a future appointment. Counted
 ONCE, in the week the rebooking was created.
   • Resets only on attendance: drop→rebook→drop→rebook (no attend) = 1;
-    drop→rebook→attend→drop→rebook = 2.
+    drop→rebook→attend→drop→rebook = 2. EXCEPTION (Martin, 2026-08-16 — the
+    Traglach Bradley case): if the rebooking is NOT credited as a reactivation
+    (a >42-day new IA, or an out-of-window return), it RETIRES the old drop-off
+    and starts a fresh episode of care. A later cancellation is then a genuine
+    new drop-off, and rebooking from it is a genuine reactivation.
   • A rescheduled / therapist-changed appointment that was never cancelled is not
     a drop, so it is never a reactivation.
   • Windows (Martin, 2026-07-20): ANY rebooking within 42 days is a reactivation.
@@ -120,6 +124,57 @@ def _drop_kind(appt):
     return "IADNR"
 
 
+def _resolve_lapse(appts, drop_date, drop_appt, now):
+    """Find the booking that ends a lapse and classify it. None = never rebooked."""
+    eod = _end_of_day(drop_date)
+    did = str(drop_appt.get("id")) if drop_appt else None
+    # The rebooking is a genuine LATER appointment: booked after the drop day
+    # and starting after the drop (excludes the drop appointment itself, e.g.
+    # an IA entered the day after it happened — the Shea Coney bug).
+    rebooks = [a for a in appts
+               if str(a.get("id")) != did
+               and (_dt(a.get("created_at")) or now) > eod
+               and (_dt(a.get("starts_at")) or now) > drop_date]
+    if not rebooks:
+        return None                                 # dropped, never rebooked
+    rebook = min(rebooks, key=lambda a: a.get("created_at") or "")
+    st = _dt(rebook.get("starts_at"))
+    gap = (st - drop_date).days if st else None
+    if gap is not None and gap <= NEW_IA_AFTER_DAYS:
+        is_react, is_new = True, False              # ≤42d: any rebooking counts
+    elif _is_ia(rebook):
+        # >42d new IA = a NEW EPISODE of care. The original drop-off holds
+        # and no reactivation is credited for it.
+        is_react, is_new = False, True
+    elif _is_followup(rebook) and gap is not None and gap <= FOLLOWUP_AFTER_DAYS:
+        is_react, is_new = True, False              # follow-up within 90d still counts
+    else:
+        # >90d follow-up, or a one-off (scan/consult/massage) beyond 42d:
+        # neither a reactivation nor a new booking — the drop-off stands.
+        is_react, is_new = False, False
+    return {
+        "drop_date": drop_date,
+        "drop_appt": drop_appt,
+        "drop_kind": _drop_kind(drop_appt),
+        "rebook": rebook,
+        "rebook_created": rebook.get("created_at"),
+        "is_reactivation": is_react,
+        "is_new_booking": is_new,
+    }
+
+
+def _retires_lapse(appts, drop_date, drop_appt, at_dt, now):
+    """True if the open lapse from drop_date was already ended, as of at_dt, by a
+    booking that is NOT credited as a reactivation — i.e. the patient had come
+    back on a fresh episode of care, so a drop at at_dt is a NEW drop-off rather
+    than a continuation of the old lapse."""
+    rec = _resolve_lapse(appts, drop_date, drop_appt, now)
+    if rec is None or rec["is_reactivation"]:
+        return False
+    created = _dt(rec["rebook_created"])
+    return bool(created and created <= at_dt)
+
+
 def reactivation_records(history, now):
     appts = list(history)
     lapses = []           # (drop_date, drop_appt)
@@ -142,47 +197,25 @@ def reactivation_records(history, now):
             if _has_future_appt(appts, _end_of_day(t), str(a.get("id"))):
                 continue                             # reschedule / still in diary
             if lapse_drop is None:
-                lapse_drop, lapse_drop_appt = t, a   # new lapse (else: continue current)
+                lapse_drop, lapse_drop_appt = t, a   # new lapse
+            elif _retires_lapse(appts, lapse_drop, lapse_drop_appt, t, now):
+                # The open lapse was already ended by a booking that does NOT
+                # count as a reactivation (a >42-day new IA, or an out-of-window
+                # return). That booking retired the old drop-off and started a
+                # FRESH episode of care — so this cancellation is a genuine new
+                # drop-off, not a continuation of the old lapse. A rebooking that
+                # IS a reactivation still only resets on attendance (rule 5).
+                # (Martin, 2026-08-16 — the Traglach Bradley case.)
+                lapses.append((lapse_drop, lapse_drop_appt))
+                lapse_drop, lapse_drop_appt = t, a
     if lapse_drop is not None:
         lapses.append((lapse_drop, lapse_drop_appt))
 
     records = []
     for drop_date, drop_appt in lapses:
-        eod = _end_of_day(drop_date)
-        did = str(drop_appt.get("id")) if drop_appt else None
-        # The rebooking is a genuine LATER appointment: booked after the drop day
-        # and starting after the drop (excludes the drop appointment itself, e.g.
-        # an IA entered the day after it happened — the Shea Coney bug).
-        rebooks = [a for a in appts
-                   if str(a.get("id")) != did
-                   and (_dt(a.get("created_at")) or now) > eod
-                   and (_dt(a.get("starts_at")) or now) > drop_date]
-        if not rebooks:
-            continue                                # dropped, never rebooked
-        rebook = min(rebooks, key=lambda a: a.get("created_at") or "")
-        st = _dt(rebook.get("starts_at"))
-        gap = (st - drop_date).days if st else None
-        if gap is not None and gap <= NEW_IA_AFTER_DAYS:
-            is_react, is_new = True, False          # ≤42d: any rebooking counts
-        elif _is_ia(rebook):
-            # >42d new IA = a NEW EPISODE of care. The original drop-off holds
-            # and no reactivation is credited for it.
-            is_react, is_new = False, True
-        elif _is_followup(rebook) and gap is not None and gap <= FOLLOWUP_AFTER_DAYS:
-            is_react, is_new = True, False          # follow-up within 90d still counts
-        else:
-            # >90d follow-up, or a one-off (scan/consult/massage) beyond 42d:
-            # neither a reactivation nor a new booking — the drop-off stands.
-            is_react, is_new = False, False
-        records.append({
-            "drop_date": drop_date,
-            "drop_appt": drop_appt,
-            "drop_kind": _drop_kind(drop_appt),
-            "rebook": rebook,
-            "rebook_created": rebook.get("created_at"),
-            "is_reactivation": is_react,
-            "is_new_booking": is_new,
-        })
+        rec = _resolve_lapse(appts, drop_date, drop_appt, now)
+        if rec is not None:                         # None = dropped, never rebooked
+            records.append(rec)
     return records
 
 
