@@ -94,6 +94,7 @@ def _build_alias_lookup():
 
 ALIAS_LOOKUP = _build_alias_lookup()
 NOT_RECORDED_KEYS = {_ref_key(s) for s in config.REFERRER_NOT_RECORDED}
+KEEP_SEPARATE_KEYS = {_ref_key(s) for s in config.REFERRER_KEEP_SEPARATE}
 
 
 def _contains_words(haystack, needle):
@@ -122,6 +123,8 @@ def suggest_aliases(unmapped, known):
     """
     out, seen_pairs = [], set()
     for key, spelling in sorted(unmapped.items()):
+        if key in KEEP_SEPARATE_KEYS:
+            continue          # reviewed and confirmed distinct — don't re-ask
         best, score = None, 0.0
         for other in known:
             if other == key:

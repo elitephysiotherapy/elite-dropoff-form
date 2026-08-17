@@ -470,6 +470,14 @@ REFERRER_ALIASES = {
 # referrer") tells the truth instead of counting a question mark as a source.
 REFERRER_NOT_RECORDED = ["?", "unknown", "not given", "n a", "none", "no ref"]
 
+# Spellings confirmed to be their own referrer, NOT a variant of anything else.
+# The near-miss reporter skips these, so a decision once made stops resurfacing
+# every month. Add here when a suggestion is reviewed and rejected.
+#   - "Marty": an individual who refers in his own right. Gets flagged against
+#     "Rock / Marty" (which is just Rock), but he is not the club. Martin,
+#     2026-08-17.
+REFERRER_KEEP_SEPARATE = ["Marty"]
+
 
 # ===========================================================================
 # GOLD STANDARDS (for Performance Dashboard conditional formatting)

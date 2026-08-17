@@ -152,6 +152,18 @@ check("does NOT suggest Sinead Rocks ↔ Rock", "Sinead Rocks" not in flagged,
       str(flagged))
 check("does NOT suggest Ballinascreen ↔ Ballinderry",
       not any(s.startswith("Ballin") for s in flagged), str(flagged))
+# A reviewed-and-rejected suggestion must stop resurfacing. Marty is his own
+# referrer, flagged only because "Rock / Marty" exists (Martin, 2026-08-17).
+marty = {ref._ref_key("Marty"): "Marty"}
+marty_sugg = ref.suggest_aliases(marty, set(ref.ALIAS_LOOKUP) | set(marty))
+check("a confirmed-separate spelling is not re-suggested",
+      not marty_sugg, str(marty_sugg))
+check("Marty still counts as his own referrer",
+      canonical("Marty") == "Marty", f"got {canonical('Marty')!r}")
+check("keep-separate never silently drops a booking",
+      not (KEEP := ref.KEEP_SEPARATE_KEYS & set(ref.ALIAS_LOOKUP)),
+      f"also aliased: {KEEP}")
+
 check("each pair reported once, not mirrored",
       len(sugg) == len({tuple(sorted((ref._ref_key(s), o))) for s, o, _ in sugg}),
       f"{len(sugg)} suggestion(s)")
