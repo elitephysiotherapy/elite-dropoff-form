@@ -430,10 +430,12 @@ SLACK_SAFE_MODE = False
 #   - A shared word is NOT evidence of the same club. Rock St Patrick's and
 #     Cookstown Fr Rocks are two different clubs; Glen and Glenullin likewise.
 #     Only merge where someone who knows the clubs has confirmed it.
-#   - Genuinely ambiguous entries are left alone rather than guessed —
-#     e.g. "Dungannon", the town or the club? It stays under its own name.
+#   - Genuinely ambiguous entries are left alone rather than guessed, until
+#     someone who knows settles it.
 #   - Compound entries ("past pt (lavey)", "Donaghmore / pt") name two sources,
-#     so they're left for a human rather than attributed to one.
+#     so they're left for a human rather than attributed to one — unless the
+#     second half is noise rather than a second source ("Rock / Marty" is just
+#     Rock, per Martin).
 # Unmapped near-misses are reported at the end of every run, so new spellings
 # surface here for review instead of quietly splitting a total.
 REFERRER_ALIASES = {
@@ -450,7 +452,11 @@ REFERRER_ALIASES = {
     # ⚠️ Rock St Patrick's is a DIFFERENT club to Cookstown Fr Rocks — never
     # fold "Rock" into Fr Rocks on the strength of the shared word (Martin,
     # 2026-08-17). "Sinead Rocks" is the Ops Manager, a third thing again.
-    "Rock St Patrick's": ["rock", "rock st patricks"],
+    "Rock St Patrick's": ["rock", "rock st patricks", "rock marty"],
+    # ⚠️ Two separate Dungannon clubs. "Dungannon" on its own means Dungannon
+    # Clarkes; Eoghan Ruadh is its own club and never folds into it (Martin,
+    # 2026-08-17).
+    "Dungannon Clarkes": ["dungannon", "dungannon clarkes"],
     # Underage/ladies teams fold into the club: the referral source is the club.
     "Bellaghy": ["ballaghy", "bellaghy u16", "bellaghy underage"],
     "Galbally": ["galbally underage ladies"],

@@ -64,6 +64,9 @@ MERGE = [
     ("Bellaghy U16", "Bellaghy"),
     ("Drumsern", "Drumsurn"),
     ("Eoghan Ruadh", "Eoghan Ruadh Dungannon"),
+    ("Dungannan Eoghan Rua", "Eoghan Ruadh Dungannon"),
+    ("Dungannon", "Dungannon Clarkes"),
+    ("Rock / Marty", "Rock St Patrick's"),
     ("Walk in", "Walk-in"),
 ]
 for spelling, want in MERGE:
@@ -77,7 +80,6 @@ KEEP = [
     "Glenullin",
     "Ballinascreen",    # three genuinely different clubs, all close spellings
     "Ballinderry",
-    "Dungannon",        # the town or the club? ambiguous, left visible
     "Lavey",
     "Clonoe",
     "Ann Boylan",       # named individuals are distinct referrers
@@ -104,9 +106,21 @@ check("'Cookstown' IS the Fr Rocks club",
 check("'Sinead Rocks' is neither club",
       canonical("Sinead Rocks") not in (rock, frrocks),
       f"got {canonical('Sinead Rocks')!r}")
-check("'Rock / Marty' compound left for a human",
-      canonical("Rock / Marty") == "Rock / Marty",
+check("'Rock / Marty' is just Rock", canonical("Rock / Marty") == rock,
       f"got {canonical('Rock / Marty')!r}")
+
+# ─── Two separate Dungannon clubs ───────────────────────────────────────────
+# "Dungannon" alone = Dungannon Clarkes. Eoghan Ruadh is its own club and must
+# never fold into it, despite sharing the town name (Martin, 2026-08-17).
+clarkes = canonical("Dungannon")
+eoghan = canonical("Eoghan Ruadh")
+check("'Dungannon' is Dungannon Clarkes", clarkes == "Dungannon Clarkes",
+      f"got {clarkes!r}")
+check("Eoghan Ruadh stays a separate club from Dungannon Clarkes",
+      eoghan != clarkes, f"{eoghan!r} vs {clarkes!r}")
+check("'Dungannan Eoghan Rua' (typo) → Eoghan Ruadh Dungannon",
+      canonical("Dungannan Eoghan Rua") == "Eoghan Ruadh Dungannon",
+      f"got {canonical('Dungannan Eoghan Rua')!r}")
 
 # ─── "No referrer" entries are not a referrer named "?" ─────────────────────
 for spelling in ["?", "unknown", "not given"]:
