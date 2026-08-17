@@ -410,6 +410,56 @@ SLACK_SAFE_MODE = False
 
 
 # ===========================================================================
+# REFERRER NORMALISATION (monthly referrer analysis → Sinead)
+# ===========================================================================
+# Reception free-types the referrer into the Cliniko booking note ("Ref: …"),
+# so one source arrives spelled many ways. Measured Aug 2026: 471 bookings
+# carried 152 distinct strings, which split real totals across the list —
+# "Past patient" and "past pt" sat as separate rows six apart in the July DM.
+#
+# Case AND punctuation are folded automatically (send_referrers_monthly._ref_key),
+# so "clonoe", "Clonoe", "Fr.Rocks" and "Fr Rocks" need no entry here. This map
+# is only for what folding can't catch: abbreviations and misspellings.
+#
+# canonical name → the variants that mean it.
+#
+# DELIBERATELY CONSERVATIVE. These counts feed club-level analysis, and the
+# clubs here are also billing entities (see the split-bill clubs — Bellaghy,
+# Clonoe), so a wrong merge is worse than a split count. Rules of thumb:
+#   - Named individuals are never merged; they ARE distinct referrers.
+#   - Genuinely ambiguous entries are left alone rather than guessed. "Cookstown"
+#     could be the town or Cookstown Fr Rocks; "Dungannon" the town or the club.
+#     They stay under their own name where they're visible.
+#   - Compound entries ("past pt (lavey)", "Donaghmore / pt") name two sources,
+#     so they're left for a human rather than attributed to one.
+# Unmapped near-misses are reported at the end of every run, so new spellings
+# surface here for review instead of quietly splitting a total.
+REFERRER_ALIASES = {
+    "Past patient":  ["past pt", "p pt", "previous", "p past"],
+    "Self referral": ["self ref", "self refferal"],
+    # The Performance Lab (own gym/S&C service), written every which way.
+    "Performance Lab": ["per lab", "per lab 60", "perf lab", "plab", "p lab",
+                        "lab", "plab member", "plab coach"],
+    "Walk-in": ["walk in"],
+    # Cookstown Fr Rocks GAA. "Rock" (5×) reads as the club — it appears
+    # alongside "Rock / Marty", the same shorthand pattern as the other clubs.
+    "Cookstown Fr Rocks": ["fr rocks", "fr rocks cookstown", "cookstown fr roks",
+                           "rock", "fr rocks ladies"],
+    # Underage/ladies teams fold into the club: the referral source is the club.
+    "Bellaghy": ["ballaghy", "bellaghy u16", "bellaghy underage"],
+    "Galbally": ["galbally underage ladies"],
+    "Eoghan Ruadh Dungannon": ["dungannan eoghan rua", "eoghan ruadh"],
+    "Drumsurn": ["drumsern"],
+    "Mum": ["mum aislene"],
+}
+
+# Entries that mean "nobody recorded one" — counted as NO referrer rather than
+# as a referrer named "?", so the coverage line ("N of M bookings had a
+# referrer") tells the truth instead of counting a question mark as a source.
+REFERRER_NOT_RECORDED = ["?", "unknown", "not given", "n a", "none", "no ref"]
+
+
+# ===========================================================================
 # GOLD STANDARDS (for Performance Dashboard conditional formatting)
 # ===========================================================================
 
