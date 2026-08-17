@@ -36,6 +36,7 @@ ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT))
 import config  # noqa: E402
+import sheets_retry  # noqa: E402
 
 LONDON = ZoneInfo("Europe/London")
 
@@ -61,10 +62,23 @@ def _sheets_client():
             str(ROOT / "service_account.json"), scopes=scopes))
 
 
+def _retry(call, label: str):
+    """Every Sheets call here goes through the shared 429/5xx backoff.
+
+    This cron fires 07:00 Monday, the same minute as the bookings poll and the
+    drop-off refresh, and all three share one Sheets quota. On Mon 17 Aug 2026
+    an un-retried 503 on the first read killed the run and lost the week's NPS
+    stats entirely (the schedule is once-weekly, so nothing picked it back up).
+    """
+    return sheets_retry.gs_retry(call, label, prefix="[nps]   ")
+
+
 def _open_marketing_sheet():
     if not config.MARKETING_SPREADSHEET_ID:
         raise RuntimeError("config.MARKETING_SPREADSHEET_ID not set")
-    return _sheets_client().open_by_key(config.MARKETING_SPREADSHEET_ID)
+    client = _sheets_client()
+    return _retry(lambda: client.open_by_key(config.MARKETING_SPREADSHEET_ID),
+                  "open marketing sheet")
 
 
 def _parse_date_sent(s: str) -> datetime | None:
@@ -109,8 +123,8 @@ def _load_responses(sh) -> list[dict]:
     Returns list of dicts: date (datetime), physio, clinic, score, category.
     Skips rows where Date Sent or Score can't be parsed.
     """
-    ws = sh.worksheet(RAW_TAB)
-    rows = ws.get_all_values()
+    ws = _retry(lambda: sh.worksheet(RAW_TAB), f"{RAW_TAB} worksheet")
+    rows = _retry(ws.get_all_values, f"{RAW_TAB} read")
     if not rows or len(rows) < 2:
         return []
     out: list[dict] = []
@@ -216,11 +230,12 @@ def _build_last_week(all_responses: list[dict], now: datetime | None = None) -> 
 
 def _get_or_create_tab(sh, title: str, rows: int, cols: int):
     try:
-        ws = sh.worksheet(title)
-        ws.clear()
-        return ws
+        ws = _retry(lambda: sh.worksheet(title), f"{title} worksheet")
     except gspread.WorksheetNotFound:
-        return sh.add_worksheet(title=title, rows=rows, cols=cols)
+        return _retry(lambda: sh.add_worksheet(title=title, rows=rows, cols=cols),
+                      f"{title} create")
+    _retry(ws.clear, f"{title} clear")
+    return ws
 
 
 def _write_grid(ws, grid: list[list]) -> None:
@@ -231,7 +246,11 @@ def _write_grid(ws, grid: list[list]) -> None:
     # Pad rows to equal width so gspread accepts the rectangular range
     padded = [list(r) + [""] * (n_cols - len(r)) for r in grid]
     range_name = f"A1:{chr(ord('A') + n_cols - 1)}{n_rows}"
-    ws.update(range_name, padded, value_input_option="RAW")
+    # Named args: gspread 6 swapped the positional order of update() and warns
+    # on every run; positional will break outright in gspread 7.
+    _retry(lambda: ws.update(values=padded, range_name=range_name,
+                             value_input_option="RAW"),
+           f"{ws.title} write")
 
 
 def main() -> int:

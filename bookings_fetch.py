@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 
 import phase2          # reuse the Cliniko client (fetch_all, parse_iso, id_from_link, …)
 import config
+import sheets_retry    # shared 429/5xx backoff
 
 load_dotenv(override=True)
 
@@ -252,44 +253,18 @@ def open_spreadsheet():
                      "open spreadsheet")
 
 
-def _gs_retry(call, label, attempts=6):
-    """Retry a gspread call on transient errors.
+def _gs_retry(call, label, attempts=sheets_retry.DEFAULT_ATTEMPTS):
+    """Retry a gspread call on transient errors (429 quota, 5xx, resets).
 
     Mon 8 Jun 2026 12:00 BST poll failed with HTTP 429 (Sheets quota: 60
     reads/min/user) because the team-email cron was retrying at the same
     time. Adding a backoff layer here so future quota brushes self-heal.
 
-    Retries: ConnectionError, Timeout, ConnectionReset, HTTP 429/5xx.
-    Backoff: 2, 4, 8, 16, 32 seconds.
+    Kept as the name every caller in phase1_fetch already imports; the
+    implementation now lives in sheets_retry so the crons all share one ladder
+    (the old 2/4/8/16/32s one gave up before a quota minute cleared).
     """
-    import time as _t, socket
-    import requests as _req
-    delay = 2
-    for i in range(attempts):
-        try:
-            return call()
-        except (_req.exceptions.ConnectionError,
-                _req.exceptions.Timeout,
-                ConnectionResetError,
-                socket.timeout) as e:
-            if i == attempts - 1:
-                raise
-            print(f"  {label}: transient {type(e).__name__}, "
-                  f"retry {i+1}/{attempts-1} in {delay}s", flush=True)
-            _t.sleep(delay); delay *= 2
-        except gspread.exceptions.APIError as e:
-            # gspread wraps the HTTP response; extract status code
-            code = None
-            try:
-                code = e.response.status_code  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            if code in (429, 500, 502, 503, 504) and i < attempts - 1:
-                print(f"  {label}: Sheets API {code}, "
-                      f"retry {i+1}/{attempts-1} in {delay}s", flush=True)
-                _t.sleep(delay); delay *= 2
-                continue
-            raise
+    return sheets_retry.gs_retry(call, label, attempts=attempts, prefix="  ")
 
 
 def get_or_create_week_tab(sh, tab_name):

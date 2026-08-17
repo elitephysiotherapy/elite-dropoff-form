@@ -56,6 +56,7 @@ sys.path.insert(0, str(ROOT))
 import config  # noqa: E402
 import phase1_fetch  # noqa: E402
 import phase2  # noqa: E402
+import sheets_retry  # noqa: E402
 
 LONDON = ZoneInfo("Europe/London")
 SENDER = "martin@elitephysiocookstown.co.uk"
@@ -72,53 +73,19 @@ TEAM_EMAIL_EXTRA_RECIPIENTS: list[str] = [
 SUBJECT_TEMPLATE = "w/b {monday_label} Physio Team Development Thread"
 
 
-def _retry_transient(call, label: str, attempts: int = 5):
-    """Retry call() on transient network errors (Connection reset, timeouts,
-    Google 502/503/504). Exponential backoff: 2, 4, 8, 16 seconds.
+def _retry_transient(call, label: str, attempts: int = sheets_retry.DEFAULT_ATTEMPTS):
+    """Retry call() on transient network errors and Sheets 429/5xx.
 
     First run on Mon 8 Jun 2026 hit a Connection-reset-by-peer reading the
     drop-off Sheet — gspread doesn't auto-retry, so we wrap critical calls.
+
+    The ladder used to be 2/4/8/16s, which gave up 30s in — still inside the
+    saturated quota minute. That's exactly how Mon 17 Aug 2026 was lost: four
+    retries, all four 429, no email. Now on the shared ladder, which keeps
+    backing off to 60s for ~3 min so a per-minute window always clears.
     """
-    import time as _t
-    import socket
-    import requests as _req
-    delay = 2
-    for i in range(attempts):
-        try:
-            return call()
-        except (_req.exceptions.ConnectionError,
-                _req.exceptions.Timeout,
-                ConnectionResetError,
-                socket.timeout) as e:
-            if i == attempts - 1:
-                raise
-            print(f"[email] {label}: transient {type(e).__name__}, "
-                  f"retry {i+1}/{attempts-1} in {delay}s", flush=True)
-            _t.sleep(delay)
-            delay *= 2
-        except _req.exceptions.HTTPError as e:
-            code = getattr(e.response, "status_code", 0)
-            if code in (429, 500, 502, 503, 504) and i < attempts - 1:
-                print(f"[email] {label}: HTTP {code}, retry {i+1}/{attempts-1} "
-                      f"in {delay}s", flush=True)
-                _t.sleep(delay)
-                delay *= 2
-                continue
-            raise
-        except gspread.exceptions.APIError as e:
-            # gspread wraps Sheets HTTP errors in its own APIError, so they
-            # bypass the requests.HTTPError branch above. The six weekly crons
-            # share one GCP project's Sheets read quota and fire ~05:00 UTC, so
-            # a 429 'Read requests per minute' here is transient — back off and
-            # let the per-minute window clear.
-            code = getattr(getattr(e, "response", None), "status_code", 0)
-            if code in (429, 500, 502, 503, 504) and i < attempts - 1:
-                print(f"[email] {label}: Sheets API {code}, retry "
-                      f"{i+1}/{attempts-1} in {delay}s", flush=True)
-                _t.sleep(delay)
-                delay *= 2
-                continue
-            raise
+    return sheets_retry.gs_retry(call, label, attempts=attempts,
+                                 prefix="[email] ")
 
 # Drop-off types that count toward "real" drop-offs in the team email.
 # Excludes IACNA + IADNA — same convention as the Weekly Drop-off Analysis
