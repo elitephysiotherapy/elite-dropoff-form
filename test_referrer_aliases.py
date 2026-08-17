@@ -57,7 +57,9 @@ MERGE = [
     ("Perf Lab", "Performance Lab"),
     ("Fr.Rocks", "Cookstown Fr Rocks"),
     ("Cookstown Fr Roks", "Cookstown Fr Rocks"),
-    ("Rock", "Cookstown Fr Rocks"),
+    ("Cookstown", "Cookstown Fr Rocks"),
+    ("Rock", "Rock St Patrick's"),
+    ("Rock St Patricks", "Rock St Patrick's"),
     ("Ballaghy", "Bellaghy"),
     ("Bellaghy U16", "Bellaghy"),
     ("Drumsern", "Drumsurn"),
@@ -70,13 +72,12 @@ for spelling, want in MERGE:
 
 # ─── Must NOT merge — the wrong-merge risks ─────────────────────────────────
 KEEP = [
-    "Sinead Rocks",     # Ops Manager, not the Fr Rocks club
+    "Sinead Rocks",     # Ops Manager — neither Rock nor Fr Rocks
     "Glen",             # Watty Graham's Glen — a different club to Glenullin
     "Glenullin",
     "Ballinascreen",    # three genuinely different clubs, all close spellings
     "Ballinderry",
-    "Cookstown",        # the town or the club? ambiguous, left visible
-    "Dungannon",
+    "Dungannon",        # the town or the club? ambiguous, left visible
     "Lavey",
     "Clonoe",
     "Ann Boylan",       # named individuals are distinct referrers
@@ -87,6 +88,25 @@ KEEP = [
 for spelling in KEEP:
     got = canonical(spelling)
     check(f"{spelling!r} left alone", got == spelling, f"became {got!r}")
+
+# ─── Rock St Patrick's vs Cookstown Fr Rocks ────────────────────────────────
+# Two different clubs that share the word "Rocks". Combined on the first pass;
+# Martin corrected it 2026-08-17. This is the regression guard for that.
+rock = canonical("Rock")
+frrocks = canonical("Fr Rocks")
+check("'Rock' is Rock St Patrick's, NOT Fr Rocks",
+      rock == "Rock St Patrick's", f"got {rock!r}")
+check("Rock and Fr Rocks stay two separate clubs", rock != frrocks,
+      f"{rock!r} vs {frrocks!r}")
+check("'Cookstown' IS the Fr Rocks club",
+      canonical("Cookstown") == "Cookstown Fr Rocks",
+      f"got {canonical('Cookstown')!r}")
+check("'Sinead Rocks' is neither club",
+      canonical("Sinead Rocks") not in (rock, frrocks),
+      f"got {canonical('Sinead Rocks')!r}")
+check("'Rock / Marty' compound left for a human",
+      canonical("Rock / Marty") == "Rock / Marty",
+      f"got {canonical('Rock / Marty')!r}")
 
 # ─── "No referrer" entries are not a referrer named "?" ─────────────────────
 for spelling in ["?", "unknown", "not given"]:
@@ -124,7 +144,7 @@ check("each pair reported once, not mirrored",
 
 # ─── Counting: merged spellings sum, and the audit shows its working ───────
 rows = ["Online", "past pt", "Past pt", "Past patient", "p pt",
-        "Rock", "Fr Rocks", "?", "Sinead Rocks"]
+        "Fr Rocks", "Cookstown", "Rock", "?", "Sinead Rocks"]
 counts, with_ref, audit_merged = {}, 0, {}
 for raw in rows:
     key = ref._ref_key(raw)
@@ -138,7 +158,10 @@ for raw in rows:
 
 check("four past-patient spellings sum to one count of 4",
       counts.get("Past patient") == 4, str(counts))
-check("two Fr Rocks spellings sum to 2", counts.get("Cookstown Fr Rocks") == 2)
+check("two Fr Rocks spellings sum to 2", counts.get("Cookstown Fr Rocks") == 2,
+      str(counts))
+check("Rock counted separately from Fr Rocks, not added to it",
+      counts.get("Rock St Patrick's") == 1, str(counts))
 check("'?' excluded from the coverage count", with_ref == len(rows) - 1,
       f"{with_ref} of {len(rows)}")
 check("Sinead Rocks counted separately", counts.get("Sinead Rocks") == 1)

@@ -427,9 +427,11 @@ SLACK_SAFE_MODE = False
 # clubs here are also billing entities (see the split-bill clubs — Bellaghy,
 # Clonoe), so a wrong merge is worse than a split count. Rules of thumb:
 #   - Named individuals are never merged; they ARE distinct referrers.
-#   - Genuinely ambiguous entries are left alone rather than guessed. "Cookstown"
-#     could be the town or Cookstown Fr Rocks; "Dungannon" the town or the club.
-#     They stay under their own name where they're visible.
+#   - A shared word is NOT evidence of the same club. Rock St Patrick's and
+#     Cookstown Fr Rocks are two different clubs; Glen and Glenullin likewise.
+#     Only merge where someone who knows the clubs has confirmed it.
+#   - Genuinely ambiguous entries are left alone rather than guessed —
+#     e.g. "Dungannon", the town or the club? It stays under its own name.
 #   - Compound entries ("past pt (lavey)", "Donaghmore / pt") name two sources,
 #     so they're left for a human rather than attributed to one.
 # Unmapped near-misses are reported at the end of every run, so new spellings
@@ -441,10 +443,14 @@ REFERRER_ALIASES = {
     "Performance Lab": ["per lab", "per lab 60", "perf lab", "plab", "p lab",
                         "lab", "plab member", "plab coach"],
     "Walk-in": ["walk in"],
-    # Cookstown Fr Rocks GAA. "Rock" (5×) reads as the club — it appears
-    # alongside "Rock / Marty", the same shorthand pattern as the other clubs.
+    # Cookstown Fr Rocks GAA. Per Martin (2026-08-17): "Cookstown", "Cookstown
+    # Fr Rocks" and "Fr Rocks" are all this one club.
     "Cookstown Fr Rocks": ["fr rocks", "fr rocks cookstown", "cookstown fr roks",
-                           "rock", "fr rocks ladies"],
+                           "cookstown", "fr rocks ladies"],
+    # ⚠️ Rock St Patrick's is a DIFFERENT club to Cookstown Fr Rocks — never
+    # fold "Rock" into Fr Rocks on the strength of the shared word (Martin,
+    # 2026-08-17). "Sinead Rocks" is the Ops Manager, a third thing again.
+    "Rock St Patrick's": ["rock", "rock st patricks"],
     # Underage/ladies teams fold into the club: the referral source is the club.
     "Bellaghy": ["ballaghy", "bellaghy u16", "bellaghy underage"],
     "Galbally": ["galbally underage ladies"],
