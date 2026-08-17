@@ -114,6 +114,57 @@ check("recovers from requests HTTPError 502",
       sheets_retry.gs_retry(call, "502 test") == "ok",
       f"{state['n']} calls")
 
+
+# ─── send_referrers_monthly._read_week_tab ──────────────────────────────────
+# Same hazard, different failure mode: this read used to swallow every error, so
+# a quota brush dropped a week of bookings and the monthly DM went out
+# undercounted. These pin that wrong numbers can no longer go out silently.
+
+import send_referrers_monthly as ref  # noqa: E402
+
+
+class FakeWS:
+    """Minimal stand-in for a gspread worksheet."""
+
+    def __init__(self, title, fail_times=0, exc=None):
+        self.title = title
+        self._left = fail_times
+        self._exc = exc
+        self.calls = 0
+
+    def get_all_values(self):
+        self.calls += 1
+        if self._left > 0:
+            self._left -= 1
+            raise self._exc()
+        return [["Referrer", "Appointment Date"], ["Online", "01/07/2026 09:00"]]
+
+
+# 7. A transient 429 mid-read recovers and still returns the week's rows.
+slept.clear()
+ws = FakeWS("W/C 06 Jul 2026", fail_times=2, exc=lambda: api_error(429))
+rows = ref._read_week_tab(ws)
+check("referrers: transient 429 recovers with rows intact",
+      len(rows) == 2 and ws.calls == 3, f"{ws.calls} calls, {len(rows)} rows")
+
+# 8. The critical one: a 429 that survives the whole ladder must RAISE, not
+#    return [] — an empty list here is a silently undercounted month.
+slept.clear()
+ws = FakeWS("W/C 13 Jul 2026", fail_times=99, exc=lambda: api_error(429))
+try:
+    ref._read_week_tab(ws)
+    check("referrers: unrecoverable 429 fails loudly", False,
+          "returned instead of raising — month would undercount")
+except RuntimeError as e:
+    check("referrers: unrecoverable 429 fails loudly",
+          "undercounted" in str(e), "raises RuntimeError naming the risk")
+
+# 9. A tab deleted mid-run is tolerated (nothing to recover, not a quota issue).
+slept.clear()
+ws = FakeWS("W/C 20 Jul 2026", fail_times=99, exc=lambda: api_error(404))
+check("referrers: vanished tab is skipped, not fatal",
+      ref._read_week_tab(ws) == [], "returns [] on 404")
+
 print("-" * 60)
 print("ALL PASS" if not failures else f"{failures} FAILED")
 sys.exit(1 if failures else 0)

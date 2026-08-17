@@ -21,11 +21,13 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import gspread
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
 import config
 import bookings_fetch as bk
+import sheets_retry
 
 LONDON = ZoneInfo("Europe/London")
 
@@ -68,6 +70,35 @@ def _tab_sunday(title):
         return None
 
 
+def _read_week_tab(ws):
+    """Read one W/C week tab, retrying a transient Sheets 429/5xx.
+
+    This read used to be wrapped in `except Exception: WARN … continue`, so a
+    quota brush did NOT fail the job — it silently dropped that week's bookings
+    and the monthly DM went out undercounted. That's the worst failure mode
+    available here: wrong numbers presented as right, with nothing to notice.
+
+    The cron runs at BOTH 07:00 and 08:00 UTC on the 1st, and 07:00 collides
+    with the drop-off refresh and two other weeklies on the shared Sheets quota
+    (see sheets_retry). So failing loudly is genuinely cheaper than guessing —
+    the 08:00 run picks it up an hour later, once the quota window is long clear.
+
+    A tab that has genuinely vanished mid-run is still tolerated: nothing can be
+    recovered from it and it's a deliberate deletion, not a quota problem.
+    """
+    try:
+        return sheets_retry.gs_retry(ws.get_all_values, f"{ws.title} read",
+                                     prefix="  ")
+    except gspread.exceptions.APIError as e:
+        if getattr(getattr(e, "response", None), "status_code", None) == 404:
+            print(f"  WARN {ws.title} vanished mid-run — skipping")
+            return []
+        raise RuntimeError(
+            f"couldn't read {ws.title} after retries — referrer counts would be "
+            f"undercounted, so failing instead of sending wrong numbers: {e}"
+        ) from e
+
+
 def collect_referrers(start_local, end_local):
     """Return (counts, total_with_ref, total_rows) for booked IAs whose
     Appointment Date falls in [start_local, end_local). counts: referrer → n."""
@@ -80,7 +111,10 @@ def collect_referrers(start_local, end_local):
     total_with_ref = 0
     total_rows = 0
 
-    for ws in sh.worksheets():
+    # worksheets() is itself a Sheets metadata read, so it can 429 too.
+    all_tabs = sheets_retry.gs_retry(sh.worksheets, "list worksheets", prefix="  ")
+
+    for ws in all_tabs:
         if not ws.title.startswith("W/C "):
             continue
         sunday = _tab_sunday(ws.title)
@@ -89,11 +123,7 @@ def collect_referrers(start_local, end_local):
         if sunday is not None and not (
                 start_naive - timedelta(days=8) <= sunday <= end_naive):
             continue
-        try:
-            values = ws.get_all_values()
-        except Exception as e:
-            print(f"  WARN couldn't read {ws.title}: {e}")
-            continue
+        values = _read_week_tab(ws)
         if not values:
             continue
         header = values[0]
