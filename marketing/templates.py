@@ -71,27 +71,23 @@ SMS = {
         "or call {clinic_phone}."
     ),
 
-    # -- Omagh clinic launch (one-off campaign, Aug 2026) -------------------
+    # -- Omagh clinic launch (one-off campaign, Sept 2026) -----------------
     # Copy is Martin's, to Dan Martell's SPEAR structure - do not reword
-    # without asking. {first_name} is the patient's PREFERRED name where they
-    # gave one (see omagh_list.py), which is the whole point of the opener.
+    # without asking. Deliberately a referral ask, not a booking prompt:
+    # no link, the reply IS the response mechanism.
     #
-    # Both variants run to 2 SMS segments. Keep the apostrophes STRAIGHT (')
-    # - a curly one (') is outside GSM-7 and silently flips the whole message
-    # to UCS-2, which costs 4 segments instead of 2.
-    "omagh_launch_stop": (
-        "Hi {first_name}, Elite Physio here. We just wanted to let you know "
-        "we're opening in Omagh. If you need us, we're now closer to home for "
-        "you or if you know someone who needs our help, please pass them on "
-        "this link {booking_link} Reply STOP to opt out"
-    ),
-    # Use this one only while the sender is the one-way "ElitePhysio" ID,
-    # where a STOP reply cannot reach us and the opt-out has to be a link.
-    "omagh_launch_link": (
-        "Hi {first_name}, Elite Physio here. We just wanted to let you know "
-        "we're opening in Omagh. If you need us, we're now closer to home for "
-        "you or if you know someone who needs our help, please pass them on "
-        "this link {booking_link} Opt out {optout_link}"
+    # {first_name} is the patient's PREFERRED name where they gave one
+    # (see omagh_list.py), which is the whole point of the opener.
+    #
+    # Fits ONE segment including the opt-out (141 units at the longest name
+    # in the list, limit 160). Keep it that way - anything longer doubles the
+    # cost of the whole send. Keep the apostrophes STRAIGHT ('): a curly one
+    # (’) is outside GSM-7 and flips the message to UCS-2, which would cost
+    # 3 segments.
+    "omagh_launch": (
+        "Hi {first_name}, Elite Physio here. We're opening in Omagh in "
+        "September - do you know anyone who could do with our help? "
+        "Reply STOP to opt out"
     ),
 }
 

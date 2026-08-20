@@ -79,9 +79,16 @@ def _parse_ts(s):
     return None
 
 
-def already_sent(patient_id, flow_name, anchor, within_days=45):
+def already_sent(patient_id, flow_name, anchor, within_days=45,
+                 ignore_failed=False):
     """True if this patient already received this flow for this anchor recently.
     Unparseable timestamps are treated as a match — fail safe, never double-send.
+
+    `ignore_failed` skips rows whose status says the patient was not actually
+    contacted — a "failed:" send, or a "test-safe-mode" rehearsal that went to
+    the test phone. Counting either as sent would silently exclude that person
+    from the real campaign for good. Off by default so existing flows keep
+    their current behaviour.
     """
     pid, anc = str(patient_id), str(anchor or "")
     cutoff = _now() - timedelta(days=within_days)
@@ -95,6 +102,9 @@ def already_sent(patient_id, flow_name, anchor, within_days=45):
         if len(r) < 6:
             continue
         if r[1] == pid and r[3] == flow_name and r[5] == anc:
+            if ignore_failed and len(r) > 7 and \
+                    str(r[7]).startswith(("failed", "test-")):
+                continue
             ts = _parse_ts(r[0])
             if ts is None or ts >= cutoff:
                 return True

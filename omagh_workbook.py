@@ -13,6 +13,7 @@ import csv
 import glob
 import os
 import re
+import sys
 from datetime import datetime
 
 from openpyxl import Workbook
@@ -113,6 +114,14 @@ def write_sheet(ws, rows, widths):
 
 
 def main():
+    # Martin edits the workbook by hand (removing people, correcting numbers)
+    # and omagh_send.py reads THAT file, so silently regenerating it would
+    # throw those edits away and quietly put removed patients back in the send.
+    if os.path.exists(OUT) and "--force" not in sys.argv:
+        raise SystemExit(
+            f"{OUT} already exists and may contain manual edits.\n"
+            f"Re-run with --force to overwrite it.")
+
     raw = list(csv.DictReader(open(SRC)))
     for r in raw:
         r["SMS-ready number"] = sms_ready(r["Mobile"])
