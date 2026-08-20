@@ -70,6 +70,29 @@ SMS = {
         "we'd love to help you get on top of them. Book here: {booking_link} "
         "or call {clinic_phone}."
     ),
+
+    # -- Omagh clinic launch (one-off campaign, Aug 2026) -------------------
+    # Copy is Martin's, to Dan Martell's SPEAR structure - do not reword
+    # without asking. {first_name} is the patient's PREFERRED name where they
+    # gave one (see omagh_list.py), which is the whole point of the opener.
+    #
+    # Both variants run to 2 SMS segments. Keep the apostrophes STRAIGHT (')
+    # - a curly one (') is outside GSM-7 and silently flips the whole message
+    # to UCS-2, which costs 4 segments instead of 2.
+    "omagh_launch_stop": (
+        "Hi {first_name}, Elite Physio here. We just wanted to let you know "
+        "we're opening in Omagh. If you need us, we're now closer to home for "
+        "you or if you know someone who needs our help, please pass them on "
+        "this link {booking_link} Reply STOP to opt out"
+    ),
+    # Use this one only while the sender is the one-way "ElitePhysio" ID,
+    # where a STOP reply cannot reach us and the opt-out has to be a link.
+    "omagh_launch_link": (
+        "Hi {first_name}, Elite Physio here. We just wanted to let you know "
+        "we're opening in Omagh. If you need us, we're now closer to home for "
+        "you or if you know someone who needs our help, please pass them on "
+        "this link {booking_link} Opt out {optout_link}"
+    ),
 }
 
 
@@ -102,6 +125,42 @@ We're looking forward to meeting you.
 
 Elite Physiotherapy {clinic_name}
 {clinic_phone}""",
+    },
+    # -- Omagh clinic launch (one-off campaign, Aug 2026) -------------------
+    # Goes to the ~104 catchment patients with accepted_email_marketing set.
+    # Sender is "martin" on purpose: this is news from the owner, not a system
+    # notice, and it reads as such. Replies land in Martin's inbox.
+    #
+    # {omagh_address} and {opening_date} MUST be filled before sending - they
+    # are deliberately left as placeholders rather than guessed.
+    "omagh_launch": {
+        "sender": "martin",
+        "subject": "{first_name}, we've opened a clinic in Omagh",
+        "body": """Hi {first_name},
+
+A quick bit of news I thought you'd want to hear: we've opened a second Elite Physiotherapy clinic, in Omagh.
+
+If you're out that way, it should be an easier run than coming into Cookstown. Same team, same way of working - just closer to home.
+
+Where to find us
+  {omagh_address}
+  Open from {opening_date}
+
+Nothing else changes. If you'd rather keep coming to Cookstown, that's absolutely fine - you'll see the same faces either way. And if an old problem has crept back, or something new has turned up since we last saw you, we'd be glad to help.
+
+Book at either clinic here: {booking_link}
+
+Or just call us on {clinic_phone} and we'll find a time that suits you.
+
+One last thing. If you know someone around Omagh who's been putting up with a niggle they shouldn't have to, please pass this on. A word from someone we've actually treated carries more weight than any advert we could run.
+
+Thanks for reading,
+
+Martin
+Elite Physiotherapy
+
+---
+Don't want emails like this? You can unsubscribe here: {unsubscribe_link}""",
     },
     "welcome": {
         "sender": "clinic",

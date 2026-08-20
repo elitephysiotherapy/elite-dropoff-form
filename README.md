@@ -158,6 +158,19 @@ Required environment variables (set in Render dashboard → Environment):
 - `SPREADSHEET_ID` — the Google Sheet ID (without `/edit` etc.)
 - `SERVICE_ACCOUNT_JSON` — full JSON content of the service account credentials
 - `RECEPTION_NOTIFY_EMAILS` (optional) — comma-separated emails to notify on non-clinical clicks. Defaults to reception@ + sinead@.
+- `TWILIO_AUTH_TOKEN` — required by `/twilio/inbound` to verify Twilio's request signature. Without it the endpoint still serves but logs a warning and accepts unsigned requests.
+- `OMAGH_REPLIES_CHANNEL` (optional) — Slack channel for inbound SMS replies. Defaults to `C0BRN146XQ8` (`#omagh-replies`).
+
+### Endpoints
+
+| Path | Purpose |
+|------|---------|
+| `/slack/interactive` | Slack button clicks on drop-off DMs. |
+| `/tally/webhook` | NPS survey submissions from Tally. |
+| `/twilio/inbound` | Patient replies to campaign SMS. Verifies Twilio's signature, resolves the number to a patient via the `Omagh - Reply Index` tab, posts to `#omagh-replies`. Silently drops bare `STOP` (Twilio has already actioned it) and flags looser opt-out wording for a human. Never auto-replies. |
+
+Set the Twilio number's **A message comes in** webhook to
+`https://elite-dropoff-form.onrender.com/twilio/inbound` (HTTP POST).
 
 ## Tabs in the Google Sheet
 

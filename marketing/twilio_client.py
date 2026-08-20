@@ -32,8 +32,13 @@ def normalise_uk_phone(phone):
     return p
 
 
-def send_sms(*, to, body):
-    """Send one SMS. Returns (ok: bool, info: str)."""
+def send_sms(*, to, body, sender=None):
+    """Send one SMS. Returns (ok: bool, info: str).
+
+    `sender` overrides the From. Pass config.SMS_SENDER_NUMBER for campaigns
+    where patients need to be able to reply; leave it None and the branded
+    one-way "ElitePhysio" ID is used, which cannot receive replies.
+    """
     sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
     token = os.environ.get("TWILIO_AUTH_TOKEN", "")
     if not sid or not token:
@@ -50,7 +55,8 @@ def send_sms(*, to, body):
     try:
         r = requests.post(
             _API.format(sid=sid),
-            data={"From": config.SMS_SENDER_ID, "To": dest, "Body": body},
+            data={"From": sender or config.SMS_SENDER_ID,
+                  "To": dest, "Body": body},
             auth=(sid, token), timeout=20)
     except requests.RequestException as e:
         return False, f"request failed: {e}"

@@ -537,6 +537,167 @@ def tally_webhook():
     return make_response("", 200)
 
 
+# ===========================================================================
+# Inbound SMS replies (Omagh launch campaign)
+#
+# Twilio POSTs here when a patient replies to a campaign text. We resolve the
+# number to a patient name via the "Omagh - Reply Index" tab (Cliniko cannot
+# filter patients by phone — the API returns "phone_number is not filterable"
+# — so the index is built ahead of the send by omagh_reply_index.py) and post
+# it into Slack for Sinead to action by phone or in Cliniko.
+#
+# We never reply by SMS from here. The sender ID is one-way for marketing and
+# a patient conversation belongs with a person, not a webhook.
+# ===========================================================================
+
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
+SMS_SENDER_NUMBER = os.environ.get("SMS_SENDER_NUMBER", "+447727712191")
+OMAGH_REPLIES_CHANNEL = os.environ.get("OMAGH_REPLIES_CHANNEL",
+                                       "C0BRN146XQ8")   # #omagh-replies
+REPLY_INDEX_TAB = "Omagh - Reply Index"
+CLINIKO_WEB = "https://elite-physiotherapy.uk1.cliniko.com"
+
+# A bare "STOP" is handled by Twilio itself and needs no human — drop it.
+_OPTOUT_EXACT = {"stop", "stopall", "unsubscribe", "cancel", "end", "quit",
+                 "optout", "opt-out", "remove", "unstop", "start"}
+
+# "stop please", "please take me off your list" — Twilio does NOT treat these
+# as opt-outs, so they arrive as ordinary messages. We still show them to
+# Sinead (some are real requests, not opt-outs) but flag them, because an
+# ignored opt-out is the one that turns into a complaint.
+#
+# Flagging only changes the header, so a false positive costs nothing while a
+# miss costs a complaint — hence the deliberately loose substring match.
+_OPTOUT_STARTS = ("stop", "unsubscribe", "optout", "opt out", "opt-out")
+_OPTOUT_ANYWHERE = ("remove me", "unsubscribe", "opt out", "opt-out", "optout",
+                    "no more text", "stop texting", "stop sending",
+                    "take me off", "dont text", "don't text",
+                    "do not text", "not interested")
+
+
+def _looks_like_optout(body):
+    low = body.lower().lstrip(" .!")
+    return low.startswith(_OPTOUT_STARTS) or any(p in low for p in _OPTOUT_ANYWHERE)
+
+
+def verify_twilio_request():
+    """Verify Twilio's HMAC-SHA1 signature over the URL + sorted POST params.
+
+    Without this anyone who finds the URL could post fake patient messages
+    into Slack. If no auth token is configured the check is skipped (with a
+    warning) so the endpoint still works in local testing.
+    """
+    if not TWILIO_AUTH_TOKEN:
+        print("WARN: TWILIO_AUTH_TOKEN not set — skipping Twilio signature check")
+        return True
+    # Render terminates TLS, so request.url can arrive as http:// while Twilio
+    # signed the https:// form it was configured with.
+    url = request.url.replace("http://", "https://", 1)
+    params = request.form.to_dict()
+    base = url + "".join(k + params[k] for k in sorted(params))
+    digest = hmac.new(TWILIO_AUTH_TOKEN.encode(), base.encode("utf-8"),
+                      hashlib.sha1).digest()
+    expected = base64.b64encode(digest).decode()
+    return hmac.compare_digest(expected, request.headers.get("X-Twilio-Signature", ""))
+
+
+def _norm_phone(raw):
+    """Last 9 digits — the part that is stable across +447/07/00447 forms."""
+    digits = "".join(ch for ch in (raw or "") if ch.isdigit())
+    return digits[-9:] if len(digits) >= 9 else ""
+
+
+_reply_index = {"at": 0.0, "rows": None}
+_REPLY_INDEX_TTL = 900
+
+
+def get_reply_index():
+    """{normalised phone: (name, patient_id, town)} from the index tab.
+
+    Cached for 15 minutes. A missing tab is not an error — replies simply
+    show the raw number instead of a name.
+    """
+    now = time.monotonic()
+    if _reply_index["rows"] is None or now - _reply_index["at"] > _REPLY_INDEX_TTL:
+        idx = {}
+        try:
+            ws = get_sheet().worksheet(REPLY_INDEX_TAB)
+            for row in ws.get_all_values()[1:]:
+                if len(row) >= 3 and row[0]:
+                    idx[_norm_phone(row[0])] = (row[1], row[2],
+                                                row[3] if len(row) > 3 else "")
+        except Exception as exc:
+            print(f"reply index unavailable ({exc}) — falling back to raw numbers")
+            if _reply_index["rows"] is not None:
+                return _reply_index["rows"]   # keep the stale copy over nothing
+        _reply_index["rows"] = idx
+        _reply_index["at"] = now
+    return _reply_index["rows"]
+
+
+def _process_sms_reply_async(from_number, body):
+    try:
+        name, pid, town = get_reply_index().get(_norm_phone(from_number),
+                                                ("", "", ""))
+        if name:
+            who = f"*{name}*" + (f" ({town})" if town else "")
+            link = f"<{CLINIKO_WEB}/patients/{pid}|Open in Cliniko>"
+        else:
+            who = f"*Unknown number* {from_number}"
+            link = f"<{CLINIKO_WEB}/patients|Search Cliniko>"
+        header = ":speech_balloon: Reply to the Omagh launch text"
+        if _looks_like_optout(body):
+            header = (":no_bell: *Possible opt-out* — untick marketing consent "
+                      "in Cliniko, then reply only if they asked something")
+        text = (f"{header}\n"
+                f"{who}\n>{body}\n"
+                f"Call <tel:{from_number}|{from_number}> · {link}")
+        get_slack().chat_postMessage(
+            channel=OMAGH_REPLIES_CHANNEL, text=text, unfurl_links=False)
+    except SlackApiError as exc:
+        print(f"twilio inbound: Slack post failed: {exc}")
+    except Exception as exc:
+        print(f"twilio inbound error: {exc}")
+
+
+@app.route("/twilio/inbound", methods=["POST"])
+def twilio_inbound():
+    if not verify_twilio_request():
+        return make_response("Bad signature", 401)
+    from_number = (request.form.get("From") or "").strip()
+    body = (request.form.get("Body") or "").strip()
+
+    if body.lower().strip(" .!") in _OPTOUT_EXACT:
+        # Twilio has already stopped further messages to this number.
+        print(f"twilio inbound: opt-out from {from_number} — not notifying")
+        return make_response("<Response/>", 200, {"Content-Type": "text/xml"})
+
+    if body:
+        threading.Thread(target=_process_sms_reply_async,
+                         args=(from_number, body), daemon=True).start()
+    # Empty TwiML: acknowledge without auto-replying.
+    return make_response("<Response/>", 200, {"Content-Type": "text/xml"})
+
+
+CLINIC_LANDLINE = os.environ.get("CLINIC_LANDLINE", "+442886440995")
+
+
+@app.route("/twilio/voice", methods=["POST", "GET"])
+def twilio_voice():
+    """Forward calls to the campaign number on to the clinic landline.
+
+    Patients who get a text from a number will sometimes ring it rather than
+    reply. An unanswered line makes a real clinic look like a scam, so every
+    call is dialled straight through. No signature check: this returns fixed
+    TwiML and leaks nothing, and rejecting an unsigned request would drop a
+    real patient's call.
+    """
+    twiml = (f'<?xml version="1.0" encoding="UTF-8"?><Response>'
+             f'<Dial timeout="20" callerId="{SMS_SENDER_NUMBER}">'
+             f'{CLINIC_LANDLINE}</Dial></Response>')
+    return make_response(twiml, 200, {"Content-Type": "text/xml"})
+
+
 if __name__ == "__main__":
     # Local dev runner
     port = int(os.environ.get("PORT", 5000))

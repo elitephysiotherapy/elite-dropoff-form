@@ -540,6 +540,13 @@ EMAIL_MARTIN = ("Martin Loughran", "martin@elitephysiocookstown.co.uk")
 # ---- SMS (Twilio) ----
 SMS_SENDER_ID = "ElitePhysio"   # alphanumeric sender — ONE-WAY, patients can't reply
 
+# Two-way number bought for the Omagh launch (Aug 2026). Sending from THIS
+# instead of SMS_SENDER_ID is what lets patients reply — their replies hit
+# /twilio/inbound on the Render app and land in #omagh-replies.
+# Campaign sends pass sender=config.SMS_SENDER_NUMBER; everything else keeps
+# the branded one-way ID.
+SMS_SENDER_NUMBER = "+447727712191"
+
 # ---- Detractor / passive internal alert recipient ----
 NPS_ALERT_EMAIL = "sinead@elitephysiocookstown.co.uk"   # Sinead Rocks, Ops Manager
 
