@@ -1220,14 +1220,17 @@ steroid may.
 
 AFTER YOUR INJECTION
 
-Resting — we ask you to take active rest for 48 hours, easing off your usual
-loading. With hyaluronic acid this is about getting the best value from your
-injection rather than avoiding harm: there are no detrimental physiological
-effects from doing too much too soon, but resting properly gives the injection
-the best chance to work.
+Resting — take active rest afterwards, easing off your usual loading. How long
+depends on which injection you are having:
+  - After a steroid injection, four days.
+  - After a hyaluronic acid injection, 48 hours. This one is about getting the
+    best value from your injection rather than avoiding harm — there are no
+    detrimental physiological effects from doing too much too soon, but resting
+    properly gives the injection its best chance to work.
 
-Driving — this differs by injection type, so please check which you are having:
-  - After a steroid injection you should not drive home.
+Driving — please check which injection you are having:
+  - If local anaesthetic is used with your steroid injection, you should not
+    drive home. Please arrange a lift.
   - After a hyaluronic acid injection the vast majority of patients can drive
     home, but check with your physiotherapist before you attend.
 
@@ -1307,10 +1310,15 @@ Elite Physiotherapy
 
 **Open questions for Martin**
 1. Subject line.
-2. Does the herbal remedies rule apply to both types, or steroid only? Drafted
-   as both — change if that is wrong.
-3. Does the "active rest for value, no physiological harm" framing apply to
-   steroid too? Drafted as applying to both, with the no-harm reassurance
-   attached only to hyaluronic acid, which is what Martin actually said.
-4. Confirm steroid driving advice is still "should not drive home".
-5. The original image (syringe and vial) — keep, or drop?
+2. ~~Herbal remedies — both types or steroid only?~~ **BOTH** (Martin
+   2026-08-24). Drafted correctly, no change needed.
+3. ~~Does the rest advice apply equally?~~ **NO — steroid is stricter**
+   (Martin 2026-08-24): **four days** active rest after steroid, 48 hours after
+   hyaluronic acid. Note this also corrects the Cliniq Apps original, which
+   said 48 hours for steroid. The no-harm reassurance stays attached to
+   hyaluronic acid only.
+4. ~~Confirm steroid driving advice.~~ **CONDITIONAL** (Martin 2026-08-24):
+   no driving **if local anaesthetic is used**, not a blanket ban. The Cliniq
+   Apps original stated it unconditionally.
+5. ~~The original image (syringe and vial) — keep, or drop?~~ **DROPPED**
+   (Martin 2026-08-24) — no needle/syringe image in the new email.
