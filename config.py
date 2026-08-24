@@ -7,7 +7,7 @@ the next run.
 """
 
 import os
-from datetime import date
+from datetime import date, timedelta
 
 # ===========================================================================
 # IA APPOINTMENT TYPE IDS
@@ -187,9 +187,15 @@ TEAM = [
      "start": "2026-06-08", "end": None, "monthly_hours": 128.6,
      "clinic_email": "ciara@elitephysiocookstown.co.uk"},
 
+    # Annual leave Mon 17 – Sun 23 Aug 2026 (confirmed by Martin 2026-08-24:
+    # zero appointments all week, verified against Cliniko). "to" is the
+    # INCLUSIVE last day off. Without this she kept full capacity for a week she
+    # wasn't there, which is what dragged her weekly utilisation to "—" while
+    # still counting the hours against her.
     {"display": "Molaí", "full_names": ["Molaí Smith"],
      "practitioner_ids": ["1719373338607883970"],
      "start": "2025-09-01", "end": None, "monthly_hours": 128.6,
+     "leave": [{"from": "2026-08-17", "to": "2026-08-23"}],
      "clinic_email": "molai@elitephysiocookstown.co.uk"},
 
     {"display": "Shannagh", "full_names": ["Shannagh Conwell"],
@@ -276,7 +282,15 @@ def on_leave_whole_period(member, period_start, period_end):
     for lv in member.get("leave") or []:
         lf = _as_date(lv.get("from"))
         lt = _as_date(lv.get("to"))
-        if lf and lf <= period_start and (lt is None or lt >= period_end):
+        # "to" is the INCLUSIVE last day off (what the roster comments tell you
+        # to enter), but callers pass an EXCLUSIVE period_end — a week w/c Mon
+        # 17th arrives as (17th, 24th). Comparing the two directly was off by a
+        # day: a full Mon–Sun leave entered as 17→23 failed to register at all
+        # and the physio kept full capacity for a week they weren't there.
+        # Normalise to the same basis before comparing. (Martin 2026-08-24.)
+        if lf and lf <= period_start and (
+            lt is None or lt >= period_end - timedelta(days=1)
+        ):
             return True
     return False
 
