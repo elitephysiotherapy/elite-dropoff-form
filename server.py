@@ -635,6 +635,72 @@ def get_reply_index():
     return _reply_index["rows"]
 
 
+CLINIKO_API_KEY = os.environ.get("CLINIKO_API_KEY", "")
+CLINIKO_SHARD = os.environ.get("CLINIKO_SHARD", "uk1")
+CLINIKO_UA = os.environ.get("CLINIKO_USER_AGENT", "Elite Physio (martin@elitephysiocookstown.co.uk)")
+_cliniko = None
+
+
+def get_cliniko():
+    global _cliniko
+    if _cliniko is None:
+        s = http.Session()
+        s.auth = (CLINIKO_API_KEY, "")
+        s.headers.update({"User-Agent": CLINIKO_UA,
+                          "Accept": "application/json",
+                          "Content-Type": "application/json"})
+        _cliniko = s
+    return _cliniko
+
+
+def _process_optout_async(from_number):
+    """Honour a STOP by unticking the patient's Cliniko SMS marketing flag.
+
+    Twilio already blocks the number, but only for THIS sender. Without
+    clearing Cliniko the patient is still flagged as consenting and the next
+    campaign would text them again — which is the complaint we are avoiding.
+
+    A Cliniko PUT is a partial update: only the field sent is changed.
+    Anything that goes wrong is reported to Slack so a human can finish it,
+    because a silently dropped opt-out is the worst outcome here.
+    """
+    name, pid, town = get_reply_index().get(_norm_phone(from_number),
+                                            ("", "", ""))
+    if not pid:
+        get_slack().chat_postMessage(
+            channel=OMAGH_REPLIES_CHANNEL, unfurl_links=False,
+            text=(f":no_bell: *Opt-out from an unknown number* {from_number}\n"
+                  f"Twilio has stopped further texts, but we could not match "
+                  f"them to a patient — please untick 'Accepts SMS marketing' "
+                  f"in Cliniko if you can identify them."))
+        return
+    if not CLINIKO_API_KEY:
+        get_slack().chat_postMessage(
+            channel=OMAGH_REPLIES_CHANNEL, unfurl_links=False,
+            text=(f":warning: *{name}* opted out but CLINIKO_API_KEY is not "
+                  f"set here — please untick 'Accepts SMS marketing' manually. "
+                  f"<{CLINIKO_WEB}/patients/{pid}|Open in Cliniko>"))
+        return
+    try:
+        r = get_cliniko().put(
+            f"https://api.{CLINIKO_SHARD}.cliniko.com/v1/patients/{pid}",
+            data=json.dumps({"accepted_sms_marketing": False}), timeout=20)
+        ok = r.status_code == 200
+        detail = "" if ok else f" (HTTP {r.status_code})"
+    except Exception as exc:
+        ok, detail = False, f" ({exc})"
+    if ok:
+        text = (f":no_bell: *{name}*" + (f" ({town})" if town else "") +
+                " opted out - 'Accepts SMS marketing' unticked in Cliniko "
+                "automatically. No action needed.")
+    else:
+        text = (f":warning: *{name}* opted out but Cliniko could not be "
+                f"updated{detail} - please untick 'Accepts SMS marketing' "
+                f"manually. <{CLINIKO_WEB}/patients/{pid}|Open in Cliniko>")
+    get_slack().chat_postMessage(channel=OMAGH_REPLIES_CHANNEL, text=text,
+                                 unfurl_links=False)
+
+
 def _process_sms_reply_async(from_number, body):
     try:
         name, pid, town = get_reply_index().get(_norm_phone(from_number),
@@ -668,8 +734,11 @@ def twilio_inbound():
     body = (request.form.get("Body") or "").strip()
 
     if body.lower().strip(" .!") in _OPTOUT_EXACT:
-        # Twilio has already stopped further messages to this number.
-        print(f"twilio inbound: opt-out from {from_number} — not notifying")
+        # Twilio has already stopped further messages from this sender; clear
+        # the Cliniko consent flag too so the NEXT campaign does not text them.
+        print(f"twilio inbound: opt-out from {from_number} — clearing consent")
+        threading.Thread(target=_process_optout_async,
+                         args=(from_number,), daemon=True).start()
         return make_response("<Response/>", 200, {"Content-Type": "text/xml"})
 
     if body:

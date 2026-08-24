@@ -167,7 +167,7 @@ Required environment variables (set in Render dashboard → Environment):
 |------|---------|
 | `/slack/interactive` | Slack button clicks on drop-off DMs. |
 | `/tally/webhook` | NPS survey submissions from Tally. |
-| `/twilio/inbound` | Patient replies to campaign SMS. Verifies Twilio's signature, resolves the number to a patient via the `Omagh - Reply Index` tab, posts to `#omagh-replies`. Silently drops bare `STOP` (Twilio has already actioned it) and flags looser opt-out wording for a human. Never auto-replies. |
+| `/twilio/inbound` | Patient replies to campaign SMS. Verifies Twilio's signature, resolves the number to a patient via the `Omagh - Reply Index` tab, posts to `#omagh-replies`. On a bare `STOP` it unticks `accepted_sms_marketing` in Cliniko automatically (Twilio only blocks the number for *this* sender, so without that the next campaign would text them again) and posts a confirmation; ambiguous wording like "cancel my appointment" is flagged for a human instead. Never auto-replies. |
 
 Set the Twilio number's **A message comes in** webhook to
 `https://elite-dropoff-form.onrender.com/twilio/inbound` (HTTP POST).
