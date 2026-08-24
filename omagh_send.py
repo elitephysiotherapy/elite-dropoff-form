@@ -37,9 +37,10 @@ import config                                    # noqa: E402
 from marketing import sent_log, templates, twilio_client   # noqa: E402
 
 FLOW = "omagh_launch"
-TEMPLATE = "omagh_launch"
+TEMPLATE = "omagh_launch_v2"   # wave 2+; v1 went to wave one
 ANCHOR = "2026-09-omagh"      # one send per patient for this campaign, ever
 PRICE_PER_SEGMENT = 0.042325  # GBP, from Twilio's UK pricing API
+SEGMENTS = 2                  # omagh_launch_v2 runs to 2 segments
 
 
 def latest_workbook():
@@ -122,9 +123,9 @@ def main():
         todo = todo[:args.wave]
 
     sample = templates.render_sms(TEMPLATE, {"first_name": "Ann - Marie"})
-    print(f"\nmessage ({len(sample)} chars, 1 segment):\n  {sample}")
+    print(f"\nmessage ({len(sample)} chars, {SEGMENTS} segment(s)):\n  {sample}")
     print(f"\nTO SEND NOW: {len(todo)}"
-          f"   (~£{len(todo) * PRICE_PER_SEGMENT:.2f})")
+          f"   (~£{len(todo) * SEGMENTS * PRICE_PER_SEGMENT:.2f})")
     print(f"from: {config.SMS_SENDER_NUMBER}")
     if config.MARKETING_SAFE_MODE:
         print(f"SAFE MODE ON — everything reroutes to "

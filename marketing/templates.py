@@ -89,6 +89,21 @@ SMS = {
         "September - do you know anyone who could do with our help? "
         "Reply STOP to opt out"
     ),
+
+    # v2 for wave two onward. Wave one (v1, above) drew 5 opt-outs and 0
+    # replies from 100, so this version names Marty, gives the actual opening
+    # date, and tells the patient why they in particular are hearing from us.
+    # Kept as a separate id so the Sent Log records which version each person
+    # got and the two can be compared honestly.
+    #
+    # TWO segments (231 units at the longest name) - roughly double v1 at
+    # ~£8.46 per 100. Keep the apostrophes STRAIGHT (').
+    "omagh_launch_v2": (
+        "Hi {first_name}, Marty here from Elite Physio. We're opening in "
+        "Omagh on 8th September, we wanted all our previous patients in the "
+        "area to know first. Do you know anyone who could do with our help "
+        "when we open? Reply STOP to opt out"
+    ),
 }
 
 
