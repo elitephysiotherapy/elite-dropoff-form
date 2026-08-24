@@ -290,3 +290,161 @@ If there's anything else you need or if you have any other feedback, please just
 ```
 121 words (sign-off "Thank You / Sinead" likely below, not captured).
 **Flags:** (1) Uses `{LAST_PROVIDER_FIRSTNAME}` dynamic variable. (2) This is the PASSIVE/non-promoter variant of the 30-day follow-up — no Google review ask, no referral ask, softer. Pairs with "30 day follow up" above. **Note:** Confirms the 30-day check-in is already segmented by NPS score (promoter vs passive) — useful precedent for how the new system should branch its 30-day messaging.
+
+---
+
+# Injection Therapy flow (added 2026-08-24)
+
+Martin's Cliniq Apps injection workflow has **4 parts**. This is part 1 of 4 —
+the rest to follow. Note this is richer than the May plan assumed: the plan
+listed only "Injection Therapy Day 14 + Day 28" plus a pre-form, and missed
+that the flow opens with an information email on booking.
+
+## 1. Injection Therapy Information (email, on booking)
+
+**Trigger:** patient books an Injection Therapy appointment (fires on booking,
+not on the appointment date).
+**Subject:** *(not captured in the screenshot — need it)*
+**Sign-off variable:** `{NEXT_PROVIDER_FIRSTNAME}{NEXT_PROVIDER_LASTNAME}`
+— note there is **no space between them** in the original, so it renders as
+"MartinLoughran". Fix on migration.
+
+**Body:**
+```
+Injection Therapy Information
+
+Hi {FIRSTNAME} Thank you for booking your injection therapy appointment with
+us. This email should cover all the important information you will need ahead
+of your appointment. If you need anything else, all our contact details are at
+the bottom of this email.
+
+Common Questions
+
+What is a steroid injection?
+Corticosteroids are medicines which can relieve pain, swelling and stiffness by
+reducing inflammation. Corticosteroids are extremely safe.
+
+A steroid injection will help reduce your pain and allow you to start
+rehabilitation sooner. This should reduce the amount of physiotherapy needed and
+will help you to return to normal activities more quickly.
+
+Why don't I just take anti-inflammatory tablets?
+You can, but the side effects of these are much more common and can cause
+stomach upsets and bleeding. An injection will bypass the stomach.
+
+What is an Ostenil Plus Injection?
+Ostenil Plus is a solution containing hyaluronic acid developed specifically for
+the treatment of osteoarthritis. It can be injected into the knee, or any of the
+other synovial joints in the body to decrease pain and stiffness and improve the
+other symptoms of osteoarthritis.
+
+An injection will not be possible if...
+  - Have an infection on your skin or anywhere in your body or have had
+    antibiotics within the last 2 weeks.
+  - Are allergic to local anaesthetic or steroid
+  - Feel unwell.
+  - Have had Covid-19 within the last 2 weeks
+  - Are under 18.
+  - Have certain circulatory/cardiac /liver or kidney conditions
+  - Area to be treated has prosthetic joint
+  - Had a previous infection in the area to be treated
+  - Received a live or live attenuated vaccine within last 2 weeks
+
+Are there any possible side effects?
+These are very rare and your physiotherapist will discuss them with you:
+  - Flushing of the face for a few hours.
+  - Small area of fat loss or change of skin colour around the injection site.
+  - Slight vaginal bleeding.
+  - Diabetic patients may notice a temporary increase in blood sugar levels.
+  - Temporary bruising at the site of the injection.
+  - Infection: if the area becomes hot swollen and more painful for more than
+    24 hours you should contact your physiotherapist or doctor immediately.
+  - Allergic reaction to drugs.
+  - In very rare cases a condition called Chorioretinopathy can develop which
+    can cause a detatched retina. If you find new blurred or distorted vision,
+    difficulty with bright lights, this should be reported to your GP or
+    optician.
+
+    You will be asked to wait for 30 minutes after the injection to ensure
+    there is no allergic reaction to the drugs injected.
+
+How is the injection done?
+The skin is cleaned with antiseptic. A needle is gently put into the affected
+part and the solution is injected through the needle.
+
+Is the injection painful?
+Not particularly, as your physiotherapist has had intensive training in the
+technique. Sometimes it can be sore for a few hours, but you will be told what
+to do about this.
+
+How fast does the injection work?
+If local anaesthetic is used the pain should be less within a few minutes,
+though it may return after about an hour. The steroid usually starts to work
+after 24 to 48 hours.
+
+You will have to rest for 48 hours after injection and you should not drive
+home. If you are unable to rest after the injection please inform staff at time
+of booking appointment and it may be deferred.
+
+How many injections can I have?
+This depends on what has been injected, how severe the pain is and how long you
+have had the pain for. Usually one injection is enough; you may need more but no
+more than three per episode. This will be decided by you and your
+physiotherapist.
+
+Sustained use of joint injections with steroid can cause weakening of soft
+tissues and cartilage. This may be more detrimental in the long term.
+
+There is no limit on how many Ostenil Plus injections you can have as there is
+no evidence that it causes weakening of soft tissues and cartilage in the same
+way steroid may do.
+
+Herbal Remedies
+Please stop taking all herbal remedies 2 weeks prior to injection
+(Ginseng/Turmeric/St Johns Wort)
+
+[image: syringe drawing solution from a vial]
+
+Thank you and we look forward to meeting you in the clinic.
+
+{NEXT_PROVIDER_FIRSTNAME}{NEXT_PROVIDER_LASTNAME}
+```
+
+### Typos in the original (fix on migration, don't carry over)
+- "detatched retina" -> "detached retina"
+- "hot swollen and more painful" -> "hot, swollen and more painful"
+- "circulatory/cardiac /liver" -> stray space before "/liver"
+- Sign-off renders with no space between first and last name.
+- The contraindication and side-effect lists start mid-sentence ("Have an
+  infection...", "Are allergic to...") with no lead-in stem such as
+  "An injection will not be possible if you:".
+
+### REQUIRED CHANGE — steroid vs hyaluronic acid (Martin, 2026-08-24)
+The clinic now performs **as many hyaluronic acid injections as
+corticosteroid** ones, but this email is written almost entirely around
+steroid. Ostenil Plus gets a single paragraph.
+
+**Not two workflows — one email that covers both**, and tells the patient their
+physio will have recommended whichever is most appropriate for them.
+
+Where the current copy is steroid-only and needs an HA counterpart:
+
+| Section | Problem |
+|---|---|
+| "What is a steroid injection?" | Leads with steroid as if it is the default. Needs a paired "what is each, and which am I getting" framing. |
+| "An injection will not be possible if..." | Written for steroid ("allergic to local anaesthetic or steroid"). HA contraindications differ. |
+| "Are there any possible side effects?" | Entirely steroid side effects — flushing, fat loss, blood sugar, chorioretinopathy. None of these apply to HA. |
+| "How fast does the injection work?" | "The steroid usually starts to work after 24 to 48 hours." HA has a different onset profile. |
+| "You will have to rest for 48 hours" | Stated as universal. Needs confirming whether it applies to HA too. |
+| "How many injections can I have?" | Already covers both — the one section that does. |
+
+**Clinical detail still needed from Martin before this can be drafted** (do not
+invent any of it):
+1. HA onset — how soon does Ostenil Plus start working, and over what period?
+2. HA aftercare — does the same 48-hour rest / no-driving rule apply?
+3. HA course — single injection, or a series? Typical interval?
+4. HA contraindications — which of the 9 listed still apply, and any HA-specific
+   ones to add?
+5. HA side effects — the realistic list (local pain/swelling?), separate from
+   the steroid list.
+6. Does the 30-minute post-injection wait apply to both?
