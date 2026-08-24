@@ -467,8 +467,11 @@ is not traceable to this list.**
 The driving difference is the safety-critical one: steroid says do not drive
 home, HA says most patients can. The new copy must not blur these together.
 
-### Still outstanding on part 1
-1. **Subject line** — not captured in the screenshot. Still needed.
+### Part 1 — fully answered, nothing outstanding
+
+The subject line was never captured from Cliniq Apps, so the new one is written
+rather than migrated: **"Your injection appointment — what you need to know"**
+(approved by Martin 2026-08-24).
 
 Everything else on part 1 is answered (Martin 2026-08-24): herbal remedies
 apply to both; steroid rest is four days vs 48 hours for HA; steroid driving

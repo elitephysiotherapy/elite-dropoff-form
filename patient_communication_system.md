@@ -1162,10 +1162,12 @@ original plus Martin's hyaluronic acid facts of 2026-08-24.
 ### 7.1 Injection therapy information — Email (on booking)
 
 **Trigger:** patient books an Injection Therapy appointment (fires on booking).
-**Subject:** *NEEDS MARTIN* — original not captured. Suggested:
-"Your injection appointment — what you need to know"
+**Subject:** Your injection appointment — what you need to know
+*(approved by Martin 2026-08-24; the Cliniq Apps original subject was never
+captured, so this is new copy rather than a migration.)*
 **Sender:** clinic (`info@`)
-**Status:** DRAFT — needs Martin's clinical sign-off before it goes anywhere.
+**Status:** Copy COMPLETE and clinically answered. Not yet built — awaiting
+parts 2-4 of the flow before `marketing/injection.py` is written.
 
 ```
 Hi {first_name},
@@ -1308,8 +1310,8 @@ Elite Physiotherapy
   appointment (herbal remedies, reasons to rearrange) sits together, rather
   than herbal remedies being stranded at the end after the side-effect list.
 
-**Open questions for Martin**
-1. Subject line.
+**Open questions for Martin** — all resolved 2026-08-24.
+1. ~~Subject line.~~ **"Your injection appointment — what you need to know"**.
 2. ~~Herbal remedies — both types or steroid only?~~ **BOTH** (Martin
    2026-08-24). Drafted correctly, no change needed.
 3. ~~Does the rest advice apply equally?~~ **NO — steroid is stricter**
