@@ -614,6 +614,25 @@ MARKETING_QUIET_END = 8
 # Birthday flow scans the whole patient base — leave off until volume is known.
 MARKETING_BIRTHDAY_ENABLED = False
 
+# ---- Injection Therapy check-ins (Day 14 / Day 28) ----
+# Master switch for the injection flow. OFF until the Day 14 / Day 28 copy is
+# migrated off Cliniq Apps. This flag ALSO gates the 30-day suppression below,
+# so the two move together: while it is False nothing changes, and injection
+# patients keep getting the generic 30-day email exactly as they do today.
+MARKETING_INJECTION_ENABLED = False
+
+INJECTION_TYPE_IDS = {
+    "1192928323588592985",   # 1. Injection Therapy
+}
+
+# Appointment types whose patients should NOT get the generic 30-day follow-up,
+# because a more specific flow already covers them. Injection patients get the
+# Day 28 check-in instead; without this they would get both, ~2 days apart.
+# Measured 2026-08-24: 72% of injection patients (39 of 54) have nothing booked
+# in the 35 days after, so nearly all of them would have collided.
+# Only applied while MARKETING_INJECTION_ENABLED is True.
+THIRTY_DAY_SUPPRESSED_TYPE_IDS = INJECTION_TYPE_IDS
+
 
 # ===========================================================================
 # END-OF-DAY STATS REPORT
