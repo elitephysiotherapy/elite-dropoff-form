@@ -615,22 +615,32 @@ MARKETING_QUIET_END = 8
 MARKETING_BIRTHDAY_ENABLED = False
 
 # ---- Injection Therapy check-ins (Day 14 / Day 28) ----
-# Master switch for the injection flow. OFF until the Day 14 / Day 28 copy is
-# migrated off Cliniq Apps. This flag ALSO gates the 30-day suppression below,
-# so the two move together: while it is False nothing changes, and injection
-# patients keep getting the generic 30-day email exactly as they do today.
-MARKETING_INJECTION_ENABLED = False
+# These check-ins are sent by CLINIKO, not by this poller. The injection flow
+# was migrated to Cliniko's native automations rather than rebuilt here, and
+# went live 2026-08-24 (the same day Cliniq Apps was switched off).
+#
+# True = something else is already checking in on injection patients, so this
+# system must stay out of their way. Set to False only if Cliniko stops sending
+# them, which would make the 30-day email the right thing to send again.
+INJECTION_CHECKINS_LIVE = True
 
 INJECTION_TYPE_IDS = {
     "1192928323588592985",   # 1. Injection Therapy
 }
 
 # Appointment types whose patients should NOT get the generic 30-day follow-up,
-# because a more specific flow already covers them. Injection patients get the
-# Day 28 check-in instead; without this they would get both, ~2 days apart.
-# Measured 2026-08-24: 72% of injection patients (39 of 54) have nothing booked
-# in the 35 days after, so nearly all of them would have collided.
-# Only applied while MARKETING_INJECTION_ENABLED is True.
+# because a more specific check-in already covers them. Injection patients get
+# Cliniko's Day 28 check-in; without this they would get both, ~2 days apart.
+# Measured 2026-08-24: 72% of injection patients have nothing booked in the 35
+# days after, so nearly all of them would have collided.
+#
+# ACL is deliberately NOT in this set. Its Cliniko journey has no 30-day
+# check-in (Martin 2026-08-24), so those patients should keep getting the
+# generic email — and they rarely qualify anyway: only 7% of ACL Initial
+# Assessment patients have nothing booked in the following 35 days, because
+# they are in active rehab.
+#
+# Only applied while INJECTION_CHECKINS_LIVE is True.
 THIRTY_DAY_SUPPRESSED_TYPE_IDS = INJECTION_TYPE_IDS
 
 

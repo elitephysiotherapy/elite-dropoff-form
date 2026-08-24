@@ -4,7 +4,7 @@
 **Goal:** Cancel Cliniq Apps (~£1,000–1,500/yr) and replace with owned infrastructure that lives inside the existing `~/cliniko-dropoffs/` project.
 **Source docs:** `Elite_NPS_ClaudeCode_Brief.docx` (this folder) + 15 Cliniq Apps automation screenshots audited 2026-05-14.
 
-> **STATUS — reviewed 2026-08-24.** This is the original May plan, kept as the record of
+> **STATUS — COMPLETE 2026-08-24. Cliniq Apps is off.** This is the original May plan, kept as the record of
 > what was decided and why. The system has since been built and several things shipped
 > differently. Corrections are marked **[SHIPPED DIFFERENTLY]** inline, and
 > **section 12** lists every divergence with the file and line that proves it.
@@ -463,6 +463,45 @@ essentially as planned.
 | 5 | SMS from alphanumeric sender `ElitePhysio` | Still true for automated flows, and it is **one-way — patients cannot reply**. A separate two-way number was later bought for the Omagh launch; replies hit `/twilio/inbound` and land in `#omagh-replies` | `config.py:541-547` |
 | 6 | Tab names written `NPS — Raw Data` (em dash) | Code uses a plain hyphen: `NPS - Raw Data`, `NPS - Detractor Tracker`. Cosmetic, but the tab names must match exactly or writes fail | `detractor.py:19-20` |
 
+### 2026-08-24 — Cliniq Apps switched OFF. Phases 9 and 10 closed.
+
+**The rebuild is done.** Injection Therapy and the ACL Journey — the last two
+workstreams — went live in Cliniko on 2026-08-24 and Cliniq Apps was turned off the
+same day.
+
+They did **not** go the way this plan intended, and the difference is worth recording:
+
+| | This plan | What happened |
+|---|---|---|
+| Injection Day 14 / 28 | Flow 13, built in the Python marketing package | Built in **Cliniko's native automations** |
+| Injection pre-form | Cliniko Forms (item B) | Cliniko Forms — as planned |
+| ACL Journey | **Phase 10** — ~10 templates rebuilt in Python | Built in **Cliniko** |
+
+So **Phase 10 is superseded, not outstanding**. There is no ACL work left to do in this
+codebase, and `marketing/injection.py` was never written and is not needed.
+
+Rationale: Cliniko Forms and automations became free, and both of these flows are
+appointment-anchored enough for Cliniko to drive. That left the Python system owning
+the flows Cliniko genuinely cannot do — the NPS closed loop with its branching Tally
+form, the CNA/DNA rebookers, the lapsed-patient lifecycle — and Cliniko owning the
+rest. Cheaper and less code to maintain than the original single-system plan.
+
+**Section 10's saving is now real.** The £1,950/yr Cliniq Apps subscription has stopped;
+the replacement runs at roughly £220-£470/yr.
+
+**One cross-system consequence, handled.** Cliniko now sends injection patients a Day 28
+check-in, and this system's generic 30-day email would have landed ~2 days later — 72%
+of injection patients would have got both. `config.INJECTION_CHECKINS_LIVE` (True since
+2026-08-24) suppresses the 30-day email for injection patients. ACL is deliberately NOT
+suppressed: its Cliniko journey has no 30-day check-in (Martin), and only 7% of ACL
+patients would qualify anyway since they are in active rehab. Covered by
+`test_injection_suppression.py`.
+
+**Watch item.** The two systems now message the same patients and neither can see the
+other's sends. This system's dedup ledger does not know what Cliniko sent, and vice
+versa. The injection suppression is a manual patch for the one overlap we found; any
+NEW Cliniko automation needs checking against the flows here before it goes live.
+
 ### Added after this plan was written
 
 - **Omagh launch campaign** (Aug 2026) — a whole outbound campaign reusing the marketing
@@ -475,14 +514,4 @@ essentially as planned.
 - **Decision #6 — patient consent for SMS.** Recorded here as "pending Martin
   confirmation" in May and never resolved in writing. The code has no consent-specific
   gate beyond honouring Cliniko's `do_not_contact` flag. Worth closing off properly.
-- **Cliniq Apps is NOT cancelled** (Phase 9 not done, confirmed by Martin 2026-08-24).
-  Two workstreams still have to be migrated off it first:
-  - **Injection Therapy** — the Day 14 / Day 28 flows (flow 13 in section 1) and the
-    injection pre-form, which section 1 routes to Cliniko Forms.
-  - **ACL Journey** — the deferred Phase 10 migration, ~10 templates across ~6 months
-    of cadence.
-
-  So the £1,950/yr is still being paid on top of the new system's running costs. The
-  saving in section 10 is not yet being realised, and won't be until both of these
-  transfer and the subscription is cancelled. This is the single biggest open item in
-  this document.
+  This is now the only genuinely open item in this document.

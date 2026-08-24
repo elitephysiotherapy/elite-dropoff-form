@@ -51,14 +51,14 @@ def _lapsed_candidates(days):
 def _thirty_day(out):
     """Patients ~30 days past their last appointment, nothing since.
 
-    Patients whose last appointment was an Injection Therapy are skipped: the
-    injection flow's Day 28 check-in already reaches them, and the two would
-    land ~2 days apart. Suppression is gated on MARKETING_INJECTION_ENABLED so
-    that until the injection flow ships, these patients keep getting this email
-    rather than falling through the gap and getting nothing at all.
+    Patients whose last appointment was an Injection Therapy are skipped:
+    Cliniko's Day 28 injection check-in already reaches them, and the two would
+    land ~2 days apart. Gated on INJECTION_CHECKINS_LIVE so that if Cliniko ever
+    stops sending them, these patients fall back to this email rather than
+    silently getting nothing.
     """
     suppressed = (set(getattr(config, "THIRTY_DAY_SUPPRESSED_TYPE_IDS", ()))
-                  if getattr(config, "MARKETING_INJECTION_ENABLED", False)
+                  if getattr(config, "INJECTION_CHECKINS_LIVE", False)
                   else set())
     for pid, appt in _lapsed_candidates(30).items():
         if suppressed and cliniko.appt_type_id(appt) in suppressed:
