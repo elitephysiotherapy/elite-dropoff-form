@@ -446,13 +446,30 @@ Where the current copy is steroid-only and needs an HA counterpart:
 | "You will have to rest for 48 hours" | Stated as universal. Needs confirming whether it applies to HA too. |
 | "How many injections can I have?" | Already covers both — the one section that does. |
 
-**Clinical detail still needed from Martin before this can be drafted** (do not
-invent any of it):
-1. HA onset — how soon does Ostenil Plus start working, and over what period?
-2. HA aftercare — does the same 48-hour rest / no-driving rule apply?
-3. HA course — single injection, or a series? Typical interval?
-4. HA contraindications — which of the 9 listed still apply, and any HA-specific
-   ones to add?
-5. HA side effects — the realistic list (local pain/swelling?), separate from
-   the steroid list.
-6. Does the 30-minute post-injection wait apply to both?
+### Hyaluronic acid — clinical facts (Martin, 2026-08-24)
+
+Supplied by Martin in answer to the six questions above. **This is the source of
+truth for every HA claim in the new copy — nothing about HA may be written that
+is not traceable to this list.**
+
+| | Corticosteroid (existing copy) | Hyaluronic acid (Martin) |
+|---|---|---|
+| **Onset** | Local anaesthetic eases pain in minutes, may return after ~1 hour. Steroid works after 24-48 hours. | Slow-acting. Some feel immediate benefit; for others **3-4 weeks** to feel significantly better. |
+| **Duration** | not stated | Long-lasting — **6 to 9 months**. |
+| **Rest** | "You will have to rest for 48 hours after injection" | **Active rest and deloading for 48 hours** — and the reason matters: this is to get **best value from the injection**, NOT because of harm. There are **no detrimental physiological effects** from doing too much too soon. |
+| **Driving** | "you should not drive home" | **Can drive home** for the vast majority of HA injections — but check with the physiotherapist before attending. |
+| **Course** | Usually one; no more than **three per episode**. Sustained steroid use can weaken soft tissues and cartilage. | Typically a **one-off**. Some patients with long-standing conditions choose to repeat every **6-12 months**. |
+| **Contraindications** | The 9-item list above. | **Very few.** Do not attend if unwell, or if they have had a **cold or flu that week**, or if there is any medical reason they cannot receive an injection on that date. |
+| **Side effects** | Long list — flushing, fat loss, blood sugar, chorioretinopathy etc. | **Fainting, bruising, and a 5-in-100,000 chance of skin infection.** Performed under **no-touch sterile conditions** to minimise infection risk. |
+| **Post-injection wait** | **30 minutes** (allergic reaction check) | **15-20 minutes** |
+
+The driving difference is the safety-critical one: steroid says do not drive
+home, HA says most patients can. The new copy must not blur these together.
+
+### Still outstanding on part 1
+1. **Subject line** — not captured in the screenshot.
+2. Does the **herbal remedies** rule (stop Ginseng/Turmeric/St John's Wort 2
+   weeks prior) apply to both injection types, or steroid only?
+3. Does the "active rest for best value, no physiological harm" framing apply to
+   **steroid** too, or is steroid genuinely stricter rest?
+4. Confirm steroid **driving** advice is still "should not drive home".

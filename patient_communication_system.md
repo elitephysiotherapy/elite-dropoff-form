@@ -1141,3 +1141,176 @@ All ten open questions are now answered and applied to this document.
 
 Next step: all 10 questions are resolved (Part 4) and applied. This is now the content spec for `marketing/templates/`. The only outstanding dependency is the **Cliniko pre-assessment form** (Part 4, item 3) — once Martin builds it and it has a shareable URL, Stage 1 can go live.
 ```
+
+
+---
+
+## STAGE 7 — Injection Therapy
+
+Added 2026-08-24. Migrating off Cliniq Apps. Four parts; this is part 1.
+Clinical source: `cliniq_apps_templates.md` — the transcribed Cliniq Apps
+original plus Martin's hyaluronic acid facts of 2026-08-24.
+
+**Rules this copy follows:**
+- **One email, both injection types.** Not two workflows. The patient is told
+  their physio has recommended whichever suits them.
+- **No brand names.** "Hyaluronic acid" and "corticosteroid" throughout.
+- **Never blur the two where they differ** — especially driving, where steroid
+  says do not drive home and hyaluronic acid says most patients can.
+- Every hyaluronic acid claim traces to Martin's list. Nothing invented.
+
+### 7.1 Injection therapy information — Email (on booking)
+
+**Trigger:** patient books an Injection Therapy appointment (fires on booking).
+**Subject:** *NEEDS MARTIN* — original not captured. Suggested:
+"Your injection appointment — what you need to know"
+**Sender:** clinic (`info@`)
+**Status:** DRAFT — needs Martin's clinical sign-off before it goes anywhere.
+
+```
+Hi {first_name},
+
+Thank you for booking your injection therapy appointment with us. This email
+covers what you need to know beforehand. If there is anything else, our contact
+details are at the bottom.
+
+THE TWO TYPES OF INJECTION
+
+We use two types, and your physiotherapist will have recommended whichever is
+most appropriate for your problem. If you are not sure which you are having,
+just ask.
+
+Corticosteroid ("steroid")
+Corticosteroids relieve pain, swelling and stiffness by reducing inflammation,
+and are extremely safe. A steroid injection reduces your pain so you can start
+rehabilitation sooner — which should reduce the amount of physiotherapy you
+need and help you get back to normal activities more quickly.
+
+Hyaluronic acid
+A solution developed specifically for treating osteoarthritis. It can be
+injected into the knee, or any other synovial joint, to reduce pain and
+stiffness and improve the other symptoms of osteoarthritis.
+
+WHY NOT JUST TAKE ANTI-INFLAMMATORY TABLETS?
+
+You can, but their side effects are much more common and can cause stomach
+upsets and bleeding. An injection bypasses the stomach.
+
+HOW QUICKLY WILL IT WORK, AND HOW LONG WILL IT LAST?
+
+Steroid — if local anaesthetic is used, your pain should ease within a few
+minutes, though it may return after about an hour. The steroid itself usually
+starts working after 24 to 48 hours.
+
+Hyaluronic acid — slower acting. Some people feel an immediate benefit; for
+others it takes three to four weeks to feel significantly better. It is
+long-lasting, though: the benefit can last six to nine months.
+
+HOW MANY WILL I NEED?
+
+Steroid — usually one is enough. You may need more, but no more than three per
+episode, and that is decided between you and your physiotherapist. Sustained
+use of steroid joint injections can weaken soft tissues and cartilage, which
+may be more detrimental in the longer term.
+
+Hyaluronic acid — typically a one-off. Some people with long-standing problems
+choose to have it again every six to twelve months. There is no limit in the
+same way, as there is no evidence it weakens soft tissues and cartilage the way
+steroid may.
+
+AFTER YOUR INJECTION
+
+Resting — we ask you to take active rest for 48 hours, easing off your usual
+loading. With hyaluronic acid this is about getting the best value from your
+injection rather than avoiding harm: there are no detrimental physiological
+effects from doing too much too soon, but resting properly gives the injection
+the best chance to work.
+
+Driving — this differs by injection type, so please check which you are having:
+  - After a steroid injection you should not drive home.
+  - After a hyaluronic acid injection the vast majority of patients can drive
+    home, but check with your physiotherapist before you attend.
+
+Waiting with us afterwards — after a steroid injection you will be asked to
+wait 30 minutes so we can be sure there is no allergic reaction to the drugs
+injected. After a hyaluronic acid injection the wait is usually 15 to 20
+minutes.
+
+BEFORE YOU COME IN
+
+Herbal remedies — please stop taking all herbal remedies two weeks before your
+injection (ginseng, turmeric, St John's Wort).
+
+Please contact us to rearrange your appointment if any of the following apply
+to you.
+
+For a steroid injection, an injection will not be possible if you:
+  - have an infection on your skin or anywhere in your body, or have taken
+    antibiotics in the last 2 weeks
+  - are allergic to local anaesthetic or steroid
+  - feel unwell
+  - have had Covid-19 in the last 2 weeks
+  - are under 18
+  - have certain circulatory, cardiac, liver or kidney conditions
+  - have a prosthetic joint in the area to be treated
+  - have had a previous infection in the area to be treated
+  - have received a live or live attenuated vaccine in the last 2 weeks
+
+There are very few reasons a hyaluronic acid injection cannot go ahead. Please
+do not attend if you are unwell, if you have had a cold or flu that week, or if
+there is any medical reason you cannot have an injection that day.
+
+POSSIBLE SIDE EFFECTS
+
+After a steroid injection these are very rare, and your physiotherapist will
+discuss them with you:
+  - flushing of the face for a few hours
+  - a small area of fat loss or change of skin colour around the injection site
+  - slight vaginal bleeding
+  - a temporary rise in blood sugar levels, if you are diabetic
+  - temporary bruising at the injection site
+  - infection — if the area becomes hot, swollen and more painful for more than
+    24 hours, contact your physiotherapist or doctor immediately
+  - allergic reaction to the drugs
+  - very rarely, a condition called chorioretinopathy, which can cause a
+    detached retina. If you notice new blurred or distorted vision, or
+    difficulty with bright lights, report it to your GP or optician.
+
+After a hyaluronic acid injection, the possible side effects are fainting,
+bruising, and roughly a 5 in 100,000 chance of a skin infection. Your injection
+is carried out under no-touch sterile conditions to keep that risk as low as
+possible.
+
+Thank you, and we look forward to seeing you in the clinic.
+
+{practitioner_name}
+Elite Physiotherapy
+```
+
+**What changed from the Cliniq Apps original**
+- Both injection types now carry equal weight, with a clear "your physio has
+  recommended the right one for you" opener. Previously steroid was the
+  implicit default and hyaluronic acid a single paragraph.
+- Brand name removed in both places it appeared.
+- Onset, course, aftercare, contraindications and side effects are now split by
+  type wherever they genuinely differ. Driving is called out explicitly,
+  because the advice is opposite for the two.
+- Contraindication and side-effect lists given proper lead-in stems — the
+  original started mid-sentence ("Have an infection...").
+- Typos fixed: "detatched" -> "detached"; "hot swollen" -> "hot, swollen";
+  stray space in "cardiac /liver".
+- Sign-off uses one `{practitioner_name}` variable — the original concatenated
+  first and last name with no space ("MartinLoughran").
+- Section order changed so everything the patient must act on BEFORE the
+  appointment (herbal remedies, reasons to rearrange) sits together, rather
+  than herbal remedies being stranded at the end after the side-effect list.
+
+**Open questions for Martin**
+1. Subject line.
+2. Does the herbal remedies rule apply to both types, or steroid only? Drafted
+   as both — change if that is wrong.
+3. Does the "active rest for value, no physiological harm" framing apply to
+   steroid too? Drafted as applying to both, with the no-harm reassurance
+   attached only to hyaluronic acid, which is what Martin actually said.
+4. Confirm steroid driving advice is still "should not drive home".
+5. The original image (syringe and vial) — keep, or drop?
