@@ -427,11 +427,19 @@ steroid. Ostenil Plus gets a single paragraph.
 **Not two workflows — one email that covers both**, and tells the patient their
 physio will have recommended whichever is most appropriate for them.
 
+**NO BRAND NAMES** (Martin, 2026-08-24). The clinic may use brands other than
+Ostenil, so the new copy says **"hyaluronic acid"** generically throughout.
+The current email names "Ostenil Plus" twice — in the "What is an Ostenil Plus
+Injection?" heading and in the "How many injections can I have?" section. Both
+become generic. Same principle for the steroid side: "corticosteroid" /
+"steroid", never a product name. This keeps the email correct whichever brand
+is stocked, and avoids a rewrite every time supply changes.
+
 Where the current copy is steroid-only and needs an HA counterpart:
 
 | Section | Problem |
 |---|---|
-| "What is a steroid injection?" | Leads with steroid as if it is the default. Needs a paired "what is each, and which am I getting" framing. |
+| "What is a steroid injection?" / "What is an Ostenil Plus Injection?" | Leads with steroid as if it is the default, and names a brand. Needs a paired, brand-free "what is each, and which am I getting" framing. |
 | "An injection will not be possible if..." | Written for steroid ("allergic to local anaesthetic or steroid"). HA contraindications differ. |
 | "Are there any possible side effects?" | Entirely steroid side effects — flushing, fat loss, blood sugar, chorioretinopathy. None of these apply to HA. |
 | "How fast does the injection work?" | "The steroid usually starts to work after 24 to 48 hours." HA has a different onset profile. |
