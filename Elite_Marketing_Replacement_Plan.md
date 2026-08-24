@@ -4,6 +4,12 @@
 **Goal:** Cancel Cliniq Apps (~£1,000–1,500/yr) and replace with owned infrastructure that lives inside the existing `~/cliniko-dropoffs/` project.
 **Source docs:** `Elite_NPS_ClaudeCode_Brief.docx` (this folder) + 15 Cliniq Apps automation screenshots audited 2026-05-14.
 
+> **STATUS — reviewed 2026-08-24.** This is the original May plan, kept as the record of
+> what was decided and why. The system has since been built and several things shipped
+> differently. Corrections are marked **[SHIPPED DIFFERENTLY]** inline, and
+> **section 12** lists every divergence with the file and line that proves it.
+> Where the two disagree, the code is right and this plan is history.
+
 ---
 
 ## 1. Final scope
@@ -54,6 +60,16 @@
 ## 2. Architecture
 
 **Path B (confirmed):** Extend the existing `~/cliniko-dropoffs/` project.
+
+> **[SHIPPED DIFFERENTLY]** The diagram below shows **macOS launchd** driving the
+> schedule from Martin's Mac. That was true at build time but is no longer: every job
+> now runs as a **Render cron job** dispatched by `run_cloud.py`, so nothing depends on
+> the laptop being awake. The drop-off run fires 07:00 London; the marketing poller runs
+> on a fixed interval. `run_cloud.py` exists because Render cron schedules are UTC-only —
+> it fires at both candidate UTC times and runs the job only when London local time
+> matches, so the hour doesn't drift across the GMT/BST switch. Everything else in the
+> diagram — Cliniko in, Resend/Twilio/Tally out, webhook back to the Flask app, two
+> Google Sheets — is accurate.
 
 ```
                     ┌──────────────────────────────────────────────┐
@@ -352,7 +368,18 @@ Episode anchor = the date of the appointment that triggered the flow. Patient co
 
 3. ~~Detractor alert destination?~~ **DECIDED: Email to Sinead Rocks (Ops Manager) `sinead@elitephysiocookstown.co.uk` for BOTH passives (7–8) AND detractors (0–6).** Promoters (9–10) trigger no alert — their action is leaving a Google review. Marty is NOT cc'd; Ops Manager owns this workflow.
 
-4. **Email "from" name and address.** Recommendation: `Elite Physiotherapy <noreply@elitephysiocookstown.co.uk>` with reply-to set to `reception@elitephysiocookstown.co.uk`. **Pending Martin confirmation.**
+4. ~~Email "from" name and address.~~ **DECIDED — but not as proposed. [SHIPPED DIFFERENTLY]**
+   The May recommendation was `Elite Physiotherapy <noreply@elitephysiocookstown.co.uk>`
+   with reply-to `reception@`. What shipped is
+   **`Elite Physiotherapy <info@elitephysiocookstown.co.uk>`, reply-to the same address**
+   (`config.py:534-535`). No `noreply@` address exists anywhere in the system — the front
+   desk monitors `info@`, so a patient who hits reply reaches a human.
+   Nor is it a single sender: `templates.py:604` maps each template to one of **three**
+   sender identities — clinic `info@` (17 templates, all routine automated sends),
+   **Sinead Rocks** `sinead@` (3: `detractor_followup`, `thirty_day_promoter`,
+   `thirty_day_passive`) and **Martin** `martin@` (2: `omagh_launch`, `manual_1d`).
+   Recovery and relationship emails come from a named person at their real address so
+   replies land in that person's own inbox; only transactional sends come from the clinic.
 
 5. ~~Email + SMS copy~~ **DECIDED: Martin screenshots current Cliniq Apps templates; Claude reviews and improves.** New flows (Birthday, 90/180-day) drafted from scratch by Claude.
 
@@ -405,7 +432,9 @@ Even in the heavy-volume / paid-Tally scenario, the system pays for itself in ~3
 - Every patient who attends an IA receives SMS at +15min and email at +2h
 - Every cancelled / no-show patient with no rebook is reached out to within hours
 - Every promoter sees the right clinic's Google Review URL (Maghera bug fixed)
-- Every detractor triggers a Slack ping to Marty + Sinead within 60 seconds of submitting
+- Every detractor triggers an **email alert to Sinead** within 60 seconds of submitting
+  (not a Slack ping to Marty — see decision #3; `detractor.py:196` sends to
+  `config.NPS_ALERT_EMAIL`, which is Sinead. Marty is deliberately not copied.)
 - Dashboard tab shows live NPS, response rate, per-physio breakdown
 - Cliniq Apps subscription cancelled at end of billing period
 - Zero double-sends, zero missed sends in the log
@@ -415,3 +444,45 @@ Even in the heavy-volume / paid-Tally scenario, the system pays for itself in ~3
 - Birthday + 90/180-day flows live and measured
 - NPS trend visible across 3 months
 - Detractor close-loop callback rate measurable
+
+---
+
+## 12. What actually shipped — divergences from this plan
+
+Recorded 2026-08-24, checked against the code. Every row is verifiable at the file and
+line given. This section covers *structural* differences only; the 13 flows, the Tally
+form design, the two-sheet data model, the dedup ledger and the cost case all shipped
+essentially as planned.
+
+| # | This plan said | What shipped | Where |
+|---|---|---|---|
+| 1 | From `noreply@`, reply-to `reception@` | From `info@`, reply-to `info@`. Plus three sender identities (clinic / Sinead / Martin) rather than one | `config.py:534-538`, `templates.py:604` |
+| 2 | macOS launchd — 07:00 daily + every 10 min | Render cron jobs via the `run_cloud.py` dispatcher; nothing runs on the Mac | `run_cloud.py:30-61` |
+| 3 | §11: "Slack ping to Marty + Sinead" | Email alert to Sinead only. Matches decision #3; §11 was internally inconsistent with it from the start | `detractor.py:196`, `config.py:551` |
+| 4 | Tally URL sent to the patient in full | NPS SMS go through a **URL shortener** on a separate Render service, cutting the ~400-char Tally URL to ~40. Not in the May plan at all — added once Twilio per-segment costs became visible | `config.py:531-532` |
+| 5 | SMS from alphanumeric sender `ElitePhysio` | Still true for automated flows, and it is **one-way — patients cannot reply**. A separate two-way number was later bought for the Omagh launch; replies hit `/twilio/inbound` and land in `#omagh-replies` | `config.py:541-547` |
+| 6 | Tab names written `NPS — Raw Data` (em dash) | Code uses a plain hyphen: `NPS - Raw Data`, `NPS - Detractor Tracker`. Cosmetic, but the tab names must match exactly or writes fail | `detractor.py:19-20` |
+
+### Added after this plan was written
+
+- **Omagh launch campaign** (Aug 2026) — a whole outbound campaign reusing the marketing
+  package's sender and dedup ledger. Entirely outside this plan's scope.
+- **Welcome email** on IA booking, and the **discharge "well done"** email gated to
+  patients with 6+ attended appointments in the episode.
+
+### Still open
+
+- **Decision #6 — patient consent for SMS.** Recorded here as "pending Martin
+  confirmation" in May and never resolved in writing. The code has no consent-specific
+  gate beyond honouring Cliniko's `do_not_contact` flag. Worth closing off properly.
+- **Cliniq Apps is NOT cancelled** (Phase 9 not done, confirmed by Martin 2026-08-24).
+  Two workstreams still have to be migrated off it first:
+  - **Injection Therapy** — the Day 14 / Day 28 flows (flow 13 in section 1) and the
+    injection pre-form, which section 1 routes to Cliniko Forms.
+  - **ACL Journey** — the deferred Phase 10 migration, ~10 templates across ~6 months
+    of cadence.
+
+  So the £1,950/yr is still being paid on top of the new system's running costs. The
+  saving in section 10 is not yet being realised, and won't be until both of these
+  transfer and the subscription is cancelled. This is the single biggest open item in
+  this document.
