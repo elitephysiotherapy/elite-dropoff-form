@@ -853,6 +853,52 @@ def get_or_create_tab(sh, tab_name):
         return ws, True
 
 
+def unwritable_tabs(tab_names):
+    """Which of `tab_names` this service account is currently BLOCKED from writing.
+
+    Tabs in this workbook are protected so reception/physios can't hand-edit the
+    computed dashboards. A protection whose editor list omits the bot silently
+    breaks the daily refresh: every write 400s with "You are trying to edit a
+    protected cell or object", the refresh is caught by its own try/except, and
+    the run still exits 0 — so the tab quietly serves stale numbers. That is
+    exactly what happened 20–24 Aug 2026 (five tabs, four days, no alert).
+
+    Checked BEFORE the expensive Cliniko passes: Monthly Summary costs ~45 min
+    and Physio Trends ~28 min, and on 24 Aug both were computed in full and then
+    thrown away at the write. Returns {tab_name: reason}.
+    (Martin 2026-08-24.)
+    """
+    from googleapiclient.discovery import build
+    creds = _sheets_credentials()
+    bot_email = getattr(creds, "service_account_email", None)
+    blocked = {}
+    try:
+        svc = build("sheets", "v4", credentials=creds)
+        meta = svc.spreadsheets().get(
+            spreadsheetId=SPREADSHEET_ID,
+            fields="sheets(properties(title),protectedRanges(editors,warningOnly))",
+        ).execute()
+    except Exception as e:
+        # Never let the pre-flight itself break the run — worst case we fall
+        # back to the old behaviour and find out at the write.
+        print(f"  WARN protection pre-flight failed, continuing blind: {e}")
+        return {}
+    wanted = set(tab_names)
+    for sheet in meta.get("sheets", []):
+        title = sheet.get("properties", {}).get("title")
+        if title not in wanted:
+            continue
+        for pr in (sheet.get("protectedRanges") or []):
+            if pr.get("warningOnly"):
+                continue  # soft protection — writes still land
+            editors = (pr.get("editors") or {}).get("users") or []
+            if bot_email and bot_email not in editors:
+                blocked[title] = (
+                    f"protected; {bot_email} is not in the editor list"
+                )
+    return blocked
+
+
 # ---------- Leads sheet (separate spreadsheet) ----------
 
 LEADS_STATUS_COL_LETTER = "I"   # column we add to the Leads tab
@@ -3208,27 +3254,47 @@ def main():
         # the bookings system's own Dashboard. The bookings system now owns that
         # sheet's Leads tab + Dashboard. (write_dashboard_lead_conversion() is
         # kept defined for reference but is intentionally not called.)
+        # (label, fn, tab_name) — tab_name is the actual worksheet this writes,
+        # or None when it doesn't write to THIS workbook (Bookings Funnel lives
+        # in the bookings spreadsheet). Used by the protection pre-flight below.
         refreshes = [
-            ("IA Rebook Rate", write_ia_rebook_rate_tab),
-            ("Bookings Funnel", lambda: __import__("funnel").write_funnel_tab()),
-            ("Monthly Summary", write_monthly_summary_tab),
-            ("Weekly Snapshot", lambda: write_weekly_snapshot_tab(weeks_back=4)),
-            ("Weekly Team Stats", lambda: write_weekly_team_stats_tab(weeks_back=4)),
-            ("Performance Dashboard", write_performance_dashboard_tab),
-            ("Weekly Drop-off Analysis", write_weekly_dropoff_analysis_tab),
+            ("IA Rebook Rate", write_ia_rebook_rate_tab, "IA Rebook Rate"),
+            ("Bookings Funnel", lambda: __import__("funnel").write_funnel_tab(), None),
+            ("Monthly Summary", write_monthly_summary_tab, "Monthly Summary"),
+            ("Weekly Snapshot", lambda: write_weekly_snapshot_tab(weeks_back=4), "Weekly Snapshot"),
+            ("Weekly Team Stats", lambda: write_weekly_team_stats_tab(weeks_back=4), "Weekly Team Stats"),
+            ("Performance Dashboard", write_performance_dashboard_tab, "Performance Dashboard"),
+            ("Weekly Drop-off Analysis", write_weekly_dropoff_analysis_tab, "Weekly Drop-off Analysis"),
         ]
         # Physio Trends rebuilds 12 months of stats — heavy (~5–8 min). Only
         # refresh on Mondays + on the 1st of each month so the data stays
         # current without slowing every daily cron.
         now_local = datetime.now(LONDON)
         if now_local.weekday() == 0 or now_local.day == 1:
-            refreshes.append(("Physio Trends (rolling 12 months)", write_physio_trends_tab))
-        for label, fn in refreshes:
+            refreshes.append(("Physio Trends (rolling 12 months)",
+                              write_physio_trends_tab, "Physio Trends"))
+
+        # Pre-flight: find tabs the bot is locked out of BEFORE paying for the
+        # Cliniko passes that feed them. See unwritable_tabs() for the history.
+        failed_tabs = []
+        blocked = unwritable_tabs([t for _, _, t in refreshes if t])
+        if blocked:
+            print("  !! LOCKED OUT of "
+                  f"{len(blocked)} tab(s) — skipping their (expensive) rebuilds:")
+            for tab, reason in blocked.items():
+                print(f"     - {tab}: {reason}")
+
+        for label, fn, tab in refreshes:
+            if tab in blocked:
+                print(f"Skipping {label} tab — {blocked[tab]}")
+                failed_tabs.append((label, blocked[tab]))
+                continue
             print(f"Refreshing {label} tab…")
             try:
                 fn()
             except Exception as e:
                 print(f"  WARN {label} refresh failed: {e}")
+                failed_tabs.append((label, str(e)))
         print("Sending Slack notifications…")
         try:
             import slack_notifier
@@ -3256,6 +3322,27 @@ def main():
         except Exception as e:
             print(f"  WARN Slack notifications failed: {e}")
             # Don't let Slack failure abort the daily run — the sheet is already updated.
+
+        # A tab that didn't refresh is a tab serving stale numbers to the team.
+        # Previously these were WARN-only and the run still exited 0, so Render
+        # reported "finished successfully" while the Dashboard sat four days
+        # out of date. Now: DM Martin, and exit non-zero so the cron shows red.
+        if failed_tabs:
+            lines = "\n".join(f"• *{label}* — {reason}" for label, reason in failed_tabs)
+            msg = (f":rotating_light: *Drop-off daily run: {len(failed_tabs)} tab(s) "
+                   f"did NOT refresh* — they are showing stale numbers.\n\n{lines}\n\n"
+                   "If this says _protected_, add the bot to that tab's protection: "
+                   "right-click the tab → Protect sheet → Set permissions → Custom → "
+                   f"add `{getattr(_sheets_credentials(), 'service_account_email', 'the bot')}`.")
+            try:
+                import slack_notifier
+                slack_notifier._send_dm(config.CEO_SLACK_EMAIL, msg,
+                                        target_label="Ops — stale tab alert")
+            except Exception as e:
+                print(f"  WARN stale-tab Slack alert failed: {e}")
+            print(f"Done, WITH {len(failed_tabs)} FAILED TAB(S): "
+                  f"{', '.join(l for l, _ in failed_tabs)}")
+            sys.exit(1)
         print("Done.")
     else:
         print("(Preview only. Re-run with --write to append to the Sheet.)")
