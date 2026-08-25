@@ -20,18 +20,25 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+
 def _latest(pattern):
-    """Newest matching export — the pull and the workbook build can land on
-    different days, so today's date is not a safe assumption."""
-    hits = sorted(glob.glob(os.path.expanduser(pattern)))
+    """Newest matching export in data/.
+
+    Deliberately NOT ~/Downloads — that folder is TCC-protected on macOS and
+    a launchd agent cannot read it, which silently killed the scheduled
+    wave-2 send. Everything the scheduler needs lives in data/.
+    """
+    hits = sorted(glob.glob(os.path.join(DATA_DIR, pattern)))
     if not hits:
-        raise SystemExit(f"no file matching {pattern} — run omagh_list.py first")
+        raise SystemExit(f"no {pattern} in {DATA_DIR} — run omagh_list.py first")
     return hits[-1]
 
 
-SRC = _latest("~/Downloads/omagh_catchment_*.csv")
+SRC = _latest("omagh_catchment_*.csv")
 STAMP = re.search(r"(\d{4}-\d{2}-\d{2})", SRC).group(1)
-OUT = os.path.expanduser(f"~/Downloads/Omagh_Launch_List_{STAMP}.xlsx")
+OUT = os.path.join(DATA_DIR, f"Omagh_Launch_List_{STAMP}.xlsx")
 
 HEADERS = ["First name", "Name", "Email", "Mobile", "SMS-ready number", "Town", "Postcode",
            "Address", "Matched on", "Email marketing OK", "SMS marketing OK",

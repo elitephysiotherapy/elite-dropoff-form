@@ -43,12 +43,27 @@ PRICE_PER_SEGMENT = 0.042325  # GBP, from Twilio's UK pricing API
 SEGMENTS = 2                  # omagh_launch_v2 runs to 2 segments
 
 
-def latest_workbook():
-    hits = sorted(glob.glob(os.path.expanduser(
-        "~/Downloads/Omagh_Launch_List_*.xlsx")))
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+
+def _find(pattern):
+    """Newest match, looking in data/ first.
+
+    NOT ~/Downloads: that folder is TCC-protected on macOS and a launchd agent
+    is denied access to it, which silently killed the scheduled wave-2 send on
+    25 Aug (glob simply returned nothing). data/ lives beside the code, is
+    gitignored, and any scheduled job can read it.
+    """
+    hits = sorted(glob.glob(os.path.join(DATA_DIR, pattern)))
     if not hits:
-        sys.exit("no Omagh_Launch_List_*.xlsx in ~/Downloads")
+        hits = sorted(glob.glob(os.path.expanduser("~/Downloads/" + pattern)))
+    if not hits:
+        raise SystemExit(f"no {pattern} in {DATA_DIR} (or ~/Downloads)")
     return hits[-1]
+
+
+def latest_workbook():
+    return _find("Omagh_Launch_List_*.xlsx")
 
 
 def valid_uk_mobile(raw):

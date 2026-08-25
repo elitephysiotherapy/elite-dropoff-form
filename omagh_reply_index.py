@@ -20,16 +20,26 @@ from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 
-def _latest(pattern):
-    """Newest matching export. The pull and the send often happen on
-    different days, so never assume today's date is in the filename."""
-    hits = sorted(glob.glob(os.path.expanduser(pattern)))
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+
+def _find(pattern):
+    """Newest match, looking in data/ first.
+
+    NOT ~/Downloads: that folder is TCC-protected on macOS and a launchd agent
+    is denied access to it, which silently killed the scheduled wave-2 send on
+    25 Aug (glob simply returned nothing). data/ lives beside the code, is
+    gitignored, and any scheduled job can read it.
+    """
+    hits = sorted(glob.glob(os.path.join(DATA_DIR, pattern)))
     if not hits:
-        raise SystemExit(f"no file matching {pattern} — run omagh_list.py first")
+        hits = sorted(glob.glob(os.path.expanduser("~/Downloads/" + pattern)))
+    if not hits:
+        raise SystemExit(f"no {pattern} in {DATA_DIR} (or ~/Downloads)")
     return hits[-1]
 
 
-SRC = _latest("~/Downloads/omagh_catchment_*.csv")
+SRC = _find("omagh_catchment_*.csv")
 SPREADSHEET_ID = "1RC7QkHGAa8dH5ShmwbFyswdrmMOo6HTgkcKZEvqoZbI"
 SERVICE_ACCOUNT_FILE = "service_account.json"
 TAB = "Omagh - Reply Index"

@@ -83,7 +83,10 @@ def pc_supports_town(pc, pc_hit):
     return pc.startswith(NEAR_OK) or bool(TYPO_RE.match(pc))
 
 STAMP = f"{datetime.now():%Y-%m-%d}"
-OUT_CSV = os.path.expanduser(f"~/Downloads/omagh_catchment_{STAMP}.csv")
+# data/, not ~/Downloads: Downloads is TCC-protected and unreadable to a
+# launchd agent, which silently killed the first scheduled send.
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+OUT_CSV = os.path.join(DATA_DIR, f"omagh_catchment_{STAMP}.csv")
 
 
 def fetch_all(path, params=None):
@@ -143,6 +146,7 @@ def classify(p):
 
 
 def main():
+    os.makedirs(DATA_DIR, exist_ok=True)
     rows = []
     scanned = 0
     for p in fetch_all("/patients"):
