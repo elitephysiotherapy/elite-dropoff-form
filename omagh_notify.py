@@ -3,8 +3,8 @@
 An unattended send that fails silently is worse than one that never ran, so
 this always posts something — success, failure, or refused-out-of-hours.
 
-  python omagh_notify.py sent <logfile>
-  python omagh_notify.py skipped "<when>"
+  python omagh_notify.py sent <logfile> <wave-name>
+  python omagh_notify.py skipped "<when>" <wave-name>
 """
 
 import os
@@ -27,10 +27,11 @@ def post(text):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "sent"
+    wave = sys.argv[3] if len(sys.argv) > 3 else "wave"
 
     if mode == "skipped":
         when = sys.argv[2] if len(sys.argv) > 2 else "an odd hour"
-        post(f":warning: *Omagh wave 2 did NOT send.* The scheduled run woke "
+        post(f":warning: *Omagh {wave} did NOT send.* The scheduled run woke "
              f"at {when}, outside sending hours (09:00-17:00) - most likely "
              f"the Mac was asleep at 10:00. Nobody was texted. Ask Claude to "
              f"send it when you're ready.")
@@ -42,11 +43,11 @@ def main():
     if m:
         sent, failed = int(m.group(1)), int(m.group(2))
         note = "" if not failed else f" :warning: {failed} failed - see {log}"
-        post(f":outbox_tray: *Omagh wave 2 sent* - {sent} texts just went out "
+        post(f":outbox_tray: *Omagh {wave} sent* - {sent} texts just went out "
              f"to previous patients in the Omagh area. Replies will land in "
              f"this channel over the next few hours.{note}")
     else:
-        post(f":rotating_light: *Omagh wave 2 may have failed.* The run "
+        post(f":rotating_light: *Omagh {wave} may have failed.* The run "
              f"produced no result line. Log: `{log}`. Check before re-running "
              f"- the Sent Log prevents double-texting, so a retry is safe.")
 
