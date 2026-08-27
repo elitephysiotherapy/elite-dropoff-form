@@ -578,6 +578,16 @@ CLINICS = {
         "address": "86 Main Street, Maghera, BT46 5AF",
         "google_review_url": "https://g.page/r/Cccza5z-M6UtEAE/review",
     },
+    # Opened 8 Sept 2026. Address taken from the Cliniko business record.
+    # Phone is the central booking line, shared with Cookstown and Maghera
+    # (confirmed by Martin 2026-08-27) — deliberate, not a placeholder.
+    # Omagh has its OWN Google Business Profile, so promoter reviews land on the
+    # Omagh listing rather than Cookstown's.
+    "Omagh": {
+        "phone": "028 8644 0995",
+        "address": "Blackwater Private Clinic, 43 Dublin Road, Omagh, BT78 1HE",
+        "google_review_url": "https://g.page/r/CX9MX-CfFf3gECE/review",
+    },
 }
 DEFAULT_CLINIC = "Cookstown"
 
@@ -591,6 +601,7 @@ PRE_ASSESSMENT_FORM_LINK = ""   # Not needed — Cliniko auto-attaches the pre-a
 CLINIKO_BUSINESS_TO_CLINIC = {
     "382563815931253999": "Cookstown",
     "1751489684669732550": "Maghera",
+    "2021155774603990189": "Omagh",
 }
 
 # ===========================================================================
@@ -675,10 +686,15 @@ EOD_SLACK_CHANNEL = "#eod-claude"
 
 # Fixed weekly targets — may change in future; edit here.
 EOD_TARGETS = {
-    "total_appts_Cookstown": 225,
-    "total_appts_Maghera": 50,
-    "ias_Cookstown": 40,
-    "ias_Maghera": 10,
+    # Raised 2026-08-27 after Conor and Kelly joined. Maghera's 114 is a PLANNED
+    # CAPACITY INCREASE, not a stretch on the current setup (best week to date
+    # was 62) — expect it to read red until the extra capacity is actually in.
+    "total_appts_Cookstown": 258,
+    "total_appts_Maghera": 114,
+    "total_appts_Omagh": 7,     # opening target, Sept 2026 — low on purpose
+    "ias_Cookstown": 43,
+    "ias_Maghera": 19,
+    "ias_Omagh": 2,             # opening target, Sept 2026 — low on purpose
     "pilates_matwork_cookstown": 31,
     "pilates_matwork_maghera": 44,
     "pilates_reformer_cookstown": 34,

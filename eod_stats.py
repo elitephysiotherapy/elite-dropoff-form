@@ -396,7 +396,10 @@ def leads_not_booked(this_mon, next_mon):
     """Count of Leads-tab rows dated within the current week that have NOT been
     booked. A lead is 'booked' once its Status column is set to "booked";
     everything else (pending / declined / lost / blank) counts as not booked,
-    matching the definition used in the drop-off Ops summary and Dashboard."""
+    matching the definition used in the drop-off Ops summary and Dashboard.
+
+    Deliberately the ONLY leads figure on the report (Martin 2026-08-27): the
+    EOD table tracks the unconverted backlog, not total leads generated."""
     import bookings_fetch
     try:
         ws = bookings_fetch.open_spreadsheet().worksheet(bookings_fetch.LEADS_TAB)
@@ -463,6 +466,10 @@ def build_report(now, this_mon, next_mon, appt, resched, cdnr, react,
          cell(appt["total"], ("Maghera", "this")),
          cell(appt["total"], ("Maghera", "next")),
          _n(config.EOD_TARGETS["total_appts_Maghera"])),
+        ("Total Appts Omagh",
+         cell(appt["total"], ("Omagh", "this")),
+         cell(appt["total"], ("Omagh", "next")),
+         _n(config.EOD_TARGETS["total_appts_Omagh"])),
         ("IAs Cookstown",
          cell(appt["ias"], ("Cookstown", "this")),
          cell(appt["ias"], ("Cookstown", "next")),
@@ -471,6 +478,10 @@ def build_report(now, this_mon, next_mon, appt, resched, cdnr, react,
          cell(appt["ias"], ("Maghera", "this")),
          cell(appt["ias"], ("Maghera", "next")),
          _n(config.EOD_TARGETS["ias_Maghera"])),
+        ("IAs Omagh",
+         cell(appt["ias"], ("Omagh", "this")),
+         cell(appt["ias"], ("Omagh", "next")),
+         _n(config.EOD_TARGETS["ias_Omagh"])),
         ("Reactivations", _n(react), "—", _n(react_target)),
         None,   # blank line
         ("PILATES", "This Wk", pilates_next_hdr, "Target"),
