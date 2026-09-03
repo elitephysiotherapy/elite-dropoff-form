@@ -336,9 +336,42 @@ def responsible_physio_attended(appt, history):
     )
 
 
-def responsible_physio_id(appt, history):
+def _trace_physio(trace, branch, history, appt, ia_start=None, in_episode=None):
+    """Record how responsible_physio_id reached its answer. No-op unless a dict
+    is passed. Diagnostic only — never changes attribution."""
+    if trace is None:
+        return
+    appt_start = appt.get("starts_at") or ""
+    before = [h for h in (history or [])
+              if (h.get("starts_at") or "") < appt_start
+              and not h.get("cancelled_at") and not h.get("did_not_arrive")]
+    before.sort(key=lambda x: x.get("starts_at") or "")
+    trace.update({
+        "branch": branch,
+        "history_n": len(history or []),
+        "attended_before_n": len(before),
+        "ia_start": ia_start,
+        "in_episode_n": len(in_episode or []),
+        # Last few attended appointments the run actually SAW. If the sheet
+        # disagrees with a later replay, this is the evidence: either the
+        # deciding appointment was missing here, or it was present and the
+        # branch is wrong.
+        "tail": [f'{(h.get("starts_at") or "")[:16]}/{id_from_link(h.get("practitioner"))}'
+                 for h in before[-4:]],
+    })
+
+
+def responsible_physio_id(appt, history, trace=None):
     """The physio responsible for a drop-off = physio of the most recent
     ATTENDED appointment in the patient's CURRENT episode of care.
+
+    Pass a dict as `trace` to record WHICH branch decided the answer — purely
+    diagnostic, no effect on the return value. Added 2026-09-03 because the
+    sheet keeps landing on the booked-with physio in cases where a replay of
+    the same day computes the correct responsible physio (Brenda Rushe 4 Aug,
+    Lynda Devlin 8 Aug, Conall Coyle 25 Aug). Every failure looks like a
+    fallback return, so the daily run now logs the branch and the episode
+    inputs it saw at 07:00.
 
     Episode definition (Martin 2026-06-01): begins at the patient's most
     recent attended STRICT 4 IA (Initial Appt, Club Initial Assessment, PHI
@@ -380,6 +413,7 @@ def responsible_physio_id(appt, history):
     # This is what makes "new IA → stays with the IA physio" work for Conan
     # Milne / Shea Quinn / Aidan McNicholl / Cadhan Rocks etc.
     if appt_type in wider8:
+        _trace_physio(trace, "A:ia-type", history, appt)
         return id_from_link(appt.get("practitioner"))
 
     # CASE B — event is a non-IA cancellation/DNA. Use the episode rule below.
@@ -402,6 +436,7 @@ def responsible_physio_id(appt, history):
 
     if ia_start is None:
         # No strict-4 IA in history — pre-IA territory, scheduled physio owns it.
+        _trace_physio(trace, "B:no-ia-anchor", history, appt)
         return id_from_link(appt.get("practitioner"))
 
     # Step 2: of the attended appointments in the current episode (i.e. since
@@ -418,9 +453,13 @@ def responsible_physio_id(appt, history):
         in_episode.sort(key=lambda x: x.get("starts_at") or "")
         prev_prac = id_from_link(in_episode[-1].get("practitioner"))
         if prev_prac:
+            _trace_physio(trace, "B:episode", history, appt,
+                          ia_start=ia_start, in_episode=in_episode)
             return prev_prac
 
     # Edge case (every in-episode appt was excluded somehow) — fall back.
+    _trace_physio(trace, "B:empty-episode", history, appt,
+                  ia_start=ia_start, in_episode=in_episode)
     return id_from_link(appt.get("practitioner"))
 
 
@@ -558,6 +597,43 @@ def dropoff_event_dt(row):
 
 # ---------- Core pipeline ----------
 
+def _print_physio_traces(traces, pracs_by_id):
+    """Print how each row's physio was decided (2026-09-03 diagnostic).
+
+    Read the Render log for the 07:00 dropoff cron. For every row that landed on
+    a FALLBACK branch, `tail` shows the last attended appointments the run saw
+    for that patient. Compare against Cliniko: if the deciding appointment is
+    absent from `tail`, the history fetch came back short; if it is present, the
+    branch logic is at fault. Either way it settles it. Remove once diagnosed."""
+    if not traces:
+        return
+
+    def nm(pid):
+        pr = pracs_by_id.get(pid) or {}
+        return f"{pr.get('first_name', '?')} {pr.get('last_name', '')}".strip() or str(pid)
+
+    by_branch = {}
+    for t in traces:
+        by_branch[t.get("branch")] = by_branch.get(t.get("branch"), 0) + 1
+
+    print()
+    print(f"physio-trace — how {len(traces)} row(s) were attributed: "
+          + ", ".join(f"{k}={v}" for k, v in sorted(by_branch.items())))
+    for t in traces:
+        # Case A (drop-off IS an IA) returning the booked physio is the rule
+        # working as designed. Only the two no-episode returns are misses.
+        fallback = t.get("branch") in ("B:no-ia-anchor", "B:empty-episode")
+        moved = t.get("responsible_id") != t.get("booked_id")
+        flag = "FALLBACK" if fallback else ("moved" if moved else "same")
+        print(f'  [{flag:8}] {t["patient"][:24]:26} appt={t["appointment_id"]} '
+              f'{t.get("kind")} branch={t.get("branch")} hist={t.get("history_n")} '
+              f'attended_before={t.get("attended_before_n")} '
+              f'anchor={t.get("ia_start")} in_episode={t.get("in_episode_n")}')
+        print(f'             booked={nm(t.get("booked_id"))} -> '
+              f'responsible={nm(t.get("responsible_id"))}  tail={t.get("tail")}')
+    print()
+
+
 def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_ids=None):
     """Collect drop-off rows.
 
@@ -610,6 +686,7 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
 
     import phase2 as p2
     history_cache = {}
+    physio_traces = []   # diagnostic — see the physio-trace block in the loop
 
     # Bulk cancellations that ALREADY have a row from an earlier run. Keyed on the
     # Cliniko patient id — never the patient name, because duplicate patient records
@@ -677,15 +754,29 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
         # Responsible physio = most recent attending physio (NOT the scheduled
         # physio of the cancelled appointment). Falls back to scheduled physio
         # if the patient has no prior attended history (IACNA/IADNA case).
-        prac_id = responsible_physio_id(a, history)
+        physio_trace = {}
+        prac_id = responsible_physio_id(a, history, trace=physio_trace)
         prac = pracs_by_id.get(prac_id) or {}
 
+        # Diagnostic log (2026-09-03). The sheet keeps recording the BOOKED-with
+        # physio on rows where replaying the same day computes a different,
+        # correct responsible physio — ~3 rows a week, always landing on a
+        # fallback return. Nothing in the code, the deployed commit, the
+        # appointment records or the history fetch reproduces it off-cron, so
+        # log what the 07:00 run actually saw. Remove once diagnosed.
         kind = classify_dropoff(a, type_id, history)
         if kind is None:
             # Either: reschedule (cancelled + future booking) OR attended IA with future booking
             if is_cancelled:
                 excluded_reschedules.append((patient, appt_date, type_name))
             continue
+
+        physio_traces.append({
+            "patient": patient, "appointment_id": str(a.get("id")),
+            "booked_id": id_from_link(a.get("practitioner")),
+            "responsible_id": prac_id, "kind": kind,
+            **physio_trace,
+        })
 
         rows.append({
             "appointment_date": appt_date,
@@ -715,6 +806,11 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
     # Same-day bulk-cancel dedup — if one patient cancels multiple future appts in a single
     # call, keep only the row for the EARLIEST upcoming appointment. Reception calls them once.
     rows = _dedup_same_day_cancellations(rows, already_logged_keys=already_logged_keys)
+    try:
+        _print_physio_traces(physio_traces, pracs_by_id)
+    except Exception as e:
+        # A diagnostic must never be able to break the daily run.
+        print(f"  WARN physio-trace logging failed: {e}")
     return rows, excluded_reschedules
 
 
