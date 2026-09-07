@@ -213,7 +213,14 @@ def _build_last_week(all_responses: list[dict], now: datetime | None = None) -> 
         [],
         ["Physio", "Responses", "Promoters", "Passives", "Detractors", "NPS"],
     ]
-    for physio in PHYSIOS:
+    # Only the physios on the team that week — a leaver stops appearing as a
+    # row of zeros once they've gone (their history stays on 'NPS - Monthly',
+    # which is a full historical table). Anyone with responses that week is
+    # kept regardless, so a wrong roster date can't hide real feedback.
+    week_physios = config.display_order_for_period(
+        last_mon.date(), last_sun_end.date(),
+        with_data={x["physio"] for x in window})
+    for physio in week_physios:
         physio_rs = [x for x in window if x["physio"] == physio]
         pn, pp, ppa, pd_, p_nps = _nps_block(physio_rs)
         out.append([physio, pn, pp, ppa, pd_, p_nps if pn else "—"])

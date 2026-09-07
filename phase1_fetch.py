@@ -1882,8 +1882,19 @@ def write_performance_dashboard_tab():
             agg["util_pct"] = (used_hrs / agg["available_hours"] * 100) if agg["available_hours"] else None
             return agg
 
-        clinic_avg = aggregate(config.PRACTITIONER_DISPLAY_ORDER)
-        main_team = aggregate([d for d in config.PRACTITIONER_DISPLAY_ORDER
+        # Only the physios who were on the team THIS month get a row. A leaver
+        # keeps every month they worked and disappears from the ones after they
+        # left, instead of trailing a permanent row of "—"/0 that reads like a
+        # physio who saw nobody (Daire left 2 Jul 2026 — Martin 2026-09-07).
+        # Anyone with real numbers is kept regardless, so a wrong roster date
+        # can never quietly delete a month's data.
+        month_order = config.display_order_for_period(
+            start_local, end_local - timedelta(days=1),
+            with_data=[d for d, s in stats_by_display.items()
+                       if (s or {}).get("total_apts")])
+
+        clinic_avg = aggregate(month_order)
+        main_team = aggregate([d for d in month_order
                               if d not in config.EXCLUDE_FROM_MAIN_TEAM])
 
         # Write clinic-wide rows
@@ -1929,8 +1940,8 @@ def write_performance_dashboard_tab():
         stat_row("Clinic Average", clinic_avg)
         stat_row("w/o M&J", main_team)
 
-        # Per-physio rows in configured display order
-        for display_name in config.PRACTITIONER_DISPLAY_ORDER:
+        # Per-physio rows in configured display order (this month's roster)
+        for display_name in month_order:
             s = stats_by_display.get(display_name)
             if not s:
                 # No data this month — still show row with zeros for clarity
@@ -2200,14 +2211,21 @@ def write_weekly_team_stats_tab(weeks_back=4):
                 if rgb is not None:
                     format_cells.append((row_idx, col, rgb))
 
-        clinic_util, clinic_rebook = aggregate(config.PRACTITIONER_DISPLAY_ORDER, stats_by_display)
+        # This week's roster only — see write_performance_dashboard_tab().
+        week_order = config.display_order_for_period(
+            week_start_local, week_end_local - timedelta(days=1),
+            with_data=[d for d, s in stats_by_display.items()
+                       if (s or {}).get("used_hours")
+                       or (s or {}).get("unique_patients_seen")])
+
+        clinic_util, clinic_rebook = aggregate(week_order, stats_by_display)
         main_util, main_rebook = aggregate(
-            [d for d in config.PRACTITIONER_DISPLAY_ORDER
+            [d for d in week_order
              if d not in config.EXCLUDE_FROM_MAIN_TEAM], stats_by_display)
         stat_row("Clinic Average", clinic_util, clinic_rebook)
         stat_row("w/o M&J", main_util, main_rebook)
 
-        for display_name in config.PRACTITIONER_DISPLAY_ORDER:
+        for display_name in week_order:
             s = stats_by_display.get(display_name) or {}
             stat_row(display_name, s.get("util_pct"), s.get("clinic_rebook_pct"))
 
@@ -2608,7 +2626,6 @@ def write_physio_trends_tab(months_back=12):
     import phase2 as p2
 
     now = datetime.now(LONDON)
-    physios = list(config.PRACTITIONER_DISPLAY_ORDER)
 
     # Build 12 COMPLETED months ending with last month, oldest first. The
     # current (in-progress) month is excluded — drop-off rates look
@@ -2631,6 +2648,14 @@ def write_physio_trends_tab(months_back=12):
     # date values get plotted as a second series (the spurious diagonal
     # line we hit on first build).
     month_labels = ["'" + datetime(y, m, 1).strftime("%b-%y") for y, m in months]
+
+    # Anyone who was on the team at any point in the 12-month window. A leaver
+    # keeps their trend line while those months are still on the chart and then
+    # ages out of the drop-down on their own, rather than sitting there forever
+    # as a flat empty series (Daire left 2 Jul 2026 — Martin 2026-09-07).
+    _win_start = datetime(months[0][0], months[0][1], 1)
+    _win_end = datetime(months[-1][0], months[-1][1], 1) + timedelta(days=31)
+    physios = config.display_order_for_period(_win_start, _win_end)
 
     print(f"  Pulling {months_back} months of stats for Physio Trends tab…", flush=True)
     data = {p: {"util": [None] * months_back, "dropoff": [None] * months_back,
@@ -3087,7 +3112,16 @@ def write_weekly_dropoff_analysis_tab():
                     "Clinical Split", "Count"])
 
         prac_rows, tot = [], {"iadnr": 0, "cancelled": 0, "did_not_attend": 0}
-        for d in config.PRACTITIONER_DISPLAY_ORDER:
+        # Only the physios on the team that week — a leaver keeps every week they
+        # worked and drops off the ones after (Daire left 2 Jul 2026). Anyone
+        # with drop-offs recorded that week is kept regardless of roster dates.
+        if wd != datetime.min:
+            week_order = config.display_order_for_period(
+                wd.date(), (wd + timedelta(days=6)).date(),
+                with_data=[d for d, c in per.items() if any(c.values())])
+        else:
+            week_order = config.PRACTITIONER_DISPLAY_ORDER
+        for d in week_order:
             c = per.get(d, {"iadnr": 0, "cancelled": 0, "did_not_attend": 0})
             for k in tot:
                 tot[k] += c[k]

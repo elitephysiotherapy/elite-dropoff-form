@@ -7,7 +7,7 @@ the next run.
 """
 
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 # ===========================================================================
 # IA APPOINTMENT TYPE IDS
@@ -263,6 +263,43 @@ def is_active_in_period(member, period_start, period_end):
     if end and end < period_start:
         return False
     return True
+
+
+def _norm_date(v):
+    """Accept a date, datetime or ISO string and return a plain date."""
+    if isinstance(v, str):
+        return date.fromisoformat(v)
+    if isinstance(v, datetime):
+        return v.date()
+    return v
+
+
+def display_order_for_period(period_start, period_end, with_data=()):
+    """PRACTITIONER_DISPLAY_ORDER, trimmed to the people who were actually on
+    the team during [period_start, period_end].
+
+    This is what stops a leaver haunting a dashboard: Daire left 2 Jul 2026, so
+    she still has a row for June and July (she worked them) but none for August
+    onward, instead of a permanent row of "—"/0 that reads like a physio who
+    saw nobody. Anyone who hasn't started yet is excluded the same way.
+
+    `with_data` is a safety net: any display name in it is kept even if the
+    roster says they'd gone. Callers pass the physios who have real numbers for
+    the period, so a wrong `end` date in TEAM can never silently delete data
+    from a tab — the row comes back and the date is obviously wrong.
+
+    Accepts dates or datetimes; `period_end` may be inclusive or exclusive
+    (a one-day difference never changes who was on the team).
+    """
+    ps, pe = _norm_date(period_start), _norm_date(period_end)
+    keep = set(with_data)
+    out = []
+    for m in TEAM:
+        if m["display"] not in PRACTITIONER_DISPLAY_ORDER:
+            continue
+        if is_active_in_period(m, ps, pe) or m["display"] in keep:
+            out.append(m["display"])
+    return out
 
 
 def _member(display):
