@@ -204,5 +204,58 @@ results.append(check("Sports Massage DNA after 6-year gap -> iadna (on the sheet
                      "iadna"))
 
 
+# ---- 10. Bulk-cancel keys seeded from the SHEET, not the fetch window ----
+# Dara McKenna cancelled three pre-booked Club Follow Ups in one action on 27 Jul.
+# The window-derived key set only suppressed siblings while the cancellation was
+# still inside DAILY_LOOKBACK_DAYS, so the 11 Aug and 18 Aug appointments were
+# written as fresh IADNRs on 30 Jul and 4 Aug — one lost patient tripled.
+print("\n10. Bulk-cancel suppression is seeded from the sheet (window-independent):")
+dara = [
+    {"patient": "Dara McKenna", "cancellation_date": "2026-07-27 21:46",
+     "appointment_date": "2026-08-11 18:00", "_patient_id": "1904"},
+    {"patient": "Dara McKenna", "cancellation_date": "2026-07-27 21:46",
+     "appointment_date": "2026-08-18 18:00", "_patient_id": "1904"},
+]
+# The 4 Aug sibling has long since aged out of the window, so the run's own scan
+# contributes nothing — only the sheet-derived seed can suppress these.
+results.append(check("sibling outside the lookback window is still suppressed",
+                     len(p1._dedup_same_day_cancellations(
+                         dara, already_logged_keys={("1904", "2026-07-27")})), 0))
+results.append(check("without the seed the leak reappears",
+                     len(p1._dedup_same_day_cancellations(dara)), 1))
+
+
+# ---- 11. Fallback physio on a session>1 row is re-checked, not trusted ----
+# A row cannot be both "session 7" and "no IA anchor": the session number is
+# derived from the episode, so its existence contradicts the fallback. Connor
+# Monaghan (s7) was filed against Shannagh, who had never attended him — Daire
+# did the IA and every visit after.
+print("\n11. No-episode physio fallback is re-checked when the session number denies it:")
+DAIRE, SHANNAGH = "1501275397424158535", "1818200739135100480"
+cm_ia = appt("CM1", "2026-03-23T11:00:00Z", type_id=REAL_IA)
+cm_ia["practitioner"] = {"links": {"self": f"/practitioners/{DAIRE}"}}
+cm_last = appt("CM2", "2026-06-29T08:10:00Z", type_id=REVIEW)
+cm_last["practitioner"] = {"links": {"self": f"/practitioners/{DAIRE}"}}
+cm_drop = appt("CM3", "2026-08-20T12:00:00Z", cancelled="2026-08-18T07:53:00Z",
+               type_id=REVIEW)
+cm_drop["practitioner"] = {"links": {"self": f"/practitioners/{SHANNAGH}"}}
+cm_hist = [cm_ia, cm_last, cm_drop]
+# The rule itself, given a COMPLETE history, already lands on Daire.
+results.append(check("complete history attributes to the treating physio",
+                     str(p1.responsible_physio_id(cm_drop, cm_hist)), DAIRE))
+# Truncated history (the 06:00 failure mode) loses the anchor and falls back.
+trunc = {}
+results.append(check("truncated history falls back to booked-with",
+                     str(p1.responsible_physio_id(cm_drop, [cm_drop], trunc)), SHANNAGH))
+results.append(check("...and the fallback branch is recorded for the tripwire",
+                     trunc.get("branch"), "B:no-ia-anchor"))
+# A genuine pre-IA patient is session 1, so the guard must leave it alone.
+results.append(check("session 1 fallback is legitimate, not a contradiction",
+                     p1.verify_fallback_physios(
+                         [{"patient": "Pre-IA", "physio": "Booked Physio",
+                           "session_number": "1", "_physio_branch": "B:no-ia-anchor",
+                           "_patient_id": "1", "appointment_id": "CM3"}]), []))
+
+
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

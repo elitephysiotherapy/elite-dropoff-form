@@ -634,7 +634,8 @@ def _print_physio_traces(traces, pracs_by_id):
     print()
 
 
-def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_ids=None):
+def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_ids=None,
+                     seed_bulk_cancel_keys=None):
     """Collect drop-off rows.
 
     - date_override="YYYY-MM-DD": just that calendar day (manual runs / backfill)
@@ -644,6 +645,7 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
       history fetch / AI call, so re-scanning is cheap.
     """
     skip_appointment_ids = skip_appointment_ids or set()
+    seed_bulk_cancel_keys = seed_bulk_cancel_keys or set()
     if date_override:
         start_utc, end_utc = day_london_window_utc(date_override)
     elif lookback_days:
@@ -695,7 +697,12 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
     # Without this, the rolling re-scan skips the one appointment already in the sheet
     # and lets the NEXT appointment of the same bulk cancel through the dedup below —
     # leaking one more row, and one more Slack DM, every single morning.
-    already_logged_keys = set()
+    #
+    # Seeded from the SHEET (seed_bulk_cancel_keys) so suppression survives the
+    # cancellation ageing out of DAILY_LOOKBACK_DAYS — see existing_bulk_cancel_keys.
+    # The window-derived pass below still runs, to cover rows written earlier in
+    # this same run and any sheet read that failed.
+    already_logged_keys = set(seed_bulk_cancel_keys)
     for a in appts:
         if str(a.get("id")) not in skip_appointment_ids or not a.get("cancelled_at"):
             continue
@@ -771,6 +778,7 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
                 excluded_reschedules.append((patient, appt_date, type_name))
             continue
 
+        row_physio_branch = physio_trace.get("branch")
         physio_traces.append({
             "patient": patient, "appointment_id": str(a.get("id")),
             "booked_id": id_from_link(a.get("practitioner")),
@@ -801,6 +809,7 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
             # internal-only (not written to sheet):
             "_patient_id": patient_id,
             "_appointment_type_id": type_id,
+            "_physio_branch": row_physio_branch,
         })
 
     # Same-day bulk-cancel dedup — if one patient cancels multiple future appts in a single
@@ -812,6 +821,72 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
         # A diagnostic must never be able to break the daily run.
         print(f"  WARN physio-trace logging failed: {e}")
     return rows, excluded_reschedules
+
+
+def verify_fallback_physios(rows):
+    """Re-check any row whose physio came from a no-episode FALLBACK branch.
+
+    responsible_physio_id falls back to the BOOKED-with physio when it can find no
+    attended strict-4 IA before the drop-off (`B:no-ia-anchor`) or an empty episode
+    (`B:empty-episode`). That is correct for a genuine pre-IA patient — but it is
+    also exactly what a short history fetch looks like, and the two are
+    indistinguishable at the point of decision.
+
+    The session number settles it. enrich_phase2 derives it from the patient's
+    episode, so session_number > 1 means an episode demonstrably exists: a row that
+    is simultaneously "session 7" and "no IA anchor" contradicts itself, and its
+    physio cannot be trusted. Those rows get one fresh history fetch and a recompute.
+
+    This is the guard for the misattribution that put three of Ciara's and Daire's
+    August patients into Shannagh's drop-offs (Brenda Rushe s3, Lynda Devlin s10,
+    Connor Monaghan s7 — each replayed to the correct physio afterwards, none
+    reproducible off-cron). Whatever truncated the history at 06:00 UTC, a row can
+    no longer be filed against a physio the patient never saw without this catching
+    it. (Martin 2026-09-09.)
+
+    Mutates rows in place; returns the list of corrections made."""
+    import phase2 as p2
+    FALLBACK_BRANCHES = ("B:no-ia-anchor", "B:empty-episode")
+    pracs = all_practitioners()
+    corrections = []
+    for r in rows:
+        if r.get("_physio_branch") not in FALLBACK_BRANCHES:
+            continue
+        try:
+            session_n = int(str(r.get("session_number") or "0").strip() or 0)
+        except ValueError:
+            continue
+        if session_n <= 1:
+            continue          # genuinely pre-IA — the fallback is the right answer
+        pid = r.get("_patient_id")
+        appt_id = str(r.get("appointment_id") or "")
+        if not pid or not appt_id:
+            continue
+        try:
+            history = p2.fetch_patient_full_history(pid)
+        except Exception as e:
+            print(f"  WARN fallback re-check failed for {r['patient']}: {e}")
+            continue
+        appt = next((a for a in history if str(a.get("id")) == appt_id), None)
+        if appt is None:
+            print(f"  WARN fallback re-check: appt {appt_id} absent from "
+                  f"{r['patient']}'s history — leaving row as booked-with")
+            continue
+        trace = {}
+        new_id = responsible_physio_id(appt, history, trace=trace)
+        prac = pracs.get(new_id) or {}
+        new_name = f"{prac.get('first_name','?')} {prac.get('last_name','')}".strip()
+        if new_name and new_name != r.get("physio"):
+            print(f"  FALLBACK CORRECTED  {r['patient']} (session {session_n}): "
+                  f"{r['physio']} -> {new_name}  [{r['_physio_branch']} -> "
+                  f"{trace.get('branch')}]")
+            corrections.append((r["patient"], r["physio"], new_name, session_n))
+            r["physio"] = new_name
+            r["_physio_branch"] = trace.get("branch")
+        else:
+            print(f"  fallback re-check OK  {r['patient']} (session {session_n}) "
+                  f"stays {r['physio']}")
+    return corrections
 
 
 def _dedup_same_day_cancellations(rows, already_logged_keys=None):
@@ -3220,20 +3295,75 @@ def write_to_sheet(rows):
               + (f" ({skipped} skipped as duplicates)" if skipped else ""))
 
 
-def existing_appointment_ids():
-    """Set of all appointment_ids already written to any W/C tab.
-    Lets the daily re-scan skip already-captured drop-offs cheaply."""
+def existing_sheet_state():
+    """One pass over the W/C tabs -> (appointment_ids, bulk_cancel_keys).
+
+    Both sets are derived from a SINGLE read per tab. They used to be two separate
+    column reads, which tripled the daily run's Sheets reads and tripped the shared
+    read-per-minute quota that the weekly crons already crowd (see sheets_retry).
+
+    Read with value_render_option="FORMULA" so the Patient Name cell arrives as its
+    HYPERLINK formula and the Cliniko patient id can be recovered from it. Dates come
+    back as serial numbers in that mode, which is all the cancellation key needs —
+    only the calendar day is used.
+
+    bulk_cancel_keys is (patient_id, "YYYY-MM-DD") for every row that records a
+    cancellation. Seeding the dedup from the sheet rather than from the run's own
+    Cliniko window is what stops a bulk cancellation leaking a fresh row every
+    morning once it ages past DAILY_LOOKBACK_DAYS — Dara McKenna's single 27 Jul
+    cancellation of three pre-booked Club Follow Ups became three separate IADNRs
+    (29 Jul, 30 Jul, 4 Aug), tripling one lost patient in Shannagh's stats.
+    Keyed on patient id, never name — duplicate patient records share names.
+    (Martin 2026-09-09.)"""
+    from bookings_fetch import _gs_retry
     sh = open_spreadsheet()
-    appt_id_col = SHEET_COLUMNS.index("appointment_id") + 1
-    ids = set()
+    i_appt_id = SHEET_COLUMNS.index("appointment_id")
+    i_patient = SHEET_COLUMNS.index("patient")
+    i_canc = SHEET_COLUMNS.index("cancellation_date")
+    ids, keys = set(), set()
     for ws in sh.worksheets():
         if not ws.title.startswith("W/C "):
             continue
         try:
-            ids.update(v for v in ws.col_values(appt_id_col) if v and v != "appointment_id")
+            vals = _gs_retry(
+                lambda w=ws: w.get_all_values(value_render_option="FORMULA"),
+                f"{ws.title} read")
         except Exception as e:
-            print(f"  WARN couldn't read appointment_ids from {ws.title}: {e}")
-    return ids
+            print(f"  WARN couldn't read {ws.title}: {e}")
+            continue
+        for row in vals[1:]:
+            if len(row) > i_appt_id and row[i_appt_id]:
+                ids.add(str(row[i_appt_id]))
+            canc = row[i_canc] if len(row) > i_canc else ""
+            pat = str(row[i_patient]) if len(row) > i_patient else ""
+            day = _sheet_serial_to_day(canc)
+            if not day:
+                continue
+            m = re.search(r"/patients/(\d+)", pat)
+            if m:
+                keys.add((m.group(1), day))
+    return ids, keys
+
+
+def _sheet_serial_to_day(value):
+    """Sheets date cell -> 'YYYY-MM-DD', or "" if the cell holds no date.
+
+    FORMULA render returns dates as serial days from the 1899-12-30 epoch; a
+    manually typed cell can still arrive as text, so both shapes are accepted."""
+    if value in (None, ""):
+        return ""
+    try:
+        serial = float(value)
+    except (TypeError, ValueError):
+        text = str(value).strip()
+        return text[:10] if re.match(r"\d{4}-\d{2}-\d{2}", text) else ""
+    return (datetime(1899, 12, 30) + timedelta(days=int(serial))).strftime("%Y-%m-%d")
+
+
+def existing_appointment_ids():
+    """Set of all appointment_ids already written to any W/C tab.
+    Lets the daily re-scan skip already-captured drop-offs cheaply."""
+    return existing_sheet_state()[0]
 
 
 # How many days back the daily cron re-scans, to catch late-marked DNAs and
@@ -3346,19 +3476,28 @@ def main():
     # appointment was logged once as a DNA and again as a cancellation after
     # its status changed in Cliniko. Both were counted twice in clinic and
     # physio stats. (Martin 2026-07-20.)
-    already = existing_appointment_ids()
+    # One read per tab yields both: the appointment ids to skip, and the bulk
+    # cancellations already logged. The latter is seeded from the SHEET so the
+    # suppression is independent of the lookback window (Dara McKenna tripling).
+    already, bulk_keys = existing_sheet_state()
+    print(f"Bulk-cancel keys already in sheet: {len(bulk_keys)}")
     if date_override:
         rows, excluded = collect_dropoffs(date_override=date_override,
-                                          skip_appointment_ids=already)
+                                          skip_appointment_ids=already,
+                                          seed_bulk_cancel_keys=bulk_keys)
     else:
         # Daily cron: rolling re-scan, skipping anything already in the sheet
         rows, excluded = collect_dropoffs(lookback_days=DAILY_LOOKBACK_DAYS,
-                                          skip_appointment_ids=already)
+                                          skip_appointment_ids=already,
+                                          seed_bulk_cancel_keys=bulk_keys)
 
     if rows and not skip_phase2:
         print()
         print(f"Enriching {len(rows)} NEW row(s) with Phase 2 (session # + body area)…")
         enrich_phase2(rows)
+        # Session numbers are now known, so a "no episode" physio fallback on a
+        # session>1 row can be spotted and recomputed before anything is written.
+        verify_fallback_physios(rows)
     print()
     print_preview(rows, excluded)
     print()
