@@ -257,5 +257,65 @@ results.append(check("session 1 fallback is legitimate, not a contradiction",
                            "_patient_id": "1", "appointment_id": "CM3"}]), []))
 
 
+# ---- 12. One row per patient per lapse (Martin 2026-09-13) ----
+# A patient appears twice only if they were reactivated in between (rebooked on a
+# later day, then dropped that slot) or came back and attended in between.
+print("\n12. One row per lapse — a second row needs a reactivation in between:")
+# Martin Fasko: IA attended 7 Sep, Review booked at the IA, cancelled 10 Sep.
+mf_ia = appt("MF1", "2026-09-07T15:00:00Z", created="2026-09-03T16:30:00Z", type_id=REAL_IA)
+mf_rv = appt("MF2", "2026-09-14T15:40:00Z", created="2026-09-07T15:36:00Z",
+             cancelled="2026-09-10T09:55:00Z", type_id=REVIEW)
+mf = [mf_ia, mf_rv]
+results.append(check("IA no-rebook + follow-up booked at the IA, cancelled -> same lapse",
+                     p1.is_same_lapse(mf_ia, mf_rv, mf), True))
+# Peter Kennedy: two Reviews booked on 21 May, cancelled 13:45 and 18:15 on 26 May.
+pk_ia = appt("PK0", "2026-05-21T14:10:00Z", type_id=REAL_IA)
+pk1 = appt("PK1", "2026-05-28T13:00:00Z", created="2026-05-21T15:09:00Z",
+           cancelled="2026-05-26T12:45:00Z", type_id=REVIEW)
+pk2 = appt("PK2", "2026-06-02T10:10:00Z", created="2026-05-21T15:11:00Z",
+           cancelled="2026-05-26T17:15:00Z", type_id=REVIEW)
+results.append(check("two pre-booked slots cancelled hours apart -> same lapse",
+                     p1.is_same_lapse(pk1, pk2, [pk_ia, pk1, pk2]), True))
+# Graham McCabe: Review cancelled 9 Jun, NEW Review booked 10 Jun, cancelled 12 Jun.
+gm_ia = appt("GM0", "2026-06-02T14:20:00Z", type_id=REAL_IA)
+gm1 = appt("GM1", "2026-06-11T14:00:00Z", created="2026-06-02T15:00:00Z",
+           cancelled="2026-06-09T16:26:00Z", type_id=REVIEW)
+gm2 = appt("GM2", "2026-06-15T07:00:00Z", created="2026-06-10T09:25:00Z",
+           cancelled="2026-06-12T07:30:00Z", type_id=REVIEW)
+results.append(check("reactivated (rebooked next day) then cancelled again -> two rows",
+                     p1.is_same_lapse(gm1, gm2, [gm_ia, gm1, gm2]), False))
+# Martin Mallon: Review cancelled 17 Aug; rebooked + attended 18 Aug; next cancelled 19 Aug.
+mm1 = appt("MM1", "2026-08-25T15:00:00Z", created="2026-08-12T07:37:00Z",
+           cancelled="2026-08-17T16:26:00Z", type_id=REVIEW)
+mm_att = appt("MM2", "2026-08-18T18:20:00Z", created="2026-08-18T16:33:00Z", type_id=REVIEW)
+mm3 = appt("MM3", "2026-08-26T07:00:00Z", created="2026-08-18T18:55:00Z",
+           cancelled="2026-08-19T18:05:00Z", type_id=REVIEW)
+results.append(check("came back and attended between two drops -> two rows",
+                     p1.is_same_lapse(mm1, mm3, [mm1, mm_att, mm3]), False))
+# Same-day rebook is a reschedule, not a reactivation.
+sd1 = appt("SD1", "2026-06-22T13:10:00Z", created="2026-06-15T13:48:00Z",
+           cancelled="2026-06-22T10:59:00Z", type_id=REVIEW)
+sd2 = appt("SD2", "2026-06-25T14:20:00Z", created="2026-06-22T15:00:00Z",
+           cancelled="2026-06-24T10:25:00Z", type_id=REVIEW)
+results.append(check("rebooked the SAME day as the cancellation -> same lapse",
+                     p1.is_same_lapse(sd1, sd2, [sd1, sd2]), True))
+
+
+def lapse_row(a, pid="MF"):
+    return {"patient": "P", "appointment_type": "t", "appointment_date": a["starts_at"],
+            "_patient_id": pid, "_appt": a,
+            "_appointment_type_id": p1.id_from_link(a["appointment_type"])}
+
+got = p1._dedup_same_lapse([lapse_row(mf_ia), lapse_row(mf_rv)], {"MF": mf})
+results.append(check("same run keeps ONE row — the cancelled follow-up",
+                     [r["_appt"]["id"] for r in got], ["MF2"]))
+got = p1._dedup_same_lapse([lapse_row(mf_ia)], {"MF": mf}, {"MF": {"MF2"}})
+results.append(check("IA row is not re-added when the follow-up row is already in the sheet",
+                     got, []))
+got = p1._dedup_same_lapse([lapse_row(gm2, "GM")], {"GM": [gm_ia, gm1, gm2]}, {"GM": {"GM1"}})
+results.append(check("a genuine second drop after a reactivation is still written",
+                     len(got), 1))
+
+
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

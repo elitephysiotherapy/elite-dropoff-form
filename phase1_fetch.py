@@ -635,7 +635,7 @@ def _print_physio_traces(traces, pracs_by_id):
 
 
 def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_ids=None,
-                     seed_bulk_cancel_keys=None):
+                     seed_bulk_cancel_keys=None, sheet_ids_by_patient=None):
     """Collect drop-off rows.
 
     - date_override="YYYY-MM-DD": just that calendar day (manual runs / backfill)
@@ -643,6 +643,8 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
       so late-marked DNAs / late-logged cancellations get picked up on a later run)
     - skip_appointment_ids: appointment IDs already in the sheet — skipped before any
       history fetch / AI call, so re-scanning is cheap.
+    - sheet_ids_by_patient: {patient_id: {appointment_id}} already in the sheet, so a
+      new row that is the same lapse as an existing one is not written again.
     """
     skip_appointment_ids = skip_appointment_ids or set()
     seed_bulk_cancel_keys = seed_bulk_cancel_keys or set()
@@ -810,11 +812,15 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
             "_patient_id": patient_id,
             "_appointment_type_id": type_id,
             "_physio_branch": row_physio_branch,
+            "_appt": a,
         })
 
     # Same-day bulk-cancel dedup — if one patient cancels multiple future appts in a single
     # call, keep only the row for the EARLIEST upcoming appointment. Reception calls them once.
     rows = _dedup_same_day_cancellations(rows, already_logged_keys=already_logged_keys)
+    # Then one row per lapse: an attended-IA-no-rebook plus the cancelled follow-up
+    # booked at that IA is one lost patient, not two calls for reception.
+    rows = _dedup_same_lapse(rows, history_cache, sheet_ids_by_patient)
     try:
         _print_physio_traces(physio_traces, pracs_by_id)
     except Exception as e:
@@ -915,6 +921,74 @@ def _dedup_same_day_cancellations(rows, already_logged_keys=None):
         if existing is None or r["appointment_date"] < existing["appointment_date"]:
             by_key[key] = r
     return list(by_key.values()) + others
+
+
+def _event_utc(a):
+    """When a drop-off appointment became a drop-off: the cancellation, else its start."""
+    return parse_iso(a.get("cancelled_at") or a.get("starts_at"))
+
+
+def is_same_lapse(a, b, history):
+    """Are two drop-off appointments for one patient the SAME loss?
+
+    Martin's rule (2026-09-13): a patient appears once per lapse. The only way to
+    earn a second row is to be REACTIVATED in between — rebook after dropping off,
+    then cancel/DNA that new slot — or to come back and attend in between.
+
+    So the later drop is a separate loss only if its appointment was created on a
+    LATER calendar day than the earlier drop, or the patient attended something
+    between the two. Otherwise it is the same loss surfacing twice:
+      - attended IA, then cancels the follow-up booked at that IA
+        (Martin Fasko: IA 7 Sep, Review booked 7 Sep, cancelled 10 Sep)
+      - cancels several pre-booked slots, minutes or days apart
+        (Peter Kennedy, Jack Convery, Dara McKenna)
+    A same-day rebook doesn't count as a reactivation — reactivations.py treats it
+    as a reschedule too (Daniel McCrory's 23 Jun rebook after a 22 Jun cancel does)."""
+    ea, eb = _event_utc(a), _event_utc(b)
+    if ea is None or eb is None:
+        return False
+    first, second = (a, b) if ea <= eb else (b, a)
+    e1, e2 = min(ea, eb), max(ea, eb)
+    created = parse_iso(second.get("created_at"))
+    if created and created.astimezone(LONDON).date() > e1.astimezone(LONDON).date():
+        return False          # rebooked after dropping off = reactivation
+    for h in history or []:
+        s = parse_iso(h.get("starts_at"))
+        if (s and e1 < s < e2 and not h.get("cancelled_at")
+                and not h.get("did_not_arrive")):
+            return False      # came back and attended in between
+    return True
+
+
+def _dedup_same_lapse(rows, history_cache, sheet_ids_by_patient=None):
+    """One row per patient per lapse — see is_same_lapse.
+
+    A candidate row is dropped when it is the same loss as a row ALREADY in the
+    sheet (any tab) or one kept earlier in this run. Within a run the row kept is
+    the LATEST appointment (the one phase2.episode_dropoff counts), preferring
+    anything over Sports Massage, which never reaches clinical stats."""
+    sheet_ids_by_patient = sheet_ids_by_patient or {}
+    excluded = {str(x) for x in config.EXCLUDED_FROM_DROPOFF_STATS}
+    by_patient, out = {}, []
+    for r in rows:
+        if r.get("_patient_id") and r.get("_appt"):
+            by_patient.setdefault(r["_patient_id"], []).append(r)
+        else:
+            out.append(r)
+    for pid, cands in by_patient.items():
+        history = history_cache.get(pid) or []
+        by_id = {str(h.get("id")): h for h in history}
+        kept = [by_id[i] for i in sheet_ids_by_patient.get(pid, ()) if i in by_id]
+        cands.sort(key=lambda r: r["_appt"].get("starts_at") or "", reverse=True)
+        cands.sort(key=lambda r: str(r.get("_appointment_type_id")) in excluded)
+        for r in cands:
+            if any(is_same_lapse(r["_appt"], k, history) for k in kept):
+                print(f"  same-lapse duplicate suppressed: {r['patient']} "
+                      f"{r['appointment_type']} {r['appointment_date']}")
+                continue
+            kept.append(r["_appt"])
+            out.append(r)
+    return out
 
 
 def enrich_phase2(rows):
@@ -3296,7 +3370,7 @@ def write_to_sheet(rows):
 
 
 def existing_sheet_state():
-    """One pass over the W/C tabs -> (appointment_ids, bulk_cancel_keys).
+    """One pass over the W/C tabs -> (appointment_ids, bulk_cancel_keys, ids_by_patient).
 
     Both sets are derived from a SINGLE read per tab. They used to be two separate
     column reads, which tripled the daily run's Sheets reads and tripped the shared
@@ -3320,7 +3394,7 @@ def existing_sheet_state():
     i_appt_id = SHEET_COLUMNS.index("appointment_id")
     i_patient = SHEET_COLUMNS.index("patient")
     i_canc = SHEET_COLUMNS.index("cancellation_date")
-    ids, keys = set(), set()
+    ids, keys, by_patient = set(), set(), {}
     for ws in sh.worksheets():
         if not ws.title.startswith("W/C "):
             continue
@@ -3332,17 +3406,18 @@ def existing_sheet_state():
             print(f"  WARN couldn't read {ws.title}: {e}")
             continue
         for row in vals[1:]:
-            if len(row) > i_appt_id and row[i_appt_id]:
-                ids.add(str(row[i_appt_id]))
-            canc = row[i_canc] if len(row) > i_canc else ""
+            aid = str(row[i_appt_id]) if len(row) > i_appt_id and row[i_appt_id] else ""
+            if aid:
+                ids.add(aid)
             pat = str(row[i_patient]) if len(row) > i_patient else ""
-            day = _sheet_serial_to_day(canc)
-            if not day:
-                continue
             m = re.search(r"/patients/(\d+)", pat)
-            if m:
+            if m and aid:
+                by_patient.setdefault(m.group(1), set()).add(aid)
+            canc = row[i_canc] if len(row) > i_canc else ""
+            day = _sheet_serial_to_day(canc)
+            if day and m:
                 keys.add((m.group(1), day))
-    return ids, keys
+    return ids, keys, by_patient
 
 
 def _sheet_serial_to_day(value):
@@ -3479,17 +3554,19 @@ def main():
     # One read per tab yields both: the appointment ids to skip, and the bulk
     # cancellations already logged. The latter is seeded from the SHEET so the
     # suppression is independent of the lookback window (Dara McKenna tripling).
-    already, bulk_keys = existing_sheet_state()
+    already, bulk_keys, ids_by_patient = existing_sheet_state()
     print(f"Bulk-cancel keys already in sheet: {len(bulk_keys)}")
     if date_override:
         rows, excluded = collect_dropoffs(date_override=date_override,
                                           skip_appointment_ids=already,
-                                          seed_bulk_cancel_keys=bulk_keys)
+                                          seed_bulk_cancel_keys=bulk_keys,
+                                          sheet_ids_by_patient=ids_by_patient)
     else:
         # Daily cron: rolling re-scan, skipping anything already in the sheet
         rows, excluded = collect_dropoffs(lookback_days=DAILY_LOOKBACK_DAYS,
                                           skip_appointment_ids=already,
-                                          seed_bulk_cancel_keys=bulk_keys)
+                                          seed_bulk_cancel_keys=bulk_keys,
+                                          sheet_ids_by_patient=ids_by_patient)
 
     if rows and not skip_phase2:
         print()
