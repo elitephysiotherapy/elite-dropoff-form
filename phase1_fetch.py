@@ -1029,19 +1029,21 @@ def _merge_human_cols(keep, others):
 
 
 def sweep_same_lapse_duplicates(tab_names, dry_run=False):
-    """Remove duplicate rows (same patient, same lapse) from the given W/C tabs.
+    """Remove duplicate rows (same patient, same lapse) across the given W/C tabs.
 
-    Belt-and-braces for rows this run did not write. Something outside this
-    service appends drop-off rows shortly before the 07:00 run reads the sheet —
-    running pre-July code without the lapse dedup — so a duplicate can already be
-    in the sheet before _dedup_same_lapse ever sees it (Martin Fasko and Colm
-    McKenna were re-added on 14 Sep after being cleaned on 13 Sep).
+    One lapse can surface as rows on DIFFERENT weeks: an attended IA with no rebook
+    lands on the IA's week, and the cancelled follow-up booked at that IA lands on
+    the cancellation's week (Mary McNamee: IA Mon 1 Sep on W/C 31 Aug, Review
+    cancelled 7 Sep on W/C 07 Sep). Reception then chases the patient from both
+    tabs. Rows also keep appearing between the daily run's sheet read and write,
+    so a duplicate can reach the sheet without passing _dedup_same_lapse.
 
-    For each patient with 2+ rows on a tab, rows that is_same_lapse links are
-    collapsed to one. The row kept is the one the team has worked on most, then
-    the latest appointment, never a Sports Massage row when there's an alternative;
-    notes from the removed rows are merged into it. Rows separated by a
-    reactivation or an attended visit are left alone. Returns rows removed."""
+    Rows for one patient that is_same_lapse links are collapsed to one, wherever
+    they sit. The row kept is the latest appointment (the one
+    phase2.episode_dropoff counts, and the newest week reception is working),
+    never a Sports Massage row when there is an alternative. Notes from the
+    removed rows are merged into it. Rows separated by a reactivation or an
+    attended visit are left alone. Returns the number of rows removed."""
     import phase2 as p2
     from bookings_fetch import _gs_retry
     sh = open_spreadsheet()
@@ -1051,70 +1053,77 @@ def sweep_same_lapse_duplicates(tab_names, dry_run=False):
     human = [SHEET_COLUMNS.index(c) for c in _HUMAN_COLS]
     first_col = gspread.utils.rowcol_to_a1(1, human[0] + 1).rstrip("0123456789")
     last_col = gspread.utils.rowcol_to_a1(1, human[-1] + 1).rstrip("0123456789")
-    removed = 0
+
+    sheets, groups = {}, {}
     for tab in tab_names:
         try:
             ws = sh.worksheet(tab)
         except gspread.exceptions.WorksheetNotFound:
             continue
-        vals = _gs_retry(lambda: ws.get_all_values(value_render_option="FORMULA"), f"{tab} read")
-        groups = {}
+        vals = _gs_retry(lambda w=ws: w.get_all_values(value_render_option="FORMULA"),
+                         f"{tab} read")
+        sheets[tab] = ws
         for n, r in enumerate(vals[1:], start=2):
             r = r + [""] * (len(SHEET_COLUMNS) - len(r))
             m = re.search(r"/patients/(\d+)", str(r[i_pat]))
             if m and r[i_aid]:
-                groups.setdefault(m.group(1), []).append((n, r))
-        updates, deletes = [], []
-        for pid, rows in groups.items():
-            if len(rows) < 2:
-                continue
-            try:
-                history = p2.fetch_patient_full_history(pid)
-            except Exception as e:
-                print(f"  WARN duplicate sweep: history fetch failed ({e}) — leaving {tab} rows")
-                continue
-            by_id = {str(h.get("id")): h for h in history}
-            rows = [(n, r) for n, r in rows if str(r[i_aid]) in by_id]
-            rows.sort(key=lambda x: _event_utc(by_id[str(x[1][i_aid])]))
-            clusters = []
-            for n, r in rows:
-                a = by_id[str(r[i_aid])]
-                for c in clusters:
-                    if any(is_same_lapse(a, by_id[str(rr[i_aid])], history) for _, rr in c):
-                        c.append((n, r))
-                        break
-                else:
-                    clusters.append([(n, r)])
-            for c in clusters:
-                if len(c) < 2:
-                    continue
-                keep = max(c, key=lambda x: (
-                    sum(1 for i in human if str(x[1][i]).strip() not in ("", "pending")),
-                    x[1][i_type] != "Sports Massage",
-                    x[1][i_kind] in PHYSIO_RESPONSIBLE_KINDS,
-                    by_id[str(x[1][i_aid])].get("starts_at") or ""))
-                others = [x for x in c if x is not keep]
-                merged = _merge_human_cols(keep[1], [r for _, r in others])
-                if merged != [str(keep[1][i]).strip() for i in human]:
-                    updates.append({"range": f"{first_col}{keep[0]}:{last_col}{keep[0]}",
-                                    "values": [merged]})
-                deletes += [n for n, _ in others]
-                print(f"  duplicate sweep: {tab} — kept row {keep[0]} "
-                      f"({keep[1][i_type]}), removed rows {[n for n, _ in others]} "
-                      f"for patient {pid}")
-        if dry_run:
-            for u in updates:
-                print(f"    would set {tab}!{u['range']} -> {u['values'][0]}")
-            removed += len(set(deletes))
+                groups.setdefault(m.group(1), []).append((tab, n, r))
+
+    updates, deletes = {}, {}
+    for pid, rows in groups.items():
+        if len(rows) < 2:
             continue
-        if updates:
-            _gs_retry(lambda: ws.batch_update(updates, value_input_option="RAW"), f"{tab} merge")
-        if deletes:
-            reqs = [{"deleteDimension": {"range": {"sheetId": ws.id, "dimension": "ROWS",
-                                                   "startIndex": n - 1, "endIndex": n}}}
-                    for n in sorted(set(deletes), reverse=True)]
-            _gs_retry(lambda: sh.batch_update({"requests": reqs}), f"{tab} delete")
-            removed += len(reqs)
+        try:
+            history = p2.fetch_patient_full_history(pid)
+        except Exception as e:
+            print(f"  WARN duplicate sweep: history fetch failed ({e}) — leaving patient {pid}")
+            continue
+        by_id = {str(h.get("id")): h for h in history}
+        rows = [x for x in rows if str(x[2][i_aid]) in by_id]
+        rows.sort(key=lambda x: _event_utc(by_id[str(x[2][i_aid])]))
+        clusters = []
+        for x in rows:
+            a = by_id[str(x[2][i_aid])]
+            for c in clusters:
+                if any(is_same_lapse(a, by_id[str(y[2][i_aid])], history) for y in c):
+                    c.append(x)
+                    break
+            else:
+                clusters.append([x])
+        for c in clusters:
+            if len(c) < 2:
+                continue
+            keep = max(c, key=lambda x: (
+                x[2][i_type] != "Sports Massage",
+                x[2][i_kind] in PHYSIO_RESPONSIBLE_KINDS,
+                by_id[str(x[2][i_aid])].get("starts_at") or ""))
+            others = [x for x in c if x is not keep]
+            merged = _merge_human_cols(keep[2], [x[2] for x in others])
+            if merged != [str(keep[2][i]).strip() for i in human]:
+                updates.setdefault(keep[0], []).append(
+                    {"range": f"{first_col}{keep[1]}:{last_col}{keep[1]}", "values": [merged]})
+            for x in others:
+                deletes.setdefault(x[0], set()).add(x[1])
+            print(f"  duplicate sweep: patient {pid} — kept {keep[0]} row {keep[1]} "
+                  f"({keep[2][i_type]}), removed "
+                  f"{', '.join(f'{x[0]} row {x[1]} ({x[2][i_type]})' for x in others)}")
+
+    removed = sum(len(v) for v in deletes.values())
+    if dry_run:
+        for tab, us in updates.items():
+            for u in us:
+                print(f"    would set {tab}!{u['range']} -> {u['values'][0]}")
+        return removed
+    # Merge notes first, then delete bottom-up within each tab so row numbers
+    # read above stay valid.
+    for tab, us in updates.items():
+        _gs_retry(lambda w=sheets[tab], u=us: w.batch_update(u, value_input_option="RAW"),
+                  f"{tab} merge")
+    for tab, ns in deletes.items():
+        reqs = [{"deleteDimension": {"range": {"sheetId": sheets[tab].id, "dimension": "ROWS",
+                                               "startIndex": n - 1, "endIndex": n}}}
+                for n in sorted(ns, reverse=True)]
+        _gs_retry(lambda q=reqs: sh.batch_update({"requests": q}), f"{tab} delete")
     return removed
 
 
@@ -3741,7 +3750,7 @@ def main():
         _stamp("write done")
         print("Sweeping recent tabs for same-lapse duplicate rows…")
         try:
-            n = sweep_same_lapse_duplicates(recent_week_tabs())
+            n = sweep_same_lapse_duplicates(recent_week_tabs(days=DAILY_LOOKBACK_DAYS + 14))
             print(f"  duplicate sweep: {n} row(s) removed")
         except Exception as e:
             print(f"  WARN duplicate sweep failed: {e}")
