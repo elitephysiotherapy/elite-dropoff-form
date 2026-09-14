@@ -659,7 +659,9 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
         start_utc, end_utc = yesterday_london_window_utc()
     s_iso = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     e_iso = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-    pulled_at = datetime.now(LONDON).strftime("%Y-%m-%d %H:%M")
+    # Seconds included (2026-09-14) so rows written by THIS code can be told apart
+    # from rows stamped "HH:MM" by anything else writing as the same bot.
+    pulled_at = datetime.now(LONDON).strftime("%Y-%m-%d %H:%M:%S")
 
     print(f"Window: Europe/London  "
           f"({start_utc.astimezone(LONDON).strftime('%Y-%m-%d')} → "
@@ -3497,6 +3499,12 @@ def write_to_sheet(rows):
         existing_ids = set(ws.col_values(appt_id_col_index)) if not created else set()
         existing_ids |= global_ids
         new_rows = [r for r in tab_rows if r["appointment_id"] not in existing_ids]
+        for r in tab_rows:
+            if r["appointment_id"] in existing_ids:
+                # Collected as new at the start of this run, already present now:
+                # something else wrote it in between. Name it so the log shows who.
+                print(f"  already in sheet at write time: {r['patient']} "
+                      f"appt={r['appointment_id']}", flush=True)
         new_rows.sort(key=dropoff_event_dt)
         if new_rows:
             payload = [[cell_for(r, c) for c in SHEET_COLUMNS] for r in new_rows]
@@ -3692,7 +3700,10 @@ def main():
     # One read per tab yields both: the appointment ids to skip, and the bulk
     # cancellations already logged. The latter is seeded from the SHEET so the
     # suppression is independent of the lookback window (Dara McKenna tripling).
+    _stamp = lambda what: print(f"[timing] {datetime.now(timezone.utc):%H:%M:%S}Z {what}", flush=True)
+    _stamp("start")
     already, bulk_keys, ids_by_patient = existing_sheet_state()
+    _stamp(f"sheet read: {len(already)} appointment ids")
     print(f"Bulk-cancel keys already in sheet: {len(bulk_keys)}")
     if date_override:
         rows, excluded = collect_dropoffs(date_override=date_override,
@@ -3724,8 +3735,10 @@ def main():
         # longer touches the Leads tab. (weekly_leads_wipe() is kept defined for
         # reference but is intentionally not called.)
 
+        _stamp(f"writing {len(rows)} row(s)")
         print("Writing drop-off rows to Google Sheet…")
         write_to_sheet(rows)
+        _stamp("write done")
         print("Sweeping recent tabs for same-lapse duplicate rows…")
         try:
             n = sweep_same_lapse_duplicates(recent_week_tabs())
