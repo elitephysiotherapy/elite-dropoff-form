@@ -4,6 +4,7 @@ Run by launchd via marketing_poll.sh; one cycle per invocation. Each cycle:
   1. pulls recent Cliniko appointments + cancellations
   2. asks each flow module which touches are due now
   3. for each touch: dedup -> fetch patient -> consent check -> render -> send -> log
+  4. sends follow-ups for new survey responses (marketing/followups.py)
 
 Console output is patient-ID only (never names / emails / message bodies) so
 no patient data is exposed outside the clinic's own tools.
@@ -17,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 import config
-from marketing import (cliniko, common, nps, reactivation, lifecycle,
+from marketing import (cliniko, common, followups, nps, reactivation, lifecycle,
                        results, sent_log, templates, send, tally_url)
 
 LOOKBACK_DAYS = 5
@@ -146,6 +147,22 @@ def run_once():
         print(f"  [{status}] {t.flow_name} ({t.channel}) -> patient {t.patient_id}")
 
     print(f"Done. {stats}")
+
+    # Survey-response follow-ups (review ask, passive/detractor replies, Sinead's
+    # alerts). A failure here must not hide the touches already sent above.
+    try:
+        followups.run()
+    except Exception as e:
+        print(f"  ERROR: NPS follow-ups failed: {e}")
+        try:
+            import slack_notifier
+            slack_notifier._send_dm(
+                config.CEO_SLACK_EMAIL,
+                f":rotating_light: *NPS follow-ups crashed* — review asks, passive/"
+                f"detractor replies and Sinead's alerts are not going out.\n`{e}`",
+                target_label="nps follow-up crash alert")
+        except Exception as e2:
+            print(f"  WARN NPS follow-up crash alert failed: {e2}")
 
 
 if __name__ == "__main__":
