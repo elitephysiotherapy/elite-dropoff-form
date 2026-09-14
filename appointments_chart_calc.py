@@ -8,8 +8,9 @@ embeds/refreshes a line chart on the "Appointments_Chart" tab of the CFO sheet.
 Series on the chart (matches Martin's screenshot):
   • Gen Pop (blue)   — sum of completed Gen Pop appointment types
   • Club (orange)    — sum of completed Club appointment types
-  • Total (black)    — Gen Pop + Club + Pilates classes
-  • Budget (green)   — revenue budget ÷ rolling 3-month AOV
+  • Total Seen (black)     — Gen Pop + Club + Pilates classes
+  • Target (appts) (green) — revenue budget ÷ rolling 3-month AOV
+Legend labels come from the header row, never hand-typed.
 
 Pilates count = number of pilates Class group_appointments instances in the
 month (NOT attendee count — per Martin 2026-06-07 — class-arrival data on
@@ -247,9 +248,12 @@ def _months_back(n):
 def _write_table_and_chart(rows, sheet):
     """rows = list of [Month, GenPop, Club, Pilates, Total, Revenue,
                        RevenueBudget, RollingAOV, AppointmentBudget]."""
-    headers = ["Month", "Gen Pop", "Club", "Pilates (classes)", "Total",
+    # Headers double as the chart's legend labels (headerCount=1 below), so the
+    # legend can never drift from the data — hand-typed legend names once got
+    # swapped, making a missed month look like it beat target.
+    headers = ["Month", "Gen Pop", "Club", "Pilates (classes)", "Total Seen",
                "Revenue (Cliniko)", "Revenue Budget", "Rolling 3-mo AOV",
-               "Appointment Budget"]
+               "Target (appts)"]
     try:
         ws = sheet.worksheet(TAB_NAME)
         ws.clear()
@@ -259,15 +263,17 @@ def _write_table_and_chart(rows, sheet):
     body = [headers] + rows
     ws.update("A1", body, value_input_option="RAW")
 
-    # Build a line chart referencing the data range
+    # Build a line chart referencing the data range (row 0 = header/legend)
     ws_id = ws.id
     last_data_row = len(rows) + 1  # 1-based incl. header
-    requests = [
-        # Remove all existing charts
-        {"deleteEmbeddedObject": {"objectId": cid}}
-        for cid in [c["chartId"] for c in (ws._properties.get("charts") or [])]
-        if cid
-    ]
+    # Remove all existing charts. gspread's worksheet properties don't carry
+    # charts, so fetch them explicitly — otherwise every run stacks a new copy.
+    meta = sheet.fetch_sheet_metadata(
+        params={"fields": "sheets(properties(sheetId),charts(chartId))"})
+    existing = next((s.get("charts", []) for s in meta["sheets"]
+                     if s["properties"]["sheetId"] == ws_id), [])
+    requests = [{"deleteEmbeddedObject": {"objectId": c["chartId"]}}
+                for c in existing]
     chart_spec = {
         "title": "Gen Pop and Sport — rolling 13 months",
         "basicChart": {
@@ -279,33 +285,33 @@ def _write_table_and_chart(rows, sheet):
             ],
             "domains": [{
                 "domain": {"sourceRange": {"sources": [{
-                    "sheetId": ws_id, "startRowIndex": 1, "endRowIndex": last_data_row,
+                    "sheetId": ws_id, "startRowIndex": 0, "endRowIndex": last_data_row,
                     "startColumnIndex": 0, "endColumnIndex": 1,
                 }]}}
             }],
             "series": [
                 {"series": {"sourceRange": {"sources": [{
-                    "sheetId": ws_id, "startRowIndex": 1, "endRowIndex": last_data_row,
+                    "sheetId": ws_id, "startRowIndex": 0, "endRowIndex": last_data_row,
                     "startColumnIndex": 1, "endColumnIndex": 2,  # Gen Pop
                 }]}}, "targetAxis": "LEFT_AXIS",
                  "color": {"red": 0.26, "green": 0.52, "blue": 0.96}},
                 {"series": {"sourceRange": {"sources": [{
-                    "sheetId": ws_id, "startRowIndex": 1, "endRowIndex": last_data_row,
+                    "sheetId": ws_id, "startRowIndex": 0, "endRowIndex": last_data_row,
                     "startColumnIndex": 2, "endColumnIndex": 3,  # Club
                 }]}}, "targetAxis": "LEFT_AXIS",
                  "color": {"red": 0.95, "green": 0.51, "blue": 0.19}},
                 {"series": {"sourceRange": {"sources": [{
-                    "sheetId": ws_id, "startRowIndex": 1, "endRowIndex": last_data_row,
-                    "startColumnIndex": 4, "endColumnIndex": 5,  # Total
+                    "sheetId": ws_id, "startRowIndex": 0, "endRowIndex": last_data_row,
+                    "startColumnIndex": 4, "endColumnIndex": 5,  # Total Seen
                 }]}}, "targetAxis": "LEFT_AXIS",
                  "color": {"red": 0.0, "green": 0.0, "blue": 0.0}},
                 {"series": {"sourceRange": {"sources": [{
-                    "sheetId": ws_id, "startRowIndex": 1, "endRowIndex": last_data_row,
-                    "startColumnIndex": 8, "endColumnIndex": 9,  # Appt Budget
+                    "sheetId": ws_id, "startRowIndex": 0, "endRowIndex": last_data_row,
+                    "startColumnIndex": 8, "endColumnIndex": 9,  # Target
                 }]}}, "targetAxis": "LEFT_AXIS",
                  "color": {"red": 0.42, "green": 0.66, "blue": 0.31}},
             ],
-            "headerCount": 0,
+            "headerCount": 1,
         }
     }
     requests.append({
@@ -314,9 +320,11 @@ def _write_table_and_chart(rows, sheet):
                 "spec": chart_spec,
                 "position": {
                     "overlayPosition": {
+                        # below the table, sized as Martin laid it out
                         "anchorCell": {"sheetId": ws_id,
-                                       "rowIndex": 1, "columnIndex": 10},
-                        "widthPixels": 900, "heightPixels": 420,
+                                       "rowIndex": last_data_row + 1,
+                                       "columnIndex": 1},
+                        "widthPixels": 1409, "heightPixels": 658,
                     }
                 }
             }
