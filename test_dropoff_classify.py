@@ -317,5 +317,27 @@ results.append(check("a genuine second drop after a reactivation is still writte
                      len(got), 1))
 
 
+# ---- 13. Duplicate sweep keeps the team's work (2026-09-14) ----
+print("\n13. Duplicate sweep merges notes into the surviving row:")
+def sheet_row(**kw):
+    r = [""] * len(p1.SHEET_COLUMNS)
+    for k, v in kw.items():
+        r[p1.SHEET_COLUMNS.index(k)] = v
+    return r
+kept_row = sheet_row(reactivation_status="leave", reactivation_notes="left VM MH 2/9/26",
+                     actioned="see above", pulled_at="46261.29")
+gone_row = sheet_row(reactivation_status="contact_attempted", martys_comments="reactivate",
+                     actioned="26/8/26 - Whatsapp sent. SR", pulled_at="46258.29")
+merged = p1._merge_human_cols(kept_row, [gone_row])
+results.append(check("status stays on the kept row's decision", merged[2], "leave"))
+results.append(check("comments carried over from the removed row", merged[4], "reactivate"))
+results.append(check("'see above' pointer replaced by the note it pointed at",
+                     merged[5], "26/8/26 - Whatsapp sent. SR"))
+results.append(check("pending kept row takes the other row's status",
+                     p1._merge_human_cols(sheet_row(reactivation_status="pending"),
+                                          [sheet_row(reactivation_status="contact_attempted")])[2],
+                     "contact_attempted"))
+
+
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

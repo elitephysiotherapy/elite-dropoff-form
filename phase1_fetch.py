@@ -991,6 +991,144 @@ def _dedup_same_lapse(rows, history_cache, sheet_ids_by_patient=None):
     return out
 
 
+_HUMAN_COLS = ("clinical_non_clinical", "next_step_physio", "reactivation_status",
+               "reactivation_notes", "martys_comments", "actioned")
+_STATUS_RANK = {"reactivated": 5, "rebooked": 4, "leave": 3, "contact_attempted": 2,
+                "pending": 1, "": 0}
+
+
+def _merge_human_cols(keep, others):
+    """Fold the team's work on duplicate rows into the row that stays.
+
+    Dropdowns keep the surviving row's value unless it is blank (status: unless
+    blank or pending, then the most advanced). Free-text notes are joined, oldest
+    row first, skipping repeats and bare 'see above/below' pointers."""
+    idx = [SHEET_COLUMNS.index(c) for c in _HUMAN_COLS]
+    rows = [keep] + others
+    val = lambda r, i: str(r[i]).strip() if len(r) > i else ""
+    merged = [val(keep, i) for i in idx]
+    for k in (0, 1):
+        if not merged[k]:
+            merged[k] = next((val(r, idx[k]) for r in rows if val(r, idx[k])), "")
+    if merged[2] in ("", "pending"):
+        merged[2] = max((val(r, idx[2]) for r in rows), key=lambda s: _STATUS_RANK.get(s, 0))
+    norm = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())
+    for k in (3, 4, 5):
+        texts = []
+        for r in sorted(rows, key=lambda r: val(r, SHEET_COLUMNS.index("pulled_at"))):
+            v = val(r, idx[k])
+            if v and v not in texts:
+                texts.append(v)
+        if len(texts) > 1:
+            texts = [v for v in texts if not re.fullmatch(r"(?i)see (above|below)\.?", v)] or texts
+            texts = [v for v in texts if not any(o is not v and norm(v) in norm(o) for o in texts)]
+        merged[k] = " | ".join(texts)
+    return merged
+
+
+def sweep_same_lapse_duplicates(tab_names, dry_run=False):
+    """Remove duplicate rows (same patient, same lapse) from the given W/C tabs.
+
+    Belt-and-braces for rows this run did not write. Something outside this
+    service appends drop-off rows shortly before the 07:00 run reads the sheet —
+    running pre-July code without the lapse dedup — so a duplicate can already be
+    in the sheet before _dedup_same_lapse ever sees it (Martin Fasko and Colm
+    McKenna were re-added on 14 Sep after being cleaned on 13 Sep).
+
+    For each patient with 2+ rows on a tab, rows that is_same_lapse links are
+    collapsed to one. The row kept is the one the team has worked on most, then
+    the latest appointment, never a Sports Massage row when there's an alternative;
+    notes from the removed rows are merged into it. Rows separated by a
+    reactivation or an attended visit are left alone. Returns rows removed."""
+    import phase2 as p2
+    from bookings_fetch import _gs_retry
+    sh = open_spreadsheet()
+    i_pat, i_aid = SHEET_COLUMNS.index("patient"), SHEET_COLUMNS.index("appointment_id")
+    i_type = SHEET_COLUMNS.index("appointment_type")
+    i_kind = SHEET_COLUMNS.index("dropoff_type")
+    human = [SHEET_COLUMNS.index(c) for c in _HUMAN_COLS]
+    first_col = gspread.utils.rowcol_to_a1(1, human[0] + 1).rstrip("0123456789")
+    last_col = gspread.utils.rowcol_to_a1(1, human[-1] + 1).rstrip("0123456789")
+    removed = 0
+    for tab in tab_names:
+        try:
+            ws = sh.worksheet(tab)
+        except gspread.exceptions.WorksheetNotFound:
+            continue
+        vals = _gs_retry(lambda: ws.get_all_values(value_render_option="FORMULA"), f"{tab} read")
+        groups = {}
+        for n, r in enumerate(vals[1:], start=2):
+            r = r + [""] * (len(SHEET_COLUMNS) - len(r))
+            m = re.search(r"/patients/(\d+)", str(r[i_pat]))
+            if m and r[i_aid]:
+                groups.setdefault(m.group(1), []).append((n, r))
+        updates, deletes = [], []
+        for pid, rows in groups.items():
+            if len(rows) < 2:
+                continue
+            try:
+                history = p2.fetch_patient_full_history(pid)
+            except Exception as e:
+                print(f"  WARN duplicate sweep: history fetch failed ({e}) — leaving {tab} rows")
+                continue
+            by_id = {str(h.get("id")): h for h in history}
+            rows = [(n, r) for n, r in rows if str(r[i_aid]) in by_id]
+            rows.sort(key=lambda x: _event_utc(by_id[str(x[1][i_aid])]))
+            clusters = []
+            for n, r in rows:
+                a = by_id[str(r[i_aid])]
+                for c in clusters:
+                    if any(is_same_lapse(a, by_id[str(rr[i_aid])], history) for _, rr in c):
+                        c.append((n, r))
+                        break
+                else:
+                    clusters.append([(n, r)])
+            for c in clusters:
+                if len(c) < 2:
+                    continue
+                keep = max(c, key=lambda x: (
+                    sum(1 for i in human if str(x[1][i]).strip() not in ("", "pending")),
+                    x[1][i_type] != "Sports Massage",
+                    x[1][i_kind] in PHYSIO_RESPONSIBLE_KINDS,
+                    by_id[str(x[1][i_aid])].get("starts_at") or ""))
+                others = [x for x in c if x is not keep]
+                merged = _merge_human_cols(keep[1], [r for _, r in others])
+                if merged != [str(keep[1][i]).strip() for i in human]:
+                    updates.append({"range": f"{first_col}{keep[0]}:{last_col}{keep[0]}",
+                                    "values": [merged]})
+                deletes += [n for n, _ in others]
+                print(f"  duplicate sweep: {tab} — kept row {keep[0]} "
+                      f"({keep[1][i_type]}), removed rows {[n for n, _ in others]} "
+                      f"for patient {pid}")
+        if dry_run:
+            for u in updates:
+                print(f"    would set {tab}!{u['range']} -> {u['values'][0]}")
+            removed += len(set(deletes))
+            continue
+        if updates:
+            _gs_retry(lambda: ws.batch_update(updates, value_input_option="RAW"), f"{tab} merge")
+        if deletes:
+            reqs = [{"deleteDimension": {"range": {"sheetId": ws.id, "dimension": "ROWS",
+                                                   "startIndex": n - 1, "endIndex": n}}}
+                    for n in sorted(set(deletes), reverse=True)]
+            _gs_retry(lambda: sh.batch_update({"requests": reqs}), f"{tab} delete")
+            removed += len(reqs)
+    return removed
+
+
+def recent_week_tabs(days=None):
+    """W/C tab names covering the last `days` days (default: the daily lookback)."""
+    days = DAILY_LOOKBACK_DAYS if days is None else days
+    today = datetime.now(LONDON).replace(tzinfo=None)
+    names = []
+    for back in range(days, -1, -1):
+        d = today - timedelta(days=back)
+        name = f"W/C {(d - timedelta(days=d.weekday())).strftime('%d %b %Y')}"
+        if name not in names:
+            names.append(name)
+    return names
+
+
 def enrich_phase2(rows):
     """Fill session_number and body_area on each row using the phase2 module.
     Idempotent — safe to call multiple times. Skips rows that already have values."""
@@ -3588,6 +3726,12 @@ def main():
 
         print("Writing drop-off rows to Google Sheet…")
         write_to_sheet(rows)
+        print("Sweeping recent tabs for same-lapse duplicate rows…")
+        try:
+            n = sweep_same_lapse_duplicates(recent_week_tabs())
+            print(f"  duplicate sweep: {n} row(s) removed")
+        except Exception as e:
+            print(f"  WARN duplicate sweep failed: {e}")
         print("Checking for auto-detected rebookings…")
         try:
             detect_rebookings()
