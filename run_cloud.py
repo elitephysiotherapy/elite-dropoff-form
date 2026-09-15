@@ -62,7 +62,10 @@ TARGETS = {
     "eod_sunday": [({6}, 7, 0)],                                  # Sun 07:00 — Martin's personal weekly wrap (DM only)
     "monthly_kpi": [(None, 9, 0)],                                # 09:00 on day 1 (see MONTHLY_DAY1_JOBS)
     "packages_weekly":   [({0}, 8, 0)],                           # Mon 08:00 — previous week's packages
-    "referrers_monthly": [(None, 8, 0)],                          # 08:00 on day 1 (see MONTHLY_DAY1_JOBS)
+    # 08:15 on day 1. MUST match the Render cron minute (15 7,8 1 * *): the cron was
+    # staggered to :15 on 2026-08-17 (Sheets quota) but this stayed at 08:00, so
+    # both firings skipped and the 1 Sep 2026 DM never sent. Fixed 2026-09-15.
+    "referrers_monthly": [(None, 8, 15)],
     "club_alert_monthly": [(None, 8, 30)],                        # 08:30 on day 1 — clubs sending less work
     "reactivations_weekly": [({0}, 8, 0)],                        # Mon 08:00 — previous week's reactivations
     "reactivations_monthly": [(None, 7, 20)],                     # 07:20 daily — refresh monthly totals tab
