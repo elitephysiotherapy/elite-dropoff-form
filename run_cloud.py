@@ -37,13 +37,14 @@ COMMANDS = {
     "monthly_kpi":  [PY, "send_monthly_physio_kpis.py", "--post"],
     "packages_weekly":   [PY, "send_packages_weekly.py", "--post"],
     "referrers_monthly": [PY, "send_referrers_monthly.py", "--post"],
+    "club_alert_monthly": [PY, "send_club_alert_monthly.py", "--post"],
     "reactivations_weekly": [PY, "send_reactivations_weekly.py", "--post"],
     "reactivations_monthly": [PY, "reactivations_by_month.py", "--refresh"],
 }
 
 # Jobs that fire only on the 1st of each calendar month (in addition to the
 # London-time hour/minute check). Used by send_monthly_physio_kpis on day 1.
-MONTHLY_DAY1_JOBS = {"monthly_kpi", "referrers_monthly"}
+MONTHLY_DAY1_JOBS = {"monthly_kpi", "referrers_monthly", "club_alert_monthly"}
 
 # Intended schedule in Europe/London local time.
 # Each entry: (weekdays | None, hour, minute).  weekdays is a set with Mon=0..Sun=6;
@@ -62,6 +63,7 @@ TARGETS = {
     "monthly_kpi": [(None, 9, 0)],                                # 09:00 on day 1 (see MONTHLY_DAY1_JOBS)
     "packages_weekly":   [({0}, 8, 0)],                           # Mon 08:00 — previous week's packages
     "referrers_monthly": [(None, 8, 0)],                          # 08:00 on day 1 (see MONTHLY_DAY1_JOBS)
+    "club_alert_monthly": [(None, 8, 30)],                        # 08:30 on day 1 — clubs sending less work
     "reactivations_weekly": [({0}, 8, 0)],                        # Mon 08:00 — previous week's reactivations
     "reactivations_monthly": [(None, 7, 20)],                     # 07:20 daily — refresh monthly totals tab
 }

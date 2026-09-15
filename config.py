@@ -765,3 +765,116 @@ EOD_REPORT_TIMES = {
     3: ["12:00", "16:00", "20:00"],            # Thursday
     4: ["15:30"],                              # Friday
 }
+
+
+# ===========================================================================
+# MONTHLY CLUB DROP-OFF ALERT (→ Sinead, 1st of the month)
+# ===========================================================================
+# send_club_alert_monthly.py flags clubs that are sending us noticeably less
+# work. The club is only recorded on the Cliniko INVOICE ITEM name (appointment
+# types are generic "Club Follow Up" etc.), so the alert reads invoice items.
+#
+# Anything not listed in CLUB_ALERT_NON_CLUB_ITEMS or CLUB_ALERT_NO_NAMED_CLUB
+# is treated as a club. ⚠️ Keep CLUB_ALERT_NON_CLUB_ITEMS in step with the
+# non-Club lists in elite-finance-officer/config/cliniko_category_mapping.json.
+# If reception adds a new non-club item and it isn't added here, it gets tracked
+# as a "club". It only causes an alert if it later drops, and a brand-new item
+# name is listed in the DM footer so a rename or new item is easy to spot.
+CLUB_ALERT_NON_CLUB_ITEMS = [
+    # Initial Assessment
+    "Initial Consultation", "Omagh Initial Assessment Offer",
+    # Follow up
+    "Friends & Family", "Gold POC session", "PerformLab Members", "Review Appointment",
+    "Platinum POC session", "Sports POC", "Sports POC 2025",
+    # Insurance
+    "Aviva", "Axa New", "Axa Review", "Santry", "WPA", "H3 Insurance", "Independence Works",
+    "Aviva - Physiotherapy - IA", "Aviva - Physiotherapy - Review",
+    "Axa - Physiotherapy - Initial Assessment", "Axa - Physiotherapy - Review",
+    "Axa -Physiotherapy - Review", "WPA - Physiotherapy - Initial Assessment",
+    "WPA - Physiotherapy - Review", "Vitality", "Innovate", "The Permanent Health Company",
+    # Big Ticket
+    "Clinical Specialist Consultation", "Injection Therapy", "POCUS Ultrasound Assessment",
+    "Profiling Assessment", "Testing 60 mins", "Testing (30mins)", "Testing (40MINS)",
+    "Ultrasound Assessment", "Medico Legal Report", "Mummy MOT IA", "Mummy MOT Review",
+    "Pelvic Health Assessment",
+    # Massage
+    "Sports Massage", "Sports Massage Offer - 30mins", "Sports massage offer - 60mins",
+    "Sports Massage Offer",
+    # Pilates
+    "Pilates", "Pilates PAYG", "Pilates Matwork Cookstown", "Pilates Matwork Cookstown (5weeks)",
+    "Pilates Matwork Cookstown PAYG", "Pilates Matwork Cookstown (4weeks)",
+    "Pilates Matwork Cookstown (6 weeks)", "Pilates Reformer Cookstown",
+    "Pilates Reformer Cookstown (5 weeks)", "Pilates Reformer Cookstown (4 weeks)",
+    "Pilates Reformer Cookstown (6 weeks)", "Pilates Reformer PAYG", "Pilates Matwork Maghera",
+    "Pilates Matwork Maghera (5weeks)", "Pilates Matwork Maghera PAYG",
+    "Pilates Matwork Maghera (4weeks)", "Pilates Matwork Maghera (6 weeks)",
+    # ACL / rehab classes
+    "Lower Limb Workshop", "Lower Limb Workshops x5", "Lower LimbWorkshops x4",
+    "ACL Class (8)", "Pitch class", "Knee Class",
+    # Online / group programmes (priced £249–£343, one-off)
+    "Bulletproof Program 2024", "Groin Restore Online 2025", "Knee Performance Online Programme",
+    # Other
+    "Lab 60 Screening", "Shockwave", "Taping", "Compex", "TAPING ONLY", "Game Ready",
+    "Resistance Band", "Recovery Suite 30", "1-1 Free Strategy session", "Free Call Back Service",
+    "Pitchside Management & First Aid 2025", "A Level Physio Open Morning",
+]
+
+# Club-rate items that aren't tied to one named club, so there's nobody to call.
+# Matched as a PREFIX (the non-affiliated item's full name is very long).
+CLUB_ALERT_NO_NAMED_CLUB = [
+    "Non-Affiliated Club Charge",
+    "Club Initial Assessment -  Booked Online",
+    "Club Ultra Sound Scans",
+    "Physiotherapy Treatment (club charge)",
+]
+
+# Several Cliniko items → one club. Only same-club variants (Ladies / Camogie /
+# Underage, alternative spellings), deliberately conservative like
+# REFERRER_ALIASES: Tyrone GAA ≠ Tyrone Ladies, Cookstown Fr Rocks ≠ Cookstown
+# Youth, St Brigids Belfast ≠ St.Bridgets, Dungannon Swifts is a soccer club.
+# An item not listed here is its own club, under its Cliniko item name.
+# Grouping agreed in the YTD club review, 2026-09-15.
+CLUB_ALERT_GROUPS = {
+    "Bellaghy Wolfe Tones": ["Bellaghy Initial", "Bellaghy Review", "Bellaghy Camogie", "Bellaghy Self pay", "Bellaghy IA"],
+    "Kildress Wolfe Tones": ["Kildress Senior Men/Ladies", "Kildress underage", "Kildress Youth (underage)"],
+    "Magherafelt O'Donovan Rossa": ["Magherafelt O'Donovan Rossa", "Magherafelt O'Donovan Rossa - MEN",
+                                    "Magherafelt O'Donovan Rossa Camogie",
+                                    "Magherafelt O'Donovan Rossa Ladies Football", "Magherafelt Ladies"],
+    "Ardboe": ["Ardboe", "Ardboe Ladies"],
+    "Ballinascreen": ["Ballinascreen", "Ballinascreen Ladies"],
+    "Lavey": ["Lavey", "Lavey Ladies", "Lavey Camogie"],
+    "Dungannon Clarkes": ["Dungannon Club Appointment", "Dungannon Ladies"],
+    "Ballerin": ["Ballerin", "Ballerin Camogie"],
+    "Swatragh": ["Swatragh", "Swatragh Camogie"],
+    "Donaghmore": ["Donaghmore", "Donaghmore Ladies"],
+    "Greencastle": ["Greencastle", "Greencastle Ladies"],
+    "Portglenone": ["Portglenone Roger Casements", "Portglenone Ladies"],
+    "Glen Maghera": ["Glen Maghera", "Glen Ladies"],
+    "Dungiven": ["Dungiven St Canices GAC", "Dungiven Camogie"],
+    "Kilrea Patrick Pearses": ["Kilrea Patrick Pearses", "Patrick Pearses Kilrea"],
+    "Carrickmore": ["Carrickmore", "Eire Og  Carrickmore"],
+    "Derry county squads": ["Derry GAA", "Derry Camogie", "Derry Oga"],
+    "Clonoe O'Rahilly's": ["Clonoe Club Appointment"],
+    "Derrylaughan": ["Derrylaughan Club Appointment"],
+    "Fianna": ["Fianna Club Appointment"],
+}
+
+# Alert thresholds.
+# "Sharp drop": last 3 complete months vs the SAME 3 months a year earlier
+# (GAA work is seasonal, so a month-on-month compare would cry wolf every winter).
+CLUB_ALERT_WINDOW_MONTHS = 3
+CLUB_ALERT_DROP_MIN_BASELINE = 15      # sessions in last year's window, to be worth flagging
+CLUB_ALERT_DROP_MAX_RATIO = 0.60       # this year ≤ 60% of last year (a 40%+ drop)…
+CLUB_ALERT_DROP_MIN_LOST = 10          # …AND at least this many sessions fewer
+# "Gone quiet": no session in the last 8 weeks, from a club that sent at least
+# 10 sessions in the 12 months before that, and at least one in the same 8 weeks
+# last year (so an off-season lull isn't flagged). Clubs drop off the list once
+# their last session is over a year old, so a long-lost club isn't raised forever.
+CLUB_ALERT_QUIET_DAYS = 56
+CLUB_ALERT_QUIET_MIN_PRIOR_12M = 10
+CLUB_ALERT_QUIET_MIN_LAST_YEAR = 1
+# Backtest Jun 2025 → Sep 2026 at these settings: 0–7 NEW clubs flagged a month
+# (usually 1–3), plus 5–10 repeats from the previous month on one line.
+# First month the DM actually goes to Sinead. On that run nothing is a "repeat"
+# (she never received last month's), so every flagged club is listed in full.
+CLUB_ALERT_FIRST_RUN = "2026-10-01"
