@@ -445,6 +445,23 @@ PACKAGES_CHANNEL_ID = "C04G5CKN60Y"
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1RC7QkHGAa8dH5ShmwbFyswdrmMOo6HTgkcKZEvqoZbI/edit"
 
 # ===========================================================================
+# TEAM SHEET (separate spreadsheet — "Elite Drop-offs — Team")
+# ===========================================================================
+# Physio-facing view of the drop-offs. A SEPARATE FILE on purpose: Google
+# Sheets permissions are per-file, never per-tab, so anything in the master
+# workbook is visible to anyone the master is shared with — protecting or
+# hiding a tab only stops edits, not viewing (File > Download and a copy both
+# expose it). The physios get this file and only this file; the per-physio
+# performance tabs stay in the master, which they cannot open.
+TEAM_SPREADSHEET_ID = "15ZeDIdxogVZqaC8Z-hAb6nOfAzBqLdJ6LFokByVGWDg"
+TEAM_SPREADSHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/15ZeDIdxogVZqaC8Z-hAb6nOfAzBqLdJ6LFokByVGWDg/edit"
+)
+TEAM_SHEET_TAB = "Drop-offs"
+# How many W/C weeks of drop-offs the physios see at once.
+TEAM_SHEET_WEEKS = 4
+
+# ===========================================================================
 # LEADS SHEET (separate spreadsheet — "Elite Physio — New Patient Bookings")
 # ===========================================================================
 LEADS_SPREADSHEET_ID = "1zoFhXPGzDnrCVTgTYs-YRm8EUzx91LL5Q_8L5Bd7_iU"

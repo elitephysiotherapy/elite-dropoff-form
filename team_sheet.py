@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+"""Team-facing drop-off sheet — physio feedback, synced both ways.
+
+Why a separate spreadsheet: Google Sheets permissions are per-FILE. There is no
+per-tab view permission, so sharing the master workbook with the physios would
+show them every tab in it, including the per-physio performance stats —
+protecting or hiding a tab only blocks edits, not viewing (File > Download and
+File > Make a copy both hand over the lot). So the physios get this file, which
+holds nothing but the drop-off names and their own feedback columns.
+
+The bot is the only thing that can see both files, which is what makes the
+round trip work:
+
+    master  W/C tabs ──(names, dates, reception's notes)──>  team sheet
+    master  Q + R    <──(Physio Action, Physio Notes)──────  team sheet
+
+Physios never touch the master; Sinead and Martin never have to copy anything
+across.
+
+Usage:
+    python team_sheet.py --build     # one-off: lay out the tab, lock it down
+    python team_sheet.py --sync      # push feedback back, pull new drop-offs
+    python team_sheet.py --sync --dry-run
+"""
+import fcntl
+import os
+import sys
+import time
+from contextlib import contextmanager
+from datetime import datetime
+
+import gspread
+
+import config
+import phase1_fetch as p1
+
+TAB = config.TEAM_SHEET_TAB
+WEEKS = config.TEAM_SHEET_WEEKS
+
+# What the physios see. "key" is the master column it comes from; None means
+# derived. Only PHYSIO_COLS are editable — everything else is protected.
+INFO_COLS = [
+    ("Week",           None),
+    ("Date",           "appointment_date"),
+    ("Patient",        "patient"),
+    ("Physio",         "physio"),
+    ("Appointment",    "appointment_type"),
+    ("Session #",      "session_number"),
+    ("What happened",  None),
+    ("Body Area",      "body_area"),
+    ("Reception notes", "reactivation_notes"),
+]
+PHYSIO_COLS = [
+    ("Physio Action",  "physio_action"),
+    ("Physio Notes",   "physio_reactivation_notes"),
+]
+KEY_COL = ("appointment_id", "appointment_id")
+HEADER = [h for h, _ in INFO_COLS + PHYSIO_COLS + [KEY_COL]]
+
+N_INFO = len(INFO_COLS)                       # A..I
+I_ACTION = N_INFO                             # J (0-based)
+I_NOTES = N_INFO + 1                          # K
+I_KEY = N_INFO + 2                            # L
+N_COLS = N_INFO + 3
+
+PHYSIO_ACTIONS = [
+    "Called – spoke to them",
+    "Called – voicemail",
+    "Text sent",
+    "Rebooked",
+    "Not contacting (reason in notes)",
+    "Patient not rebooking",
+]
+
+# Sheet jargon the physios shouldn't have to decode.
+DROPOFF_LABELS = {
+    "cancelled":      "Cancelled",
+    "did_not_attend": "No-show",
+    "iadnr":          "First appt — no rebook",
+    "iacna":          "First appt — cancelled",
+    "iadna":          "First appt — no-show",
+}
+# Patients already back in the diary need no chasing, so they drop off the list.
+SKIP_STATUS = {"reactivated"}
+
+
+def _client():
+    return gspread.authorize(p1._sheets_credentials())
+
+
+def _tab_date(title):
+    try:
+        return datetime.strptime(title[4:].strip(), "%d %b %Y")
+    except ValueError:
+        return datetime.min
+
+
+def read_master(gc):
+    """In-scope drop-offs from the master's most recent W/C tabs.
+
+    Returns (rows, index) where rows are dicts in sheet order, newest week
+    first, and index maps appointment_id -> (tab title, 1-based row) so a
+    push knows which cell to write."""
+    sh = gc.open_by_key(p1.SPREADSHEET_ID)
+    tabs = sorted([w for w in sh.worksheets() if w.title.startswith("W/C ")],
+                  key=lambda w: _tab_date(w.title), reverse=True)[:WEEKS]
+    if not tabs:
+        raise RuntimeError("no W/C tabs on the master sheet")
+    resp = sh.values_batch_get([f"'{w.title}'!A:T" for w in tabs])
+    rows, index = [], {}
+    for ws, vr in zip(tabs, resp.get("valueRanges", [])):
+        vals = vr.get("values", [])
+        if not vals:
+            continue
+        header = [h.strip() for h in vals[0]]
+        want = [p1.HEADER_LABELS[c] for c in p1.SHEET_COLUMNS]
+        if header[:len(want)] != want:
+            raise RuntimeError(f"{ws.title}: unexpected header — refusing to sync")
+        col = {c: p1.SHEET_COLUMNS.index(c) for c in p1.SHEET_COLUMNS}
+        get = lambda r, c: (r[col[c]].strip() if len(r) > col[c] else "")
+        for n, r in enumerate(vals[1:], start=2):
+            aid = get(r, "appointment_id")
+            if not aid or get(r, "reactivation_status") in SKIP_STATUS:
+                continue
+            rows.append({
+                "aid": aid,
+                "tab": ws.title,
+                "row": n,
+                "week": ws.title.replace("W/C ", "").replace(" 2026", ""),
+                "what": DROPOFF_LABELS.get(get(r, "dropoff_type"),
+                                           get(r, "dropoff_type")),
+                **{c: get(r, c) for c in p1.SHEET_COLUMNS},
+            })
+            index[aid] = (ws.title, n)
+    return rows, index, sh
+
+
+def _team_row(m):
+    """One master row rendered as the physios see it."""
+    out = []
+    for label, key in INFO_COLS:
+        if label == "Week":
+            out.append(m["week"])
+        elif label == "What happened":
+            out.append(m["what"])
+        elif label == "Date":
+            out.append(m["appointment_date"][:10])
+        else:
+            out.append(m[key])
+    out += [m["physio_action"], m["physio_reactivation_notes"], m["aid"]]
+    return out
+
+
+FIELD_KEYS = (("action", "physio_action"),
+              ("notes", "physio_reactivation_notes"))
+
+
+def reconcile(master_rows, team):
+    """Settle each feedback cell between the two sheets, master_rows in place.
+
+    The physio's sheet is the source of truth for these two columns: a value
+    typed there overwrites the master. A blank team cell adopts the master's
+    value instead of wiping it, so feedback typed straight into the master (by
+    Martin or Sinead) survives, and so a row that arrives before its next sync
+    isn't blanked. Returns the (appointment_id, master column, value) triples
+    that need writing to the master."""
+    changes = []
+    for m in master_rows:
+        t = team.get(m["aid"])
+        if not t:
+            continue
+        for field, key in FIELD_KEYS:
+            if t[field] and t[field] != m[key]:
+                changes.append((m["aid"], key, t[field]))
+                m[key] = t[field]
+            elif not t[field]:
+                pass          # master value stands and flows back to the team sheet
+    return changes
+
+
+def sync(dry_run=False, verbose=True):
+    """Push physio feedback to the master, then refresh the team sheet.
+
+    Feedback flows team -> master. The reverse only fills a team cell that is
+    blank, so a physio's wording is never overwritten by a stale master copy.
+    """
+    gc = _client()
+    master_rows, index, master_sh = read_master(gc)
+    team_sh = gc.open_by_key(config.TEAM_SPREADSHEET_ID)
+    try:
+        ws = team_sh.worksheet(TAB)
+    except gspread.WorksheetNotFound:
+        raise RuntimeError(f"team sheet has no '{TAB}' tab — run --build first")
+
+    team_vals = ws.get_all_values()
+    if not team_vals or team_vals[0][:N_COLS] != HEADER:
+        raise RuntimeError("team sheet header is not what --build wrote — "
+                           "refusing to sync (someone edited the layout?)")
+    team = {}
+    for r in team_vals[1:]:
+        aid = r[I_KEY].strip() if len(r) > I_KEY else ""
+        if aid:
+            team[aid] = {"action": (r[I_ACTION].strip() if len(r) > I_ACTION else ""),
+                         "notes": (r[I_NOTES].strip() if len(r) > I_NOTES else "")}
+
+    # ---- 1. push: physio feedback -> master Q/R
+    changes = reconcile(master_rows, team)
+    cols = {c: p1.SHEET_COLUMNS.index(c) + 1 for c in p1.SHEET_COLUMNS}
+    pushes = []
+    for aid, key, value in changes:
+        tab, row = index[aid]
+        a1 = gspread.utils.rowcol_to_a1(row, cols[key])
+        pushes.append({"range": f"'{tab}'!{a1}", "values": [[value]]})
+    if pushes and not dry_run:
+        master_sh.values_batch_update({"valueInputOption": "RAW", "data": pushes})
+    if verbose:
+        print(f"push  team -> master : {len(pushes)} cell(s)")
+        by_aid = {m["aid"]: m for m in master_rows}
+        for aid, key, value in changes:
+            print(f"    {by_aid[aid]['patient'][:28]:30s} {key:26s} -> {value[:40]}")
+
+    # ---- 2. pull: refresh the team sheet from the master
+    desired = [_team_row(m) for m in master_rows]
+    current_ids = [r[I_KEY].strip() for r in team_vals[1:]
+                   if len(r) > I_KEY and r[I_KEY].strip()]
+    desired_ids = [m["aid"] for m in master_rows]
+
+    if current_ids == desired_ids:
+        # Same rows in the same order — touch only the cells that changed, and
+        # never the feedback columns. Avoids a rewrite racing a physio's typing.
+        updates = []
+        for i, row in enumerate(desired):
+            cur = team_vals[i + 1] if len(team_vals) > i + 1 else []
+            cur = (cur + [""] * N_COLS)[:N_COLS]
+            for j in range(N_INFO):
+                if str(cur[j]).strip() != str(row[j]).strip():
+                    a1 = gspread.utils.rowcol_to_a1(i + 2, j + 1)
+                    updates.append({"range": f"'{TAB}'!{a1}", "values": [[row[j]]]})
+        if updates and not dry_run:
+            team_sh.values_batch_update({"valueInputOption": "RAW", "data": updates})
+        if verbose:
+            print(f"pull  master -> team : {len(updates)} cell(s) updated, "
+                  f"{len(desired)} rows (unchanged set)")
+    else:
+        added = [a for a in desired_ids if a not in current_ids]
+        gone = [a for a in current_ids if a not in desired_ids]
+        if not dry_run:
+            end = max(len(desired) + 1, len(team_vals))
+            body = desired + [[""] * N_COLS] * (end - len(desired) - 1)
+            ws.update(values=body, range_name=f"A2:{chr(64 + N_COLS)}{end}",
+                      value_input_option="RAW")
+        if verbose:
+            print(f"pull  master -> team : rebuilt, {len(desired)} rows "
+                  f"(+{len(added)} new, -{len(gone)} closed)")
+    if dry_run and verbose:
+        print("\nDRY RUN — nothing written")
+    return len(pushes), len(desired)
+
+
+def build():
+    """Lay out the team tab and lock everything except the two feedback columns."""
+    gc = _client()
+    sh = gc.open_by_key(config.TEAM_SPREADSHEET_ID)
+    try:
+        ws = sh.worksheet(TAB)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=TAB, rows=600, cols=N_COLS)
+        print(f"created tab '{TAB}'")
+    # Drop the default Sheet1 once ours exists, so nobody types into the wrong one.
+    for other in sh.worksheets():
+        if other.id != ws.id and other.title in ("Sheet1", "Sheet 1"):
+            sh.del_worksheet(other)
+            print("removed the empty default Sheet1")
+
+    ws.update(values=[HEADER], range_name="A1", value_input_option="RAW")
+    sid = ws.id
+    last = chr(64 + N_COLS)
+
+    reqs = [
+        {"updateSheetProperties": {
+            "properties": {"sheetId": sid,
+                           "gridProperties": {"frozenRowCount": 1}},
+            "fields": "gridProperties.frozenRowCount"}},
+        # header
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": 0.17, "green": 0.24, "blue": 0.31},
+                "textFormat": {"bold": True,
+                               "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+                "verticalAlignment": "MIDDLE"}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}},
+        # the two columns the physios fill — tinted so they're obvious
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1,
+                      "startColumnIndex": I_ACTION, "endColumnIndex": I_NOTES + 1},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": 0.11, "green": 0.45, "blue": 0.33}}},
+            "fields": "userEnteredFormat.backgroundColor"}},
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": 600,
+                      "startColumnIndex": I_ACTION, "endColumnIndex": I_NOTES + 1},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": 0.92, "green": 0.97, "blue": 0.94}}},
+            "fields": "userEnteredFormat.backgroundColor"}},
+        # notes columns wrap; ids hidden
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": 600,
+                      "startColumnIndex": N_INFO - 1, "endColumnIndex": I_NOTES + 1},
+            "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP",
+                                           "verticalAlignment": "TOP"}},
+            "fields": "userEnteredFormat(wrapStrategy,verticalAlignment)"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "COLUMNS",
+                      "startIndex": I_KEY, "endIndex": I_KEY + 1},
+            "properties": {"hiddenByUser": True}, "fields": "hiddenByUser"}},
+        # dropdown
+        {"setDataValidation": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": 600,
+                      "startColumnIndex": I_ACTION, "endColumnIndex": I_ACTION + 1},
+            "rule": {"condition": {"type": "ONE_OF_LIST",
+                                   "values": [{"userEnteredValue": v}
+                                              for v in PHYSIO_ACTIONS]},
+                     "showCustomUi": True, "strict": False}}},
+        # a row that's been actioned fades back
+        {"addConditionalFormatRule": {
+            "index": 0,
+            "rule": {"ranges": [{"sheetId": sid, "startRowIndex": 1,
+                                 "endRowIndex": 600, "startColumnIndex": 0,
+                                 "endColumnIndex": N_COLS}],
+                     "booleanRule": {
+                         "condition": {"type": "CUSTOM_FORMULA",
+                                       "values": [{"userEnteredValue":
+                                                   f'=$%s2<>""' % chr(65 + I_ACTION)}]},
+                         "format": {"textFormat": {"foregroundColor":
+                                                   {"red": 0.5, "green": 0.5,
+                                                    "blue": 0.5}}}}}}},
+        {"setBasicFilter": {"filter": {"range": {
+            "sheetId": sid, "startRowIndex": 0, "endRowIndex": 600,
+            "startColumnIndex": 0, "endColumnIndex": N_COLS}}}},
+    ]
+    widths = [70, 85, 150, 130, 190, 70, 150, 110, 320, 170, 320]
+    for i, w in enumerate(widths):
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": w}, "fields": "pixelSize"}})
+
+    # Lock everything but the feedback columns. Editors on the FILE can still
+    # type in J/K; the protection is what stops a stray paste wrecking the
+    # names, dates and the id column the sync matches on.
+    existing = sh.fetch_sheet_metadata(
+        params={"fields": "sheets(properties(sheetId),protectedRanges(protectedRangeId))"})
+    for s in existing.get("sheets", []):
+        if s.get("properties", {}).get("sheetId") == sid:
+            for pr in s.get("protectedRanges", []) or []:
+                reqs.append({"deleteProtectedRange":
+                             {"protectedRangeId": pr["protectedRangeId"]}})
+    reqs.append({"addProtectedRange": {"protectedRange": {
+        "range": {"sheetId": sid},
+        "description": "Bot-written — physios edit Physio Action / Physio Notes only",
+        "warningOnly": False,
+        "unprotectedRanges": [{"sheetId": sid, "startRowIndex": 1,
+                               "endRowIndex": 600,
+                               "startColumnIndex": I_ACTION,
+                               "endColumnIndex": I_NOTES + 1}],
+    }}})
+
+    sh.batch_update({"requests": reqs})
+    print(f"built '{TAB}': {N_COLS} columns, {len(PHYSIO_ACTIONS)}-option dropdown, "
+          f"columns A–{chr(64 + N_INFO)} + {chr(65 + I_KEY)} protected")
+
+
+# --------------------------------------------------------------------------
+# Background loop, run inside the Render web service (always on for Slack and
+# Twilio), so this needs no extra cron and no dashboard work.
+# --------------------------------------------------------------------------
+SYNC_EVERY = 600      # seconds
+_LOCK_PATH = "/tmp/team_sheet_sync.lock"
+
+
+@contextmanager
+def _only_one_runner():
+    """Yield True in at most one process at a time.
+
+    gunicorn runs two workers in the one container and each imports this
+    module, so without this both would sync — doubling the API calls and
+    letting two rewrites race each other. The lock is taken per tick rather
+    than once at start-up, so if the worker holding it dies the other picks
+    the work up on its next tick instead of the sync stopping until a deploy.
+    """
+    fh = open(_LOCK_PATH, "w")
+    try:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        yield True
+    finally:
+        fh.close()
+
+
+def run_forever(interval=SYNC_EVERY):
+    fails = 0
+    while True:
+        try:
+            with _only_one_runner() as mine:
+                if not mine:
+                    time.sleep(interval)
+                    continue
+                pushed, rows = sync(verbose=False)
+                if pushed:
+                    print(f"team sheet: pushed {pushed} feedback cell(s), "
+                          f"{rows} rows live")
+            fails = 0
+        except Exception as exc:                      # never kill the thread
+            fails += 1
+            print(f"team sheet sync failed ({fails}): {exc}")
+            if fails in (3, 30):                      # ~30 min, then ~5 h
+                try:
+                    import slack_notifier
+                    slack_notifier._send_dm(
+                        config.CEO_SLACK_EMAIL,
+                        f":warning: Team drop-off sheet sync has failed {fails} "
+                        f"times in a row — physio feedback is *not* reaching the "
+                        f"master sheet. Last error: `{exc}`",
+                        target_label="team sheet sync failure")
+                except Exception as alert_exc:
+                    print(f"  (could not raise the alert: {alert_exc})")
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    if "--build" in sys.argv:
+        build()
+    if "--sync" in sys.argv:
+        sync(dry_run="--dry-run" in sys.argv)
+    if not any(a in sys.argv for a in ("--build", "--sync")):
+        print(__doc__)

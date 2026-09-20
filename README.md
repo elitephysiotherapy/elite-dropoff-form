@@ -172,6 +172,41 @@ Required environment variables (set in Render dashboard → Environment):
 Set the Twilio number's **A message comes in** webhook to
 `https://elite-dropoff-form.onrender.com/twilio/inbound` (HTTP POST).
 
+## Team drop-off sheet (physio feedback)
+
+A **separate spreadsheet**, "Elite Drop-offs — Team"
+(`config.TEAM_SPREADSHEET_ID`), shared with the physios. Separate because
+Google Sheets permissions are per-FILE: there is no per-tab view permission, so
+sharing the master would show them every tab in it including the per-physio
+performance stats. Protecting or hiding a tab only blocks *edits* — File >
+Download and File > Make a copy both expose a hidden tab to anyone who can open
+the file.
+
+`team_sheet.py` keeps the two in step:
+
+| | |
+|---|---|
+| master W/C tabs → team sheet | names, dates, appointment, body area, reception's notes |
+| team sheet → master Q + R | `Physio Action` (dropdown), `Physio Reactivation Notes` |
+
+Rows: the last `TEAM_SHEET_WEEKS` (4) W/C tabs, minus anyone already
+reactivated. Matched on the hidden `appointment_id` column, so reordering or
+filtering the team sheet is harmless. Columns A–I and L are protected —
+physios can only type in J and K.
+
+Conflict rule: a value typed on the team sheet wins; a **blank** team cell
+adopts the master's value rather than wiping it, so feedback typed straight
+into the master survives.
+
+    python team_sheet.py --build            # one-off layout + protection
+    python team_sheet.py --sync --dry-run   # show what would move
+    python team_sheet.py --sync
+
+The sync runs every 10 minutes in a background thread inside this Render web
+service (already always-on for Slack and Twilio, so it needs no extra cron).
+`team_sheet._only_one_runner` keeps the two gunicorn workers from both syncing.
+Set `TEAM_SHEET_SYNC=0` to switch it off. Three consecutive failures DM Martin.
+
 ## Tabs in the Google Sheet
 
 | Tab | Purpose | Refreshed |

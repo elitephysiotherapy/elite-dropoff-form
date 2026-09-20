@@ -805,6 +805,22 @@ def twilio_voice():
     return make_response(twiml, 200, {"Content-Type": "text/xml"})
 
 
+# ---------------------------------------------------------------------------
+# Team drop-off sheet — two-way sync, run here rather than as its own cron.
+# This service is already always-on for Slack and Twilio, so a background
+# thread costs nothing and needs no new Render resource. team_sheet holds a
+# lock so only one gunicorn worker syncs at a time.
+# ---------------------------------------------------------------------------
+if os.environ.get("TEAM_SHEET_SYNC", "1") == "1":
+    def _start_team_sheet_sync():
+        import team_sheet
+        team_sheet.run_forever()
+
+    threading.Thread(target=_start_team_sheet_sync, daemon=True,
+                     name="team-sheet-sync").start()
+    print("team sheet sync thread started")
+
+
 if __name__ == "__main__":
     # Local dev runner
     port = int(os.environ.get("PORT", 5000))
