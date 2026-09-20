@@ -74,9 +74,11 @@ SHEET_COLUMNS = [
     "reactivation_status",     # N
     "reactivation_notes",      # O
     "martys_comments",         # P
-    "actioned",                # Q
-    "appointment_id",          # R (hidden)
-    "pulled_at",               # S (hidden)
+    "physio_action",           # Q — dropdown, written from the team sheet
+    "physio_reactivation_notes",  # R — was "Actioned" (reception's log, merged
+                               #     into reception_reactivation_notes 2026-09-20)
+    "appointment_id",          # S (hidden)
+    "pulled_at",               # T (hidden)
 ]
 HIDDEN_COLUMNS = ("appointment_id", "pulled_at")
 
@@ -95,9 +97,10 @@ HEADER_LABELS = {
     "clinical_non_clinical": "Clinical / Non-Clinical",
     "next_step_physio": "Next Step (Physio)",
     "reactivation_status": "Reactivation Status",
-    "reactivation_notes": "Reactivation Notes",
+    "reactivation_notes": "Reception Reactivation Notes",
     "martys_comments": "Marty's Comments",
-    "actioned": "Actioned",
+    "physio_action": "Physio Action",
+    "physio_reactivation_notes": "Physio Reactivation Notes",
     "appointment_id": "appointment_id",
     "pulled_at": "pulled_at",
 }
@@ -807,7 +810,8 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
             "reactivation_status": "pending",
             "reactivation_notes": "",
             "martys_comments": "",
-            "actioned": "",
+            "physio_action": "",
+            "physio_reactivation_notes": "",
             "appointment_id": str(a.get("id")),
             "pulled_at": pulled_at,
             # internal-only (not written to sheet):
@@ -994,7 +998,12 @@ def _dedup_same_lapse(rows, history_cache, sheet_ids_by_patient=None):
 
 
 _HUMAN_COLS = ("clinical_non_clinical", "next_step_physio", "reactivation_status",
-               "reactivation_notes", "martys_comments", "actioned")
+               "reactivation_notes", "martys_comments", "physio_action",
+               "physio_reactivation_notes")
+# Which of the above merge as dropdowns (keep a value) vs free text (join).
+# reactivation_status is neither — it takes the most advanced value.
+_DROPDOWN_COLS = ("clinical_non_clinical", "next_step_physio", "physio_action")
+_FREETEXT_COLS = ("reactivation_notes", "martys_comments", "physio_reactivation_notes")
 _STATUS_RANK = {"reactivated": 5, "rebooked": 4, "leave": 3, "contact_attempted": 2,
                 "pending": 1, "": 0}
 
@@ -1009,13 +1018,16 @@ def _merge_human_cols(keep, others):
     rows = [keep] + others
     val = lambda r, i: str(r[i]).strip() if len(r) > i else ""
     merged = [val(keep, i) for i in idx]
-    for k in (0, 1):
+    k_of = {c: n for n, c in enumerate(_HUMAN_COLS)}
+    for k in (k_of[c] for c in _DROPDOWN_COLS):
         if not merged[k]:
             merged[k] = next((val(r, idx[k]) for r in rows if val(r, idx[k])), "")
-    if merged[2] in ("", "pending"):
-        merged[2] = max((val(r, idx[2]) for r in rows), key=lambda s: _STATUS_RANK.get(s, 0))
+    k_status = k_of["reactivation_status"]
+    if merged[k_status] in ("", "pending"):
+        merged[k_status] = max((val(r, idx[k_status]) for r in rows),
+                               key=lambda s: _STATUS_RANK.get(s, 0))
     norm = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())
-    for k in (3, 4, 5):
+    for k in (k_of[c] for c in _FREETEXT_COLS):
         texts = []
         for r in sorted(rows, key=lambda r: val(r, SHEET_COLUMNS.index("pulled_at"))):
             v = val(r, idx[k])

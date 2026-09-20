@@ -325,17 +325,22 @@ def sheet_row(**kw):
         r[p1.SHEET_COLUMNS.index(k)] = v
     return r
 kept_row = sheet_row(reactivation_status="leave", reactivation_notes="left VM MH 2/9/26",
-                     actioned="see above", pulled_at="46261.29")
+                     physio_reactivation_notes="see above", pulled_at="46261.29")
 gone_row = sheet_row(reactivation_status="contact_attempted", martys_comments="reactivate",
-                     actioned="26/8/26 - Whatsapp sent. SR", pulled_at="46258.29")
+                     physio_reactivation_notes="26/8/26 - Whatsapp sent. SR",
+                     pulled_at="46258.29")
 merged = p1._merge_human_cols(kept_row, [gone_row])
-results.append(check("status stays on the kept row's decision", merged[2], "leave"))
-results.append(check("comments carried over from the removed row", merged[4], "reactivate"))
+m = lambda c: merged[p1._HUMAN_COLS.index(c)]
+results.append(check("status stays on the kept row's decision",
+                     m("reactivation_status"), "leave"))
+results.append(check("comments carried over from the removed row",
+                     m("martys_comments"), "reactivate"))
 results.append(check("'see above' pointer replaced by the note it pointed at",
-                     merged[5], "26/8/26 - Whatsapp sent. SR"))
+                     m("physio_reactivation_notes"), "26/8/26 - Whatsapp sent. SR"))
 results.append(check("pending kept row takes the other row's status",
                      p1._merge_human_cols(sheet_row(reactivation_status="pending"),
-                                          [sheet_row(reactivation_status="contact_attempted")])[2],
+                                          [sheet_row(reactivation_status="contact_attempted")]
+                                          )[p1._HUMAN_COLS.index("reactivation_status")],
                      "contact_attempted"))
 
 

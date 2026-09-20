@@ -45,14 +45,19 @@ TRICKY_PATIENT_URL = (
 )
 TALLY_SIGNING_SECRET = os.environ.get("TALLY_SIGNING_SECRET", "")
 
-# Column positions in W/C tabs (1-indexed for gspread):
-COL_PATIENT = 3              # C
-COL_PHYSIO = 4               # D
-COL_BODY_AREA = 11           # K
-COL_CLINICAL_NON_CLINICAL = 12  # L
-COL_NEXT_STEP = 13              # M
-COL_REACTIVATION_STATUS = 14    # N
-COL_APPOINTMENT_ID = 18         # R
+# Column positions in W/C tabs are resolved from the header row at runtime by
+# wc_cols() rather than hardcoded, so inserting or moving a column can't
+# silently misdirect a write. These are last-resort fallbacks only, used if a
+# header is missing; they describe the layout as of 2026-09-20.
+COL_FALLBACK = {
+    "Patient Name": 3,               # C
+    "Physio": 4,                     # D
+    "Body Area": 11,                 # K
+    "Clinical / Non-Clinical": 12,   # L
+    "Next Step (Physio)": 13,        # M
+    "Reactivation Status": 14,       # N
+    "appointment_id": 19,            # S
+}
 
 # ---------------- Lazy-init clients ----------------
 _sheets_client = None
@@ -125,6 +130,33 @@ def get_wc_tabs(sh):
     return _wc_tabs_cache["tabs"]
 
 
+_cols_cache = {"at": 0.0, "cols": None}
+_COLS_TTL = 600  # seconds
+
+
+def wc_cols(sh):
+    """1-indexed column numbers on the W/C tabs, read from the header row.
+
+    Cached like get_wc_tabs. Falls back to COL_FALLBACK for any header it
+    can't find, and says so in the log rather than writing to a guessed
+    column."""
+    now = time.monotonic()
+    if _cols_cache["cols"] is None or now - _cols_cache["at"] > _COLS_TTL:
+        cols = dict(COL_FALLBACK)
+        tabs = get_wc_tabs(sh)
+        if tabs:
+            header = {h.strip(): i
+                      for i, h in enumerate(tabs[0].row_values(1), 1) if h.strip()}
+            for label in COL_FALLBACK:
+                if label in header:
+                    cols[label] = header[label]
+                else:
+                    print(f"WARN column '{label}' not in {tabs[0].title} header "
+                          f"— falling back to column {cols[label]}")
+        _cols_cache.update(at=now, cols=cols)
+    return _cols_cache["cols"]
+
+
 def find_row_by_appt_id(sh, appt_id):
     """Locate W/C tab and 1-indexed row containing this appointment_id.
 
@@ -135,7 +167,8 @@ def find_row_by_appt_id(sh, appt_id):
     tabs = get_wc_tabs(sh)
     if not tabs:
         return None, None
-    col = gspread.utils.rowcol_to_a1(1, COL_APPOINTMENT_ID).rstrip("0123456789")
+    col = gspread.utils.rowcol_to_a1(
+        1, wc_cols(sh)["appointment_id"]).rstrip("0123456789")
     ranges = [f"'{ws.title}'!{col}:{col}" for ws in tabs]
     resp = sh.values_batch_get(ranges)
     for ws, vrange in zip(tabs, resp.get("valueRanges", [])):
@@ -166,15 +199,16 @@ def update_classification(appt_id, clinical=None, next_step=None, reactivation_s
     ws, row = find_row_by_appt_id(sh, appt_id)
     if not ws:
         return None
+    cols = wc_cols(sh)
     updates = []
     if clinical is not None:
-        updates.append({"range": gspread.utils.rowcol_to_a1(row, COL_CLINICAL_NON_CLINICAL),
+        updates.append({"range": gspread.utils.rowcol_to_a1(row, cols["Clinical / Non-Clinical"]),
                         "values": [[clinical]]})
     if next_step is not None:
-        updates.append({"range": gspread.utils.rowcol_to_a1(row, COL_NEXT_STEP),
+        updates.append({"range": gspread.utils.rowcol_to_a1(row, cols["Next Step (Physio)"]),
                         "values": [[next_step]]})
     if reactivation_status is not None:
-        updates.append({"range": gspread.utils.rowcol_to_a1(row, COL_REACTIVATION_STATUS),
+        updates.append({"range": gspread.utils.rowcol_to_a1(row, cols["Reactivation Status"]),
                         "values": [[reactivation_status]]})
     if updates:
         ws.batch_update(updates, value_input_option="RAW")
@@ -182,9 +216,9 @@ def update_classification(appt_id, clinical=None, next_step=None, reactivation_s
     return {
         "tab": ws.title,
         "row": row,
-        "patient": values[COL_PATIENT - 1] if len(values) >= COL_PATIENT else "?",
-        "physio": values[COL_PHYSIO - 1] if len(values) >= COL_PHYSIO else "?",
-        "body_area": values[COL_BODY_AREA - 1] if len(values) >= COL_BODY_AREA else "?",
+        "patient": values[cols["Patient Name"] - 1] if len(values) >= cols["Patient Name"] else "?",
+        "physio": values[cols["Physio"] - 1] if len(values) >= cols["Physio"] else "?",
+        "body_area": values[cols["Body Area"] - 1] if len(values) >= cols["Body Area"] else "?",
     }
 
 
