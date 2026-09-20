@@ -55,13 +55,17 @@ PHYSIO_COLS = [
     ("Physio Notes",   "physio_reactivation_notes"),
 ]
 KEY_COL = ("appointment_id", "appointment_id")
-HEADER = [h for h, _ in INFO_COLS + PHYSIO_COLS + [KEY_COL]]
+# Hidden, and only there to drive the row colours — the physios shouldn't have
+# to read "contact_attempted" to know reception has already tried.
+STATUS_COL = ("status", "reactivation_status")
+HEADER = [h for h, _ in INFO_COLS + PHYSIO_COLS + [KEY_COL, STATUS_COL]]
 
 N_INFO = len(INFO_COLS)                       # A..I
 I_ACTION = N_INFO                             # J (0-based)
 I_NOTES = N_INFO + 1                          # K
 I_KEY = N_INFO + 2                            # L
-N_COLS = N_INFO + 3
+I_STATUS = N_INFO + 3                         # M
+N_COLS = N_INFO + 4
 
 PHYSIO_ACTIONS = [
     "Called – spoke to them",
@@ -147,7 +151,8 @@ def _team_row(m):
             out.append(m["appointment_date"][:10])
         else:
             out.append(m[key])
-    out += [m["physio_action"], m["physio_reactivation_notes"], m["aid"]]
+    out += [m["physio_action"], m["physio_reactivation_notes"], m["aid"],
+            m["reactivation_status"]]
     return out
 
 
@@ -232,7 +237,9 @@ def sync(dry_run=False, verbose=True):
         for i, row in enumerate(desired):
             cur = team_vals[i + 1] if len(team_vals) > i + 1 else []
             cur = (cur + [""] * N_COLS)[:N_COLS]
-            for j in range(N_INFO):
+            # info columns plus the hidden status that drives the row colour;
+            # never the feedback columns, and the key never changes
+            for j in list(range(N_INFO)) + [I_STATUS]:
                 if str(cur[j]).strip() != str(row[j]).strip():
                     a1 = gspread.utils.rowcol_to_a1(i + 2, j + 1)
                     updates.append({"range": f"'{TAB}'!{a1}", "values": [[row[j]]]})
@@ -257,6 +264,36 @@ def sync(dry_run=False, verbose=True):
     return len(pushes), len(desired)
 
 
+# status -> row background, matching apply_dropoff_tab_formatting on the master.
+STATUS_COLOURS = [
+    ("contact_attempted", {"red": 1.00, "green": 0.87, "blue": 0.70}),  # orange
+    ("leave",             {"red": 0.96, "green": 0.78, "blue": 0.78}),  # red
+]
+
+
+def _colour_rules(sid):
+    """Row colours by reception status, plus a fade once the physio replies."""
+    full = {"sheetId": sid, "startRowIndex": 1, "endRowIndex": 600,
+            "startColumnIndex": 0, "endColumnIndex": N_COLS}
+    reqs = []
+    for i, (value, colour) in enumerate(STATUS_COLOURS):
+        reqs.append({"addConditionalFormatRule": {"index": i, "rule": {
+            "ranges": [full],
+            "booleanRule": {
+                "condition": {"type": "CUSTOM_FORMULA", "values": [
+                    {"userEnteredValue": f'=${chr(65 + I_STATUS)}2="{value}"'}]},
+                "format": {"backgroundColor": colour}}}}})
+    # Answered rows grey out, so what's left is what still needs doing.
+    reqs.append({"addConditionalFormatRule": {"index": len(reqs), "rule": {
+        "ranges": [full],
+        "booleanRule": {
+            "condition": {"type": "CUSTOM_FORMULA", "values": [
+                {"userEnteredValue": f'=${chr(65 + I_ACTION)}2<>""'}]},
+            "format": {"textFormat": {"foregroundColor": {
+                "red": 0.55, "green": 0.55, "blue": 0.55}}}}}}})
+    return reqs
+
+
 def build():
     """Lay out the team tab and lock everything except the two feedback columns."""
     gc = _client()
@@ -274,9 +311,28 @@ def build():
 
     ws.update(values=[HEADER], range_name="A1", value_input_option="RAW")
     sid = ws.id
-    last = chr(64 + N_COLS)
 
-    reqs = [
+    # Clear what a previous --build left behind FIRST, in the same batch.
+    # addConditionalFormatRule appends, so without this every rebuild would
+    # stack another copy of each rule (the same way bot charts piled up on the
+    # master). Deletes go high -> low so the indices stay valid as they go.
+    meta = sh.fetch_sheet_metadata(params={
+        "fields": "sheets(properties(sheetId),conditionalFormats,"
+                  "protectedRanges(protectedRangeId))"})
+    cleanup = []
+    for sheet in meta.get("sheets", []):
+        if sheet.get("properties", {}).get("sheetId") != sid:
+            continue
+        for i in range(len(sheet.get("conditionalFormats", []) or []) - 1, -1, -1):
+            cleanup.append({"deleteConditionalFormatRule":
+                            {"sheetId": sid, "index": i}})
+        for pr in sheet.get("protectedRanges", []) or []:
+            cleanup.append({"deleteProtectedRange":
+                            {"protectedRangeId": pr["protectedRangeId"]}})
+    if cleanup:
+        print(f"  clearing {len(cleanup)} rule(s) from the previous build")
+
+    reqs = cleanup + [
         {"updateSheetProperties": {
             "properties": {"sheetId": sid,
                            "gridProperties": {"frozenRowCount": 1}},
@@ -312,7 +368,7 @@ def build():
             "fields": "userEnteredFormat(wrapStrategy,verticalAlignment)"}},
         {"updateDimensionProperties": {
             "range": {"sheetId": sid, "dimension": "COLUMNS",
-                      "startIndex": I_KEY, "endIndex": I_KEY + 1},
+                      "startIndex": I_KEY, "endIndex": I_STATUS + 1},
             "properties": {"hiddenByUser": True}, "fields": "hiddenByUser"}},
         # dropdown
         {"setDataValidation": {
@@ -322,24 +378,17 @@ def build():
                                    "values": [{"userEnteredValue": v}
                                               for v in PHYSIO_ACTIONS]},
                      "showCustomUi": True, "strict": False}}},
-        # a row that's been actioned fades back
-        {"addConditionalFormatRule": {
-            "index": 0,
-            "rule": {"ranges": [{"sheetId": sid, "startRowIndex": 1,
-                                 "endRowIndex": 600, "startColumnIndex": 0,
-                                 "endColumnIndex": N_COLS}],
-                     "booleanRule": {
-                         "condition": {"type": "CUSTOM_FORMULA",
-                                       "values": [{"userEnteredValue":
-                                                   f'=$%s2<>""' % chr(65 + I_ACTION)}]},
-                         "format": {"textFormat": {"foregroundColor":
-                                                   {"red": 0.5, "green": 0.5,
-                                                    "blue": 0.5}}}}}}},
+        # Row colour, same language as the master's W/C tabs so nobody has to
+        # learn two schemes. Green (reactivated) is deliberately absent: those
+        # rows are dropped from this sheet entirely, which is tidier than
+        # colouring a patient nobody needs to chase.
+        *_colour_rules(sid),
         {"setBasicFilter": {"filter": {"range": {
             "sheetId": sid, "startRowIndex": 0, "endRowIndex": 600,
             "startColumnIndex": 0, "endColumnIndex": N_COLS}}}},
     ]
     widths = [70, 85, 150, 130, 190, 70, 150, 110, 320, 170, 320]
+    # (L appointment_id and M status are hidden — no width needed)
     for i, w in enumerate(widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": sid, "dimension": "COLUMNS",
@@ -349,13 +398,6 @@ def build():
     # Lock everything but the feedback columns. Editors on the FILE can still
     # type in J/K; the protection is what stops a stray paste wrecking the
     # names, dates and the id column the sync matches on.
-    existing = sh.fetch_sheet_metadata(
-        params={"fields": "sheets(properties(sheetId),protectedRanges(protectedRangeId))"})
-    for s in existing.get("sheets", []):
-        if s.get("properties", {}).get("sheetId") == sid:
-            for pr in s.get("protectedRanges", []) or []:
-                reqs.append({"deleteProtectedRange":
-                             {"protectedRangeId": pr["protectedRangeId"]}})
     reqs.append({"addProtectedRange": {"protectedRange": {
         "range": {"sheetId": sid},
         "description": "Bot-written — physios edit Physio Action / Physio Notes only",
