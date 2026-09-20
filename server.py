@@ -325,7 +325,11 @@ def index():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True})
+    # commit is Render's RENDER_GIT_COMMIT — lets a deploy be confirmed live
+    # rather than assumed (a stale build silently serving old column positions
+    # is exactly the failure this endpoint should make visible).
+    return jsonify({"ok": True,
+                    "commit": (os.environ.get("RENDER_GIT_COMMIT") or "local")[:7]})
 
 
 # Appointment ids with a save currently in flight — repeat clicks on the same
