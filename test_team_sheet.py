@@ -25,6 +25,7 @@ def master(aid="1", action="", notes="", **kw):
         "appointment_date": "2026-09-16 13:00", "appointment_type": "2. Review",
         "session_number": "4", "body_area": "Knee",
         "reactivation_notes": "reception rang 17/9",
+        "cancellation_reason": "Feeling Better",
         "physio_action": action, "physio_reactivation_notes": notes,
     })
     row.update(kw)
@@ -80,6 +81,8 @@ check("date is shown without the time", row[1], "2026-09-16")
 check("patient name", row[2], "Joe Bloggs")
 check("reception's notes are carried across so nobody double-calls",
       row[ts.N_INFO - 1], "reception rang 17/9")
+check("the patient's stated reason travels with the row, so a red row is "
+      "never unexplained", row[7], "Feeling Better")
 check("feedback sits in the two editable columns",
       (row[ts.I_ACTION], row[ts.I_NOTES]), ("Rebooked", "back Tuesday"))
 check("appointment_id is last, for the sync to match on",
@@ -94,8 +97,10 @@ check("every drop-off type the sheet uses has a label",
 
 print("\n3. Layout guards:")
 check("only two columns are editable", len(ts.PHYSIO_COLS), 2)
-check("the editable columns are J and K",
-      (chr(65 + ts.I_ACTION), chr(65 + ts.I_NOTES)), ("J", "K"))
+check("the editable columns are K and L",
+      (chr(65 + ts.I_ACTION), chr(65 + ts.I_NOTES)), ("K", "L"))
+check("the hidden key and status columns sit past them",
+      (chr(65 + ts.I_KEY), chr(65 + ts.I_STATUS)), ("M", "N"))
 check("dropdown options", ts.PHYSIO_ACTIONS[0], "Called – spoke to them")
 check("patients already rebooked drop off the list", ts.SKIP_STATUS, {"reactivated"})
 

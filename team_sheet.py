@@ -47,6 +47,10 @@ INFO_COLS = [
     ("Appointment",    "appointment_type"),
     ("Session #",      "session_number"),
     ("What happened",  None),
+    # What the patient said when they cancelled. Their words, not a clinical
+    # finding — "Feeling Better" is very often a polite way of quitting, so it
+    # is context for the call, never a reason to skip one.
+    ("Reason given",   "cancellation_reason"),
     ("Body Area",      "body_area"),
     ("Reception notes", "reactivation_notes"),
 ]
@@ -198,11 +202,17 @@ def sync(dry_run=False, verbose=True):
         raise RuntimeError(f"team sheet has no '{TAB}' tab — run --build first")
 
     team_vals = ws.get_all_values()
-    if not team_vals or team_vals[0][:N_COLS] != HEADER:
-        raise RuntimeError("team sheet header is not what --build wrote — "
-                           "refusing to sync (someone edited the layout?)")
+    relaid_out = not team_vals or team_vals[0][:N_COLS] != HEADER
+    if relaid_out:
+        # The columns moved (a --build added one) or someone edited the header.
+        # Reading feedback out of the old positions would put it in the wrong
+        # master cells, so skip the push and rebuild from the master, which
+        # already holds every physio entry pushed since the last layout. Only
+        # feedback typed in the few minutes since the last sync is at risk.
+        print("team sheet layout differs from this build — rebuilding from the "
+              "master, and not pushing this round")
     team = {}
-    for r in team_vals[1:]:
+    for r in (team_vals[1:] if not relaid_out else []):
         aid = r[I_KEY].strip() if len(r) > I_KEY else ""
         if aid:
             team[aid] = {"action": (r[I_ACTION].strip() if len(r) > I_ACTION else ""),
@@ -226,8 +236,9 @@ def sync(dry_run=False, verbose=True):
 
     # ---- 2. pull: refresh the team sheet from the master
     desired = [_team_row(m) for m in master_rows]
-    current_ids = [r[I_KEY].strip() for r in team_vals[1:]
-                   if len(r) > I_KEY and r[I_KEY].strip()]
+    current_ids = [] if relaid_out else [
+        r[I_KEY].strip() for r in team_vals[1:]
+        if len(r) > I_KEY and r[I_KEY].strip()]
     desired_ids = [m["aid"] for m in master_rows]
 
     if current_ids == desired_ids:
@@ -387,7 +398,7 @@ def build():
             "sheetId": sid, "startRowIndex": 0, "endRowIndex": 600,
             "startColumnIndex": 0, "endColumnIndex": N_COLS}}}},
     ]
-    widths = [70, 85, 150, 130, 190, 70, 150, 110, 320, 170, 320]
+    widths = [70, 85, 150, 130, 190, 70, 150, 120, 110, 320, 170, 320]
     # (L appointment_id and M status are hidden — no width needed)
     for i, w in enumerate(widths):
         reqs.append({"updateDimensionProperties": {
