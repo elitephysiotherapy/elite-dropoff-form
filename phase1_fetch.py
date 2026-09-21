@@ -1040,6 +1040,73 @@ def _merge_human_cols(keep, others):
     return merged
 
 
+_ID_RE = re.compile(r"\d{15,20}")
+_STAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}")
+
+
+def is_old_layout_row(row):
+    """True for a row written in the pre-2026-09-20 19-column layout.
+
+    That layout had no Physio Action column, so everything from Q rightwards
+    sits one column early: the appointment id lands in R (now Physio
+    Reactivation Notes) and pulled_at in S (now appointment_id), leaving T
+    blank. The signature is exact — a timestamp where the id belongs, a real id
+    one column to its left — so no genuine row can match it."""
+    r = list(row) + [""] * len(SHEET_COLUMNS)
+    i_id = SHEET_COLUMNS.index("appointment_id")
+    return (bool(_STAMP_RE.fullmatch(str(r[i_id]).strip()))
+            and bool(_ID_RE.fullmatch(str(r[i_id - 1]).strip()))
+            and not str(r[i_id + 1]).strip())
+
+
+def remove_old_layout_rows(dry_run=False):
+    """Delete rows an out-of-date copy of this script appended in the old layout.
+
+    Something outside Render and this Mac runs an old copy of the daily job at
+    07:00, a minute before the real one (see the 2026-09-21 incident in
+    reference_dropoff_second_writer). Since the layout gained a column it can't
+    find existing appointments, so each morning it re-appends every drop-off
+    in its window, with the id in the wrong column. This undoes that: the real
+    run then adds anything that is genuinely a drop-off under the current
+    rules, so nothing legitimate is lost by deleting.
+
+    Rows someone has already worked on (any human column filled, or a status
+    other than pending) are left alone and reported, never deleted.
+    Returns (removed, held) as lists of "tab: patient" strings."""
+    import sheets_retry
+    sh = open_spreadsheet()
+    tabs = [w for w in sh.worksheets() if w.title.startswith("W/C ")]
+    resp = sheets_retry.gs_retry(
+        lambda: sh.values_batch_get([f"'{w.title}'!A:T" for w in tabs]),
+        "old-layout scan")
+    col = {c: SHEET_COLUMNS.index(c) for c in SHEET_COLUMNS}
+    human = [col[c] for c in ("clinical_non_clinical", "next_step_physio",
+                              "reactivation_notes", "martys_comments", "physio_action")]
+    reqs, removed, held = [], [], []
+    for ws, vr in zip(tabs, resp.get("valueRanges", [])):
+        rows = vr.get("values", [])
+        doomed = []
+        for n, r in enumerate(rows[1:], start=2):
+            if not is_old_layout_row(r):
+                continue
+            r = list(r) + [""] * len(SHEET_COLUMNS)
+            name = re.sub(r'.*,\s*"|"\)$', "", str(r[col["patient"]]))
+            if any(str(r[i]).strip() for i in human) or \
+                    str(r[col["reactivation_status"]]).strip() not in ("", "pending"):
+                held.append(f"{ws.title}: {name}")
+            else:
+                doomed.append(n)
+                removed.append(f"{ws.title}: {name}")
+        for n in sorted(doomed, reverse=True):          # bottom-up keeps indices valid
+            reqs.append({"deleteDimension": {"range": {
+                "sheetId": ws.id, "dimension": "ROWS",
+                "startIndex": n - 1, "endIndex": n}}})
+    if reqs and not dry_run:
+        sheets_retry.gs_retry(lambda: sh.batch_update({"requests": reqs}),
+                              "old-layout delete")
+    return removed, held
+
+
 def sweep_same_lapse_duplicates(tab_names, dry_run=False):
     """Remove duplicate rows (same patient, same lapse) across the given W/C tabs.
 
@@ -3574,6 +3641,14 @@ def existing_sheet_state():
             continue
         for row in vals[1:]:
             aid = str(row[i_appt_id]) if len(row) > i_appt_id and row[i_appt_id] else ""
+            if aid and not _ID_RE.fullmatch(aid):
+                # Not an appointment id — an old-layout row from the stray
+                # writer (pulled_at sitting where the id belongs; a date serial
+                # in this FORMULA read). Counting it would let a junk row stand
+                # in for the patient in the same-lapse and bulk-cancel dedup and
+                # suppress a genuine new drop-off. remove_old_layout_rows()
+                # deletes these later in the run.
+                continue
             if aid:
                 ids.add(aid)
             pat = str(row[i_patient]) if len(row) > i_patient else ""
@@ -3760,6 +3835,30 @@ def main():
         print("Writing drop-off rows to Google Sheet…")
         write_to_sheet(rows)
         _stamp("write done")
+        # Runs here, ~10 min into the job, because the stray writer fires a
+        # minute BEFORE this one — by now it has long finished appending.
+        print("Removing rows appended in the old 19-column layout…")
+        try:
+            removed, held = remove_old_layout_rows()
+            print(f"  old-layout rows: {len(removed)} removed, {len(held)} held")
+            if removed or held:
+                import slack_notifier
+                lines = [f":rotating_light: The out-of-date drop-off writer ran again "
+                         f"this morning and appended {len(removed) + len(held)} row(s) "
+                         f"in the old column layout."]
+                if removed:
+                    lines.append(f"Removed {len(removed)} (nobody had touched them). "
+                                 f"Anything genuinely new has been re-checked under "
+                                 f"the current rules.")
+                if held:
+                    lines.append("*Left in place — someone has already worked on them, "
+                                 "check by hand:*\n" + "\n".join(f"• {h}" for h in held))
+                lines.append("This repeats every morning until whatever runs the old "
+                             "copy is found and switched off.")
+                slack_notifier._send_dm(config.CEO_SLACK_EMAIL, "\n".join(lines),
+                                        target_label="old-layout writer tripwire")
+        except Exception as e:
+            print(f"  WARN old-layout cleanup failed: {e}")
         print("Sweeping recent tabs for same-lapse duplicate rows…")
         try:
             n = sweep_same_lapse_duplicates(recent_week_tabs(days=DAILY_LOOKBACK_DAYS + 14))

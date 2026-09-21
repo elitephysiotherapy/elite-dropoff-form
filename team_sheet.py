@@ -21,6 +21,8 @@ Usage:
     python team_sheet.py --build     # one-off: lay out the tab, lock it down
     python team_sheet.py --sync      # push feedback back, pull new drop-offs
     python team_sheet.py --sync --dry-run
+    python team_sheet.py --sync --relayout   # rebuild rows from the master
+                                             # (the master holds every entry)
 """
 import fcntl
 import os
@@ -115,7 +117,7 @@ def read_master(gc):
     if not tabs:
         raise RuntimeError("no W/C tabs on the master sheet")
     resp = sh.values_batch_get([f"'{w.title}'!A:T" for w in tabs])
-    rows, index = [], {}
+    rows, index, skipped = [], {}, []
     for ws, vr in zip(tabs, resp.get("valueRanges", [])):
         vals = vr.get("values", [])
         if not vals:
@@ -128,7 +130,16 @@ def read_master(gc):
         get = lambda r, c: (r[col[c]].strip() if len(r) > col[c] else "")
         for n, r in enumerate(vals[1:], start=2):
             aid = get(r, "appointment_id")
-            if not aid or get(r, "reactivation_status") in SKIP_STATUS:
+            if not p1._ID_RE.fullmatch(aid) or aid in index:
+                # Not a real id (an old-layout row from the stray writer, whose
+                # pulled_at sits where the id belongs — 30 of them shared one
+                # timestamp on 21 Sep and collapsed into one "patient"), or a
+                # second row for an id already taken. Either would pair a
+                # physio's note with the wrong master row.
+                if aid:
+                    skipped.append(f"{ws.title} row {n}")
+                continue
+            if get(r, "reactivation_status") in SKIP_STATUS:
                 continue
             rows.append({
                 "aid": aid,
@@ -140,6 +151,10 @@ def read_master(gc):
                 **{c: get(r, c) for c in p1.SHEET_COLUMNS},
             })
             index[aid] = (ws.title, n)
+    if skipped:
+        print(f"  skipped {len(skipped)} master row(s) without a usable "
+              f"appointment id: {', '.join(skipped[:5])}"
+              f"{' …' if len(skipped) > 5 else ''}")
     return rows, index, sh
 
 
@@ -158,6 +173,39 @@ def _team_row(m):
     out += [m["physio_action"], m["physio_reactivation_notes"], m["aid"],
             m["reactivation_status"]]
     return out
+
+
+def plan_rows(current_ids, desired_ids):
+    """Work out the row deletes and inserts that turn the sheet's current
+    order into the wanted one, without moving any row that stays.
+
+    Returns (deletes, inserts, final):
+      deletes — 0-based data-row indices to remove, highest first, so each
+                delete leaves the indices of the ones still to come intact;
+      inserts — (appointment_id, index) in the order they must be applied,
+                each index counted after the deletes and earlier inserts;
+      final   — the resulting order of appointment_ids.
+
+    New rows go where the master order puts them, which is the top for a new
+    week's drop-offs. Existing rows are never reordered: moving a row is the
+    thing that slides a patient out from under someone's cursor."""
+    wanted = set(desired_ids)
+    deletes = [i for i in range(len(current_ids) - 1, -1, -1)
+               if not current_ids[i] or current_ids[i] not in wanted]
+    gone = set(deletes)
+    order = [a for i, a in enumerate(current_ids) if i not in gone]
+    present = set(order)
+    inserts = []
+    for n, aid in enumerate(desired_ids):
+        if aid in present:
+            continue
+        # just above the next row, in master order, that's already placed
+        nxt = next((a for a in desired_ids[n + 1:] if a in present), None)
+        pos = order.index(nxt) if nxt else len(order)
+        order.insert(pos, aid)
+        present.add(aid)
+        inserts.append((aid, pos))
+    return deletes, inserts, order
 
 
 FIELD_KEYS = (("action", "physio_action"),
@@ -187,7 +235,7 @@ def reconcile(master_rows, team):
     return changes
 
 
-def sync(dry_run=False, verbose=True):
+def sync(dry_run=False, verbose=True, relayout=False):
     """Push physio feedback to the master, then refresh the team sheet.
 
     Feedback flows team -> master. The reverse only fills a team cell that is
@@ -202,15 +250,15 @@ def sync(dry_run=False, verbose=True):
         raise RuntimeError(f"team sheet has no '{TAB}' tab — run --build first")
 
     team_vals = ws.get_all_values()
-    relaid_out = not team_vals or team_vals[0][:N_COLS] != HEADER
+    relaid_out = relayout or not team_vals or team_vals[0][:N_COLS] != HEADER
     if relaid_out:
         # The columns moved (a --build added one) or someone edited the header.
         # Reading feedback out of the old positions would put it in the wrong
         # master cells, so skip the push and rebuild from the master, which
         # already holds every physio entry pushed since the last layout. Only
         # feedback typed in the few minutes since the last sync is at risk.
-        print("team sheet layout differs from this build — rebuilding from the "
-              "master, and not pushing this round")
+        print("rebuilding the team sheet from the master (layout changed, or "
+              "--relayout) — not pushing this round")
     team = {}
     for r in (team_vals[1:] if not relaid_out else []):
         aid = r[I_KEY].strip() if len(r) > I_KEY else ""
@@ -235,44 +283,81 @@ def sync(dry_run=False, verbose=True):
             print(f"    {by_aid[aid]['patient'][:28]:30s} {key:26s} -> {value[:40]}")
 
     # ---- 2. pull: refresh the team sheet from the master
-    desired = [_team_row(m) for m in master_rows]
-    current_ids = [] if relaid_out else [
-        r[I_KEY].strip() for r in team_vals[1:]
-        if len(r) > I_KEY and r[I_KEY].strip()]
+    desired = {m["aid"]: _team_row(m) for m in master_rows}
     desired_ids = [m["aid"] for m in master_rows]
 
-    if current_ids == desired_ids:
-        # Same rows in the same order — touch only the cells that changed, and
-        # never the feedback columns. Avoids a rewrite racing a physio's typing.
-        updates = []
-        for i, row in enumerate(desired):
-            cur = team_vals[i + 1] if len(team_vals) > i + 1 else []
-            cur = (cur + [""] * N_COLS)[:N_COLS]
-            # info columns plus the hidden status that drives the row colour;
-            # never the feedback columns, and the key never changes
-            for j in list(range(N_INFO)) + [I_STATUS]:
-                if str(cur[j]).strip() != str(row[j]).strip():
-                    a1 = gspread.utils.rowcol_to_a1(i + 2, j + 1)
-                    updates.append({"range": f"'{TAB}'!{a1}", "values": [[row[j]]]})
-        if updates and not dry_run:
-            team_sh.values_batch_update({"valueInputOption": "RAW", "data": updates})
-        if verbose:
-            print(f"pull  master -> team : {len(updates)} cell(s) updated, "
-                  f"{len(desired)} rows (unchanged set)")
-    else:
-        added = [a for a in desired_ids if a not in current_ids]
-        gone = [a for a in current_ids if a not in desired_ids]
+    if relaid_out:
+        # Columns have moved, so nothing on the sheet can be trusted by
+        # position — lay it all out again. The one time a wholesale rewrite
+        # is right; it only follows a --build that changed the layout.
         if not dry_run:
-            end = max(len(desired) + 1, len(team_vals))
-            body = desired + [[""] * N_COLS] * (end - len(desired) - 1)
+            end = max(len(desired_ids) + 1, len(team_vals))
+            body = [desired[a] for a in desired_ids]
+            body += [[""] * N_COLS] * (end - len(body) - 1)
             ws.update(values=body, range_name=f"A2:{chr(64 + N_COLS)}{end}",
                       value_input_option="RAW")
         if verbose:
-            print(f"pull  master -> team : rebuilt, {len(desired)} rows "
-                  f"(+{len(added)} new, -{len(gone)} closed)")
+            print(f"pull  master -> team : relaid out, {len(desired_ids)} rows")
+        return len(pushes), len(desired_ids)
+
+    # Rows are added and removed as real row inserts and deletes, never by
+    # rewriting text into existing rows. Sheets treats a structural change the
+    # way it treats a colleague inserting a row: a physio mid-edit on Joe
+    # Bloggs stays on Joe Bloggs as he moves down. Overwriting values instead
+    # would slide a different patient under her cursor, and her note would be
+    # filed — here and in the master — against the wrong person.
+    current_ids = [(r[I_KEY].strip() if len(r) > I_KEY else "")
+                   for r in team_vals[1:]]
+    while current_ids and not current_ids[-1]:
+        current_ids.pop()                         # trailing empty rows
+    deletes, inserts, final = plan_rows(current_ids, desired_ids)
+
+    reqs = [{"deleteDimension": {"range": {
+                "sheetId": ws.id, "dimension": "ROWS",
+                "startIndex": i + 1, "endIndex": i + 2}}}
+            for i in deletes]                     # bottom-up, so indices hold
+    reqs += [{"insertDimension": {"range": {
+                "sheetId": ws.id, "dimension": "ROWS",
+                "startIndex": i + 1, "endIndex": i + 2},
+              "inheritFromBefore": False}}        # take the data row's format,
+             for _, i in inserts]                 # never the header's
+    if reqs and not dry_run:
+        team_sh.batch_update({"requests": reqs})
+
+    # Values, addressed by where each row sits AFTER the inserts/deletes.
+    cur_by_id = {}
+    for r in team_vals[1:]:
+        aid = r[I_KEY].strip() if len(r) > I_KEY else ""
+        if aid:
+            cur_by_id[aid] = (r + [""] * N_COLS)[:N_COLS]
+    new_ids = {a for a, _ in inserts}
+    updates = []
+    for pos, aid in enumerate(final):
+        row, sheet_row = desired[aid], pos + 2
+        if aid in new_ids:
+            updates.append({"range": f"'{TAB}'!A{sheet_row}:{chr(64 + N_COLS)}{sheet_row}",
+                            "values": [row]})
+            continue
+        cur = cur_by_id[aid]
+        # info columns and the hidden status (row colour) track the master
+        cells = list(range(N_INFO)) + [I_STATUS]
+        # a feedback cell is written only to fill a blank from the master —
+        # never over anything a physio has typed
+        cells += [j for j in (I_ACTION, I_NOTES) if not cur[j].strip() and row[j]]
+        for j in cells:
+            if str(cur[j]).strip() != str(row[j]).strip():
+                a1 = gspread.utils.rowcol_to_a1(sheet_row, j + 1)
+                updates.append({"range": f"'{TAB}'!{a1}", "values": [[row[j]]]})
+    if updates and not dry_run:
+        team_sh.values_batch_update({"valueInputOption": "RAW", "data": updates})
+
+    if verbose:
+        print(f"pull  master -> team : {len(final)} rows "
+              f"(+{len(inserts)} new, -{len(deletes)} closed, "
+              f"{len(updates) - len(inserts)} cell(s) refreshed)")
     if dry_run and verbose:
         print("\nDRY RUN — nothing written")
-    return len(pushes), len(desired)
+    return len(pushes), len(final)
 
 
 # status -> row background, matching apply_dropoff_tab_formatting on the master.
@@ -428,7 +513,7 @@ def build():
 # Background loop, run inside the Render web service (always on for Slack and
 # Twilio), so this needs no extra cron and no dashboard work.
 # --------------------------------------------------------------------------
-SYNC_EVERY = 600      # seconds
+SYNC_EVERY = 1800     # seconds — every 30 min
 _LOCK_PATH = "/tmp/team_sheet_sync.lock"
 
 
@@ -470,7 +555,7 @@ def run_forever(interval=SYNC_EVERY):
         except Exception as exc:                      # never kill the thread
             fails += 1
             print(f"team sheet sync failed ({fails}): {exc}")
-            if fails in (3, 30):                      # ~30 min, then ~5 h
+            if fails in (2, 16):                      # ~1 h, then ~8 h
                 try:
                     import slack_notifier
                     slack_notifier._send_dm(
@@ -488,6 +573,6 @@ if __name__ == "__main__":
     if "--build" in sys.argv:
         build()
     if "--sync" in sys.argv:
-        sync(dry_run="--dry-run" in sys.argv)
+        sync(dry_run="--dry-run" in sys.argv, relayout="--relayout" in sys.argv)
     if not any(a in sys.argv for a in ("--build", "--sync")):
         print(__doc__)

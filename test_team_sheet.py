@@ -104,5 +104,59 @@ check("the hidden key and status columns sit past them",
 check("dropdown options", ts.PHYSIO_ACTIONS[0], "Called – spoke to them")
 check("patients already rebooked drop off the list", ts.SKIP_STATUS, {"reactivated"})
 
+print("\n4. Rows move without sliding a patient under anyone's cursor:")
+
+
+def apply(current, deletes, inserts):
+    """Replay the plan the way Sheets would, to prove where rows end up."""
+    rows = list(current)
+    for i in deletes:
+        del rows[i]
+    for aid, i in inserts:
+        rows.insert(i, aid)
+    return rows
+
+
+# a new week's drop-offs arrive -> on top, everyone else shifts down intact
+cur = ["b1", "b2", "a1", "a2"]
+want = ["c1", "c2", "b1", "b2", "a1", "a2"]
+d, ins, final = ts.plan_rows(cur, want)
+check("new drop-offs go on top", final[:2], ["c1", "c2"])
+check("in master order", final, want)
+check("nothing deleted when nothing left", d, [])
+check("replaying the plan gives the same order", apply(cur, d, ins), final)
+
+# someone reactivated mid-list -> only that row goes
+cur = ["c1", "b1", "b2", "a1"]
+d, ins, final = ts.plan_rows(cur, ["c1", "b1", "a1"])
+check("a reactivated patient's row is deleted, nobody else's",
+      final, ["c1", "b1", "a1"])
+check("deleted by position, and only once", d, [2])
+
+# weekly rollover: oldest week drops, new week lands, same run
+cur = ["b1", "b2", "a1", "a2"]
+want = ["c1", "b1", "b2"]
+d, ins, final = ts.plan_rows(cur, want)
+check("deletes run bottom-up so indices stay valid", d, [3, 2])
+check("rollover: new on top, old gone", final, want)
+check("replay agrees after deletes and inserts together", apply(cur, d, ins), want)
+
+# a late row for an older week slots into its week, not the top
+cur = ["c1", "b1", "a1"]
+d, ins, final = ts.plan_rows(cur, ["c1", "b1", "b9", "a1"])
+check("a late row lands inside its own week", final, ["c1", "b1", "b9", "a1"])
+
+# existing rows are never reordered, even if the master order differs
+cur = ["b2", "b1"]
+d, ins, final = ts.plan_rows(cur, ["b1", "b2"])
+check("rows already on the sheet are never shuffled", (d, ins, final),
+      ([], [], ["b2", "b1"]))
+
+# stray empty rows inside the data are tidied away
+d, ins, final = ts.plan_rows(["b1", "", "a1"], ["b1", "a1"])
+check("an empty row inside the data is removed", (d, final), ([1], ["b1", "a1"]))
+
+check("sync runs every 30 minutes", ts.SYNC_EVERY, 1800)
+
 print(f"\n{sum(results)}/{len(results)} passed")
 raise SystemExit(0 if all(results) else 1)

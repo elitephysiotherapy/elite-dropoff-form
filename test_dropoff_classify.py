@@ -344,5 +344,25 @@ results.append(check("pending kept row takes the other row's status",
                      "contact_attempted"))
 
 
+# ---- 14. Old-layout rows from the stray writer (2026-09-21) ----
+print("\n14. Rows written in the pre-2026-09-20 layout are recognised, real rows never:")
+junk = sheet_row(patient="Ciaran Quigley", reactivation_status="pending")
+i_id = p1.SHEET_COLUMNS.index("appointment_id")
+junk[i_id - 1] = "2034872193149572192"      # id landed one column early (R)
+junk[i_id] = "2026-09-21 7:00"               # pulled_at where the id belongs (S)
+junk[i_id + 1] = ""                          # T empty — the old layout was a column short
+results.append(check("21 Sep junk row is recognised", p1.is_old_layout_row(junk), True))
+real = sheet_row(appointment_id="2034872193149572192", pulled_at="2026-09-15 7:00")
+results.append(check("a real row is never mistaken for one", p1.is_old_layout_row(real), False))
+noted = sheet_row(appointment_id="2034872193149572192", pulled_at="2026-09-15 7:00",
+                  physio_reactivation_notes="2031776662873445560")
+results.append(check("even if a physio's note happens to look like an id",
+                     p1.is_old_layout_row(noted), False))
+blank = sheet_row(patient="Dermot Graham")   # W/C 08 Jun, id blanked in the July repair
+results.append(check("a row with a blank id is left alone", p1.is_old_layout_row(blank), False))
+results.append(check("short rows don't crash the check",
+                     p1.is_old_layout_row(["2026-09-16 13:00", "x"]), False))
+
+
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)
