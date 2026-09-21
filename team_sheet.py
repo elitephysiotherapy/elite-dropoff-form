@@ -462,6 +462,14 @@ def build():
             "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP",
                                            "verticalAlignment": "TOP"}},
             "fields": "userEnteredFormat(wrapStrategy,verticalAlignment)"}},
+        # Un-hide every column first, THEN hide the two that should be. Hiding
+        # only the current ones left a column hidden from the previous layout:
+        # adding "Reason given" shifted Physio Notes into what had been the
+        # hidden id column, so the physios' notes column vanished (21 Sep).
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "COLUMNS",
+                      "startIndex": 0, "endIndex": 26},
+            "properties": {"hiddenByUser": False}, "fields": "hiddenByUser"}},
         {"updateDimensionProperties": {
             "range": {"sheetId": sid, "dimension": "COLUMNS",
                       "startIndex": I_KEY, "endIndex": I_STATUS + 1},
@@ -506,7 +514,8 @@ def build():
 
     sh.batch_update({"requests": reqs})
     print(f"built '{TAB}': {N_COLS} columns, {len(PHYSIO_ACTIONS)}-option dropdown, "
-          f"columns A–{chr(64 + N_INFO)} + {chr(65 + I_KEY)} protected")
+          f"columns A–{chr(64 + N_INFO)} + {chr(65 + I_KEY)}–{chr(65 + I_STATUS)} "
+          f"protected, {chr(65 + I_ACTION)}–{chr(65 + I_NOTES)} open to physios")
 
 
 # --------------------------------------------------------------------------
