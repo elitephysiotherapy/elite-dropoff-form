@@ -176,6 +176,15 @@ def _team_row(m):
     return out
 
 
+def is_out_of_order(on_sheet, desired_ids):
+    """True if the rows on the sheet aren't in master order — i.e. someone
+    sorted it. Only rows present in both are compared, so rows that are about
+    to be added or removed never trip it."""
+    wanted, present = set(desired_ids), set(on_sheet)
+    return ([a for a in on_sheet if a in wanted] !=
+            [a for a in desired_ids if a in present])
+
+
 def plan_rows(current_ids, desired_ids):
     """Work out the row deletes and inserts that turn the sheet's current
     order into the wanted one, without moving any row that stays.
@@ -287,7 +296,18 @@ def sync(dry_run=False, verbose=True, relayout=False):
     desired = {m["aid"]: _team_row(m) for m in master_rows}
     desired_ids = [m["aid"] for m in master_rows]
 
-    if relaid_out:
+    # Rows already on the sheet should sit in master order (newest first). If
+    # they don't, someone sorted the sheet — Martin did by accident on 21 Sep,
+    # sorting the Week column as text so "07 Sep" jumped above "14 Sep". Sorts
+    # move whole rows, so each row still carries its own id and the push above
+    # was sound; now put the order back. plan_rows never reorders, by design,
+    # so without this the sheet would stay jumbled for good.
+    on_sheet = [(r[I_KEY].strip() if len(r) > I_KEY else "") for r in team_vals[1:]]
+    resorted = not relaid_out and is_out_of_order(on_sheet, desired_ids)
+    if resorted and verbose:
+        print("rows are out of order (the sheet was sorted) — restoring newest-first")
+
+    if relaid_out or resorted:
         # Columns have moved, so nothing on the sheet can be trusted by
         # position — lay it all out again. The one time a wholesale rewrite
         # is right; it only follows a --build that changed the layout.
@@ -574,9 +594,10 @@ def build():
         # rows are dropped from this sheet entirely, which is tidier than
         # colouring a patient nobody needs to chase.
         *_colour_rules(sid),
-        {"setBasicFilter": {"filter": {"range": {
-            "sheetId": sid, "startRowIndex": 0, "endRowIndex": 600,
-            "startColumnIndex": 0, "endColumnIndex": N_COLS}}}},
+        # No shared filter on the header row: one person sorting or filtering it
+        # changes the sheet for everyone (the 21 Sep sort did exactly that).
+        # Each physio has a private saved view instead — ensure_physio_views().
+        {"clearBasicFilter": {"sheetId": sid}},
     ]
     widths = [70, 85, 150, 130, 190, 70, 150, 120, 110, 320, 170, 320]
     # (L appointment_id and M status are hidden — no width needed)

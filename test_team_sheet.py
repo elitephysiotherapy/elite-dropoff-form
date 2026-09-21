@@ -176,5 +176,16 @@ check("a starter appears from their start date, not before",
 check("the leaver kept her view while she was here",
       "Daire" + ts.VIEW_SUFFIX in ts.physio_views_wanted(today=date(2026, 6, 30)), True)
 
+
+print("\n6. A sorted sheet is noticed and put back; a normal day isn't:")
+check("newest-first sheet is in order", ts.is_out_of_order(["c1", "b1", "a1"], ["c1", "b1", "a1"]), False)
+check("sorted by Week as text ('07 Sep' above '14 Sep') is caught",
+      ts.is_out_of_order(["b1", "c1", "a1"], ["c1", "b1", "a1"]), True)
+check("a new drop-off waiting to be added doesn't trip it",
+      ts.is_out_of_order(["b1", "a1"], ["c1", "b1", "a1"]), False)
+check("a reactivated patient waiting to be removed doesn't trip it",
+      ts.is_out_of_order(["c1", "x9", "b1"], ["c1", "b1"]), False)
+check("empty rows don't trip it", ts.is_out_of_order(["c1", "", "b1"], ["c1", "b1"]), False)
+
 print(f"\n{sum(results)}/{len(results)} passed")
 raise SystemExit(0 if all(results) else 1)
