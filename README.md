@@ -202,10 +202,18 @@ into the master survives.
     python team_sheet.py --sync --dry-run   # show what would move
     python team_sheet.py --sync
 
-The sync runs every 10 minutes in a background thread inside this Render web
+The sync runs every 30 minutes in a background thread inside this Render web
 service (already always-on for Slack and Twilio, so it needs no extra cron).
 `team_sheet._only_one_runner` keeps the two gunicorn workers from both syncing.
 Set `TEAM_SHEET_SYNC=0` to switch it off. Three consecutive failures DM Martin.
+
+**Per-physio saved views.** One filter view per physio on the roster
+("Molaí's patients"), each with its own link, so Sinead can send a physio a URL
+that opens on just their patients. Filter views are private to whoever opens
+them — the shared header filter isn't, and one physio filtering it would change
+everyone's view. Derived from `config.TEAM` and reconciled once a day by the
+sync loop, so starters/leavers need no action. `python team_sheet.py --views`
+prints the current links. Only views ending "'s patients" are bot-managed.
 
 ## Tabs in the Google Sheet
 

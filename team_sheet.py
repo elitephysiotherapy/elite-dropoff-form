@@ -21,6 +21,7 @@ Usage:
     python team_sheet.py --build     # one-off: lay out the tab, lock it down
     python team_sheet.py --sync      # push feedback back, pull new drop-offs
     python team_sheet.py --sync --dry-run
+    python team_sheet.py --views             # per-physio saved views + links
     python team_sheet.py --sync --relayout   # rebuild rows from the master
                                              # (the master holds every entry)
 """
@@ -390,6 +391,92 @@ def _colour_rules(sid):
     return reqs
 
 
+VIEW_SUFFIX = "'s patients"     # marks a filter view as bot-managed
+
+
+def physio_views_wanted(today=None):
+    """{view title: [practitioner full names]} for everyone on the team today.
+
+    Straight from config.TEAM, so a starter gets a view and a leaver loses
+    theirs without anyone remembering to do it. Several Cliniko names can map
+    to one physio (Marty treats as "Martin Loughran" and "Martin Loughran CS")."""
+    today = today or datetime.now().date()
+    return {f"{m['display']}{VIEW_SUFFIX}": list(m["full_names"])
+            for m in config.TEAM if config.is_active_on(m, today)}
+
+
+def ensure_physio_views(sh=None, ws=None, verbose=True):
+    """Create/refresh one saved filter view per physio on the team sheet.
+
+    A filter view is private to whoever opens it — unlike the shared filter on
+    the header row, where one physio filtering to her own name would change
+    what everyone else sees. Each view has its own link, so Sinead can send
+    Molai a URL that opens on just Molai's patients.
+
+    Only views whose title ends in VIEW_SUFFIX are touched; anything a physio
+    makes for herself is left alone. A view that already matches is kept, so
+    its link never changes. Returns {title: url}."""
+    if sh is None:
+        sh = _client().open_by_key(config.TEAM_SPREADSHEET_ID)
+        ws = sh.worksheet(TAB)
+    wanted = physio_views_wanted()
+    meta = sh.fetch_sheet_metadata(params={
+        "fields": "sheets(properties(sheetId),filterViews)"})
+    existing = {}
+    for sheet in meta.get("sheets", []):
+        if sheet.get("properties", {}).get("sheetId") == ws.id:
+            for fv in sheet.get("filterViews", []) or []:
+                if fv.get("title", "").endswith(VIEW_SUFFIX):
+                    existing[fv["title"]] = fv
+    i_physio = next(i for i, (h, _) in enumerate(INFO_COLS) if h == "Physio")
+    col = chr(65 + i_physio)
+
+    def spec(names):
+        # custom formula so one view can match several Cliniko names
+        f = "=OR(" + ",".join(f'${col}2="{n}"' for n in names) + ")"
+        return [{"columnIndex": i_physio, "filterCriteria": {
+            "condition": {"type": "CUSTOM_FORMULA", "values": [{"userEnteredValue": f}]}}}]
+
+    def current_formula(fv):
+        for fs in fv.get("filterSpecs", []) or []:
+            c = (fs.get("filterCriteria") or {}).get("condition") or {}
+            return (c.get("values") or [{}])[0].get("userEnteredValue")
+
+    reqs, created = [], []
+    for title, fv in existing.items():
+        if title not in wanted or current_formula(fv) != spec(wanted[title])[0][
+                "filterCriteria"]["condition"]["values"][0]["userEnteredValue"]:
+            reqs.append({"deleteFilterView": {"filterId": fv["filterViewId"]}})
+    for title, names in wanted.items():
+        fv = existing.get(title)
+        if fv and current_formula(fv) == spec(names)[0]["filterCriteria"][
+                "condition"]["values"][0]["userEnteredValue"]:
+            continue
+        reqs.append({"addFilterView": {"filter": {
+            "title": title,
+            # open-ended range, so rows the sync inserts are always inside it
+            "range": {"sheetId": ws.id, "startRowIndex": 0,
+                      "startColumnIndex": 0, "endColumnIndex": N_COLS},
+            "filterSpecs": spec(names)}}})
+        created.append(title)
+    if reqs:
+        sh.batch_update({"requests": reqs})
+    # re-read for the ids (and so the links reflect what's really there)
+    meta = sh.fetch_sheet_metadata(params={
+        "fields": "sheets(properties(sheetId),filterViews(filterViewId,title))"})
+    links = {}
+    for sheet in meta.get("sheets", []):
+        if sheet.get("properties", {}).get("sheetId") == ws.id:
+            for fv in sheet.get("filterViews", []) or []:
+                if fv["title"] in wanted:
+                    links[fv["title"]] = (f"{config.TEAM_SPREADSHEET_URL}"
+                                          f"#gid={ws.id}&fvid={fv['filterViewId']}")
+    if verbose:
+        print(f"physio views: {len(links)} live"
+              + (f", created/updated {len(created)}" if created else ", all current"))
+    return links
+
+
 def build():
     """Lay out the team tab and lock everything except the two feedback columns."""
     gc = _client()
@@ -513,6 +600,7 @@ def build():
     }}})
 
     sh.batch_update({"requests": reqs})
+    ensure_physio_views(sh, ws)
     print(f"built '{TAB}': {N_COLS} columns, {len(PHYSIO_ACTIONS)}-option dropdown, "
           f"columns A–{chr(64 + N_INFO)} + {chr(65 + I_KEY)}–{chr(65 + I_STATUS)} "
           f"protected, {chr(65 + I_ACTION)}–{chr(65 + I_NOTES)} open to physios")
@@ -550,6 +638,7 @@ def _only_one_runner():
 
 def run_forever(interval=SYNC_EVERY):
     fails = 0
+    views_checked = None          # date the physio views were last reconciled
     while True:
         try:
             with _only_one_runner() as mine:
@@ -557,6 +646,10 @@ def run_forever(interval=SYNC_EVERY):
                     time.sleep(interval)
                     continue
                 pushed, rows = sync(verbose=False)
+                today = datetime.now().date()
+                if views_checked != today:     # roster changes land within a day
+                    ensure_physio_views(verbose=False)
+                    views_checked = today
                 if pushed:
                     print(f"team sheet: pushed {pushed} feedback cell(s), "
                           f"{rows} rows live")
@@ -583,5 +676,8 @@ if __name__ == "__main__":
         build()
     if "--sync" in sys.argv:
         sync(dry_run="--dry-run" in sys.argv, relayout="--relayout" in sys.argv)
-    if not any(a in sys.argv for a in ("--build", "--sync")):
+    if "--views" in sys.argv:
+        for title, url in ensure_physio_views().items():
+            print(f"  {title:24s} {url}")
+    if not any(a in sys.argv for a in ("--build", "--sync", "--views")):
         print(__doc__)

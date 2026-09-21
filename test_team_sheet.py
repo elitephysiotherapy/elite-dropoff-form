@@ -158,5 +158,23 @@ check("an empty row inside the data is removed", (d, final), ([1], ["b1", "a1"])
 
 check("sync runs every 30 minutes", ts.SYNC_EVERY, 1800)
 
+
+print("\n5. One saved view per physio, straight from the roster:")
+from datetime import date
+views = ts.physio_views_wanted(today=date(2026, 9, 21))
+check("everyone on the team gets a view",
+      sorted(v.replace(ts.VIEW_SUFFIX, "") for v in views),
+      sorted(["Marty", "Julie", "Sinead", "Erin", "Aoife", "Ciara", "Molaí",
+              "Shannagh", "Conor", "Kelly"]))
+check("a leaver has no view (Daire left 2 Jul)", "Daire" + ts.VIEW_SUFFIX in views, False)
+check("a physio with two Cliniko names matches both",
+      views["Marty" + ts.VIEW_SUFFIX], ["Martin Loughran", "Martin Loughran CS"])
+check("a starter appears from their start date, not before",
+      ("Kelly" + ts.VIEW_SUFFIX in ts.physio_views_wanted(today=date(2026, 8, 10)),
+       "Kelly" + ts.VIEW_SUFFIX in ts.physio_views_wanted(today=date(2026, 8, 11))),
+      (False, True))
+check("the leaver kept her view while she was here",
+      "Daire" + ts.VIEW_SUFFIX in ts.physio_views_wanted(today=date(2026, 6, 30)), True)
+
 print(f"\n{sum(results)}/{len(results)} passed")
 raise SystemExit(0 if all(results) else 1)
