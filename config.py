@@ -437,6 +437,16 @@ RECEPTION_LIST_SLACK_EMAILS = [
     "sinead@elitephysiocookstown.co.uk",
 ]
 
+# Diary summary (send_diary_summary.py): per-physio IAs / classes / total
+# appointments, Mon 08:00, Wed 09:00, Fri 08:00 (this week + next week).
+# Sinead and reception can't see Cliniko's practitioner reports on their logins.
+# TODO: add Rox once her Slack account is confirmed (not in the workspace
+# as of 2026-09-23).
+DIARY_SUMMARY_SLACK_EMAILS = [
+    "sinead@elitephysiocookstown.co.uk",      # Sinéad Rocks (Ops Manager)
+    "reception@elitephysiocookstown.co.uk",   # Reception Slack profile
+]
+
 # Slack channel where package-of-care sales are posted (used by the weekly
 # packages count DM to Sinead Rocks). #packages.
 PACKAGES_CHANNEL_ID = "C04G5CKN60Y"
