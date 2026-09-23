@@ -71,8 +71,8 @@ TARGETS = {
     "reactivations_weekly": [({0}, 8, 0)],                        # Mon 08:00 — previous week's reactivations
     "reactivations_monthly": [(None, 7, 20)],                     # 07:20 daily — refresh monthly totals tab
     # Per-physio diary DMs to Sinead Rocks + reception. Fri also sends next week.
-    # Render cron: 0 7,8,9 * * 1,3,5 (both BST and GMT UTC hours; the rest no-op).
-    "diary_summary": [({0}, 8, 0), ({2}, 9, 0), ({4}, 8, 0)],
+    # Render cron: 0 7,8 * * 1,3,5 (both BST and GMT UTC hours; the other no-ops).
+    "diary_summary": [({0, 2, 4}, 8, 0)],                         # Mon/Wed/Fri 08:00
 }
 
 # Minutes after a target time during which a firing still counts as "on time".

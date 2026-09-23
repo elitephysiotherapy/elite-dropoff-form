@@ -134,6 +134,10 @@ CLINIC_MONTHLY_HOURS = 891.3       # total available service hours per month
 #   practitioner_ids their Cliniko IDs (stable even if they change their name)
 #   start / end      "YYYY-MM-DD" or None. end = last working day.
 #   monthly_hours    contracted monthly service hours (capacity/utilisation)
+#   hours_periods    optional temporary hours, e.g. a phased return:
+#                    [{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "monthly_hours": N}]
+#                    ("to" inclusive). Used for any week/month that STARTS
+#                    inside the range; otherwise monthly_hours applies.
 #   clinic_email     their real mailbox — where the weekly team email is sent
 #   slack_email      ONLY if the address on their Slack account differs from
 #                    their clinic email. Slack is looked up by email, so if this
@@ -158,16 +162,20 @@ TEAM = [
      "start": "2022-01-01", "end": None, "monthly_hours": 128.6,
      "clinic_email": "sineadmcgill@elitephysiocookstown.co.uk"},
 
-    # ON ANNUAL LEAVE from 13 Jul 2026 (open-ended). While on leave she has ZERO
-    # available hours, so she drops out of the utilisation denominator (both the
-    # Weekly Snapshot and Weekly Team Stats) — utilisation = hours delivered ÷
-    # hours physios were AVAILABLE, and leave is not availability (Martin 2026-07-27).
-    # She is NOT a leaver: her name, history and row all stay. When she's back,
-    # set "to" to her last day off (or delete the "leave" block). Do not delete her.
+    # ON LEAVE 13 Jul – 1 Sep 2026. While on leave she had ZERO available hours,
+    # so she dropped out of the utilisation denominator — utilisation = hours
+    # delivered ÷ hours physios were AVAILABLE, and leave is not availability
+    # (Martin 2026-07-27). Back seeing patients from Wed 2 Sep 2026 (confirmed by
+    # Martin 2026-09-23; first appointment back 2 Sep). Keep the block — it's what
+    # keeps her July/August capacity at zero on rebuilt tabs.
     {"display": "Erin", "full_names": ["Erin McNicholl"],
      "practitioner_ids": ["1168999178748040474"],
      "start": "2023-01-01", "end": None, "monthly_hours": 128.6,
-     "leave": [{"from": "2026-07-13", "to": None}],
+     "leave": [{"from": "2026-07-13", "to": "2026-09-01"}],
+     # Phased return after injury: capped at 50% capacity through September,
+     # back to 100% from 1 Oct 2026 (Martin 2026-09-23). Starts 31 Aug so the
+     # w/c 31 Aug week (her first week back) is on 50% too.
+     "hours_periods": [{"from": "2026-08-31", "to": "2026-09-30", "monthly_hours": 64.3}],
      "clinic_email": "erin@elitephysiocookstown.co.uk"},
 
     # LEFT 2 Jul 2026. Kept here on purpose — this is what preserves her name on
@@ -342,6 +350,10 @@ def monthly_hours_on(display, period_start, period_end):
         return None
     if on_leave_whole_period(m, period_start, period_end):
         return None
+    ps = _norm_date(period_start)
+    for hp in m.get("hours_periods") or []:
+        if _as_date(hp["from"]) <= ps <= _as_date(hp["to"]):
+            return hp["monthly_hours"]
     return m.get("monthly_hours")
 
 
@@ -438,10 +450,8 @@ RECEPTION_LIST_SLACK_EMAILS = [
 ]
 
 # Diary summary (send_diary_summary.py): per-physio IAs / classes / total
-# appointments, Mon 08:00, Wed 09:00, Fri 08:00 (this week + next week).
+# appointments, 08:00 Mon, Wed and Fri (Fri adds next week's diary).
 # Sinead and reception can't see Cliniko's practitioner reports on their logins.
-# TODO: add Rox once her Slack account is confirmed (not in the workspace
-# as of 2026-09-23).
 DIARY_SUMMARY_SLACK_EMAILS = [
     "sinead@elitephysiocookstown.co.uk",      # Sinéad Rocks (Ops Manager)
     "reception@elitephysiocookstown.co.uk",   # Reception Slack profile

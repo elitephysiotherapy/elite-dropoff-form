@@ -1,4 +1,4 @@
-"""Diary summary per physio → Slack DMs to Sinead Rocks, Rox and Reception.
+"""Diary summary per physio → Slack DMs to Sinead Rocks and Reception.
 
 Sinead and the front desk can't see Cliniko's per-practitioner reports on
 their logins, so this reads the diary through the API and DMs them, for each
@@ -6,7 +6,7 @@ physio, how many IAs, classes and total appointments are booked for a week.
 
 Schedule (Europe/London, via run_cloud.py):
   Mon 08:00  this week's diary
-  Wed 09:00  mid-week update
+  Wed 08:00  mid-week update
   Fri 08:00  this week's wrap-up, then next week's diary so reception can
              balance it (two separate DMs)
 
