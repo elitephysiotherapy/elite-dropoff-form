@@ -145,6 +145,13 @@ CLINIC_MONTHLY_HOURS = 891.3       # total available service hours per month
 #                    Slack's users.lookupByEmail before setting it. Defaults to
 #                    clinic_email.
 #   owner_consultant True = excluded from the "w/o M&J" rollup
+#   diary_target     optional weekly diary target shown in the Mon/Wed/Fri diary
+#                    summary DM: {"ias": [low, high], "appts": [low, high]}.
+#                    appts = total appts INCLUDING Pilates/rehab class sessions.
+#                    Scaled down automatically during a reduced hours_period.
+#                    Omit it (e.g. directors) and the DM shows no target.
+#                    Physio targets set by Martin, 23 Sep 2026 (team floor =
+#                    46 IAs | 285 appts a week).
 #
 TEAM = [
     {"display": "Marty", "full_names": ["Martin Loughran", "Martin Loughran CS"],
@@ -160,7 +167,8 @@ TEAM = [
     {"display": "Sinead", "full_names": ["Sinead McGill"],
      "practitioner_ids": ["1172138415936771374"],
      "start": "2022-01-01", "end": None, "monthly_hours": 128.6,
-     "clinic_email": "sineadmcgill@elitephysiocookstown.co.uk"},
+     "clinic_email": "sineadmcgill@elitephysiocookstown.co.uk",
+     "diary_target": {"ias": [7, 8], "appts": [40, 45]}},
 
     # ON LEAVE 13 Jul – 1 Sep 2026. While on leave she had ZERO available hours,
     # so she dropped out of the utilisation denominator — utilisation = hours
@@ -176,7 +184,8 @@ TEAM = [
      # back to 100% from 1 Oct 2026 (Martin 2026-09-23). Starts 31 Aug so the
      # w/c 31 Aug week (her first week back) is on 50% too.
      "hours_periods": [{"from": "2026-08-31", "to": "2026-09-30", "monthly_hours": 64.3}],
-     "clinic_email": "erin@elitephysiocookstown.co.uk"},
+     "clinic_email": "erin@elitephysiocookstown.co.uk",
+     "diary_target": {"ias": [7, 8], "appts": [40, 40]}},
 
     # LEFT 2 Jul 2026. Kept here on purpose — this is what preserves her name on
     # every historical dashboard, NPS column and drop-off row. Do not delete.
@@ -188,12 +197,14 @@ TEAM = [
     {"display": "Aoife", "full_names": ["Aoife O'Kane"],
      "practitioner_ids": ["1592625921783764576"],
      "start": "2025-01-01", "end": None, "monthly_hours": 128.6,
-     "clinic_email": "aoifeokane@elitephysiocookstown.co.uk"},
+     "clinic_email": "aoifeokane@elitephysiocookstown.co.uk",
+     "diary_target": {"ias": [7, 8], "appts": [40, 40]}},
 
     {"display": "Ciara", "full_names": ["Ciara O'Kane"],
      "practitioner_ids": ["1965915462512416363"],
      "start": "2026-06-08", "end": None, "monthly_hours": 128.6,
-     "clinic_email": "ciara@elitephysiocookstown.co.uk"},
+     "clinic_email": "ciara@elitephysiocookstown.co.uk",
+     "diary_target": {"ias": [6, 7], "appts": [35, 40]}},
 
     # Annual leave Mon 17 – Sun 23 Aug 2026 (confirmed by Martin 2026-08-24:
     # zero appointments all week, verified against Cliniko). "to" is the
@@ -204,19 +215,22 @@ TEAM = [
      "practitioner_ids": ["1719373338607883970"],
      "start": "2025-09-01", "end": None, "monthly_hours": 128.6,
      "leave": [{"from": "2026-08-17", "to": "2026-08-23"}],
-     "clinic_email": "molai@elitephysiocookstown.co.uk"},
+     "clinic_email": "molai@elitephysiocookstown.co.uk",
+     "diary_target": {"ias": [7, 8], "appts": [40, 45]}},
 
     {"display": "Shannagh", "full_names": ["Shannagh Conwell"],
      "practitioner_ids": ["1818200739135100480"],
      "start": "2025-11-01", "end": None, "monthly_hours": 128.6,
-     "clinic_email": "shannagh@elitephysiocookstown.co.uk"},
+     "clinic_email": "shannagh@elitephysiocookstown.co.uk",
+     "diary_target": {"ias": [4, 5], "appts": [30, 35]}},
 
     # Started seeing patients 10 Aug 2026, full-time. Slack account is on his
     # clinic address (verified 2026-08-10), so no slack_email override needed.
     {"display": "Conor", "full_names": ["Conor O'Hagan"],
      "practitioner_ids": ["2003886838393083747"],
      "start": "2026-08-10", "end": None, "monthly_hours": 128.6,
-     "clinic_email": "conor@elitephysiocookstown.co.uk"},
+     "clinic_email": "conor@elitephysiocookstown.co.uk",
+     "diary_target": {"ias": [4, 5], "appts": [30, 35]}},
 
     # Starts full-time 11 Aug 2026 (was pencilled in for 1 Aug; confirmed 10 Aug
     # she actually begins the 11th). She has scattered earlier appointments in
@@ -232,6 +246,7 @@ TEAM = [
      "practitioner_ids": ["1810741098981627376"],
      "start": "2026-08-11", "end": None, "monthly_hours": 128.6,
      "clinic_email": "kelly@elitephysiocookstown.co.uk",
+     "diary_target": {"ias": [4, 5], "appts": [30, 35]},
      "slack_email": "kellyscott0208@icloud.com"},
 ]
 
@@ -452,10 +467,20 @@ RECEPTION_LIST_SLACK_EMAILS = [
 # Diary summary (send_diary_summary.py): per-physio IAs / classes / total
 # appointments, 08:00 Mon, Wed and Fri (Fri adds next week's diary).
 # Sinead and reception can't see Cliniko's practitioner reports on their logins.
+# Reception gets the plain diary (no targets).
 DIARY_SUMMARY_SLACK_EMAILS = [
-    "sinead@elitephysiocookstown.co.uk",      # Sinéad Rocks (Ops Manager)
     "reception@elitephysiocookstown.co.uk",   # Reception Slack profile
 ]
+# Sinéad Rocks gets the same diary WITH each physio's weekly target (config.TEAM
+# "diary_target") instead of the plain one. Targets are for her only, not
+# reception (Martin 2026-09-23).
+DIARY_TARGETS_SLACK_EMAILS = [
+    "sinead@elitephysiocookstown.co.uk",      # Sinéad Rocks (Ops Manager)
+]
+# Physio order in the targets DM — fixed, set by Martin (2026-09-23). Anyone
+# with a diary_target who isn't listed here goes on the end.
+DIARY_TARGET_ORDER = ["Sinead", "Erin", "Aoife", "Molaí", "Ciara", "Shannagh",
+                      "Conor", "Kelly"]
 
 # Slack channel where package-of-care sales are posted (used by the weekly
 # packages count DM to Sinead Rocks). #packages.

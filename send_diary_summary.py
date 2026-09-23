@@ -1,5 +1,12 @@
 """Diary summary per physio → Slack DMs to Sinead Rocks and Reception.
 
+Two versions of the same diary go out at the same time:
+  Reception    the plain diary (build_message) — no targets.
+  Sinead Rocks the diary against each physio's weekly target
+               (build_target_message): a compact table in a fixed physio
+               order that reads cleanly on a phone. Targets come from
+               config.TEAM "diary_target" and are for Sinead only.
+
 Sinead and the front desk can't see Cliniko's per-practitioner reports on
 their logins, so this reads the diary through the API and DMs them, for each
 physio, how many IAs, classes and total appointments are booked for a week.
@@ -174,11 +181,110 @@ def build_message(which, monday, next_monday, counts, now=None):
     return "\n".join(lines)
 
 
+def week_target(member, monday, next_monday):
+    """{"ias": (lo, hi), "appts": (lo, hi)} for the week, or None if the physio
+    has no target. Scaled by their hours that week vs their normal hours, so a
+    50% phased return halves the target."""
+    t = (member or {}).get("diary_target")
+    if not t:
+        return None
+    hrs = config.monthly_hours_on(member["display"], monday, next_monday - timedelta(days=1))
+    scale = (hrs / member["monthly_hours"]) if hrs and member.get("monthly_hours") else 1.0
+    return {k: tuple(int(v * scale + 0.5) for v in t[k]) for k in ("ias", "appts")}
+
+
+def _target_members(monday, next_monday):
+    """Physios with a target who are on the team that week, in
+    config.DIARY_TARGET_ORDER (anyone not listed goes on the end)."""
+    order = {d: i for i, d in enumerate(config.DIARY_TARGET_ORDER)}
+    ms = [m for m in config.TEAM if m.get("diary_target")
+          and config.is_active_in_period(m, monday, next_monday - timedelta(days=1))]
+    return sorted(ms, key=lambda m: order.get(m["display"], len(order)))
+
+
+def _rng(lo_hi):
+    lo, hi = lo_hi
+    return str(lo) if lo == hi else f"{lo}-{hi}"
+
+
+def build_target_message(which, monday, next_monday, counts, now=None):
+    """Sinead's version: team total vs target, then a monospace table
+    (physio | IAs booked/target | appts booked/target | gap). Appts include
+    Pilates and rehab class sessions. Gap = short of the bottom of the range."""
+    now = now or datetime.now(LONDON)
+    wc = monday.strftime("%a %-d %b")
+    if which == "next":
+        title = f"Next week's diary: w/c {wc}"
+        note = "Booked for next week. Use it to balance the diaries before Monday."
+    elif now.weekday() == 4:
+        title = f"This week's wrap-up: w/c {wc}"
+        note = "Mon–Thu = patients who came (DNAs left out) · Fri = booked today."
+    else:
+        title = f"This week's diary: w/c {wc}"
+        note = "Past days = patients who came (DNAs left out) · rest of week = booked."
+    empty = {"ias": 0, "one2one": 0, "pilates": 0, "rehab": 0}
+
+    rows, targeted_names = [], set()
+    t_ias = t_appts = g_ias = g_appts = 0
+    for m in _target_members(monday, next_monday):
+        name = m["full_names"][0]
+        targeted_names.add(name)
+        if config.on_leave_whole_period(m, monday, next_monday) and name not in counts:
+            rows.append((m["display"], "on leave", "", ""))
+            continue
+        t = week_target(m, monday, next_monday)
+        c = counts.get(name) or empty
+        total = c["one2one"] + c["pilates"] + c["rehab"]
+        gap = t["appts"][0] - total
+        rows.append((m["display"], f"{c['ias']}/{_rng(t['ias'])}",
+                     f"{total}/{_rng(t['appts'])}", str(gap) if gap > 0 else "✓"))
+        t_ias += c["ias"]
+        t_appts += total
+        g_ias += t["ias"][0]
+        g_appts += t["appts"][0]
+
+    pct = round(100 * t_appts / g_appts) if g_appts else 0
+    word = "booked" if which == "next" else "appts"
+    lines = [f"*📅 {title}*", f"_{note}_", "",
+             f"*Physio team: {t_appts} / {g_appts} {word} ({pct}%) · {t_ias} / {g_ias} IAs*"]
+    appt_gap, ia_gap = max(0, g_appts - t_appts), max(0, g_ias - t_ias)
+    lines.append(" · ".join(filter(None, [
+        f"{appt_gap} appts to fill" if appt_gap else "Appts on target ✅",
+        f"{ia_gap} IAs to find" if ia_gap else "IAs on target ✅"])))
+
+    head = ("Physio", "IAs", "Appts", "Gap")
+    w = [max(len(r[i]) for r in rows + [head]) for i in range(4)]
+    fmt = lambda r: f"{r[0]:<{w[0]}}  {r[1]:>{w[1]}}  {r[2]:>{w[2]}}  {r[3]:>{w[3]}}".rstrip()
+    lines += ["```" + fmt(head)] + [fmt(r) for r in rows]
+    lines[-1] += "```"
+
+    others = []
+    for name, c in _roster_rows(counts, monday, next_monday):
+        if name in targeted_names:
+            continue
+        m = next((x for x in config.TEAM if x["full_names"][0] == name), None)
+        label = m["display"] if m else name
+        # _roster_rows gives None for anyone with no appointments; only call
+        # that leave if the roster says so — otherwise it's an empty diary.
+        if c is None and m and config.on_leave_whole_period(m, monday, next_monday):
+            others.append(f"{label} on leave")
+        else:
+            c = c or empty
+            others.append(f"{label} {c['one2one'] + c['pilates'] + c['rehab']}")
+    if others:
+        lines.append("Also on the diary: " + " · ".join(others))
+    lines.append("_Gap = appts short of the bottom of the range. "
+                 "Appts include Pilates/rehab classes._")
+    return "\n".join(lines)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--week", choices=["this", "next", "auto"], default="auto",
                     help="auto (the cron) = this week, plus next week on Fridays")
     ap.add_argument("--post", action="store_true", help="send the DMs (default: preview)")
+    ap.add_argument("--targets", action="store_true",
+                    help="preview Sinead's targets DM instead of reception's")
     args = ap.parse_args()
 
     if args.week == "auto":
@@ -188,12 +294,18 @@ def main():
 
     for which in weeks:
         monday, next_monday = week_window(which)
-        text = build_message(which, monday, next_monday, diary_counts(monday, next_monday))
-        print(text + "\n")
-        if args.post:
-            slack_notifier._send_dm_to_recipients(
-                config.DIARY_SUMMARY_SLACK_EMAILS, text,
-                target_label=f"Diary summary ({which} week)")
+        counts = diary_counts(monday, next_monday)
+        text = build_message(which, monday, next_monday, counts)
+        target_text = build_target_message(which, monday, next_monday, counts)
+        if not args.post:
+            print((target_text if args.targets else text) + "\n")
+            continue
+        slack_notifier._send_dm_to_recipients(
+            config.DIARY_SUMMARY_SLACK_EMAILS, text,
+            target_label=f"Diary summary ({which} week)")
+        slack_notifier._send_dm_to_recipients(
+            config.DIARY_TARGETS_SLACK_EMAILS, target_text,
+            target_label=f"Diary targets ({which} week)")
     if not args.post:
         print("(preview only — add --post to send)")
 
