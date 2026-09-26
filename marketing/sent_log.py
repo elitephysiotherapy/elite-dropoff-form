@@ -40,9 +40,7 @@ def _tab():
 def _rows():
     """Cached Sent Log rows for this process.
 
-    Three outcomes, kept distinct on purpose:
-      • ws is None  -> [] (sheet not configured / shadow mode — safe to "send",
-                       nothing actually goes out in shadow)
+    Two outcomes, kept distinct on purpose:
       • read OK     -> the data rows
       • read errors -> _READ_FAILED sentinel, so already_sent() can FAIL SAFE
                        (skip this cycle) instead of re-sending the whole ledger.
@@ -52,21 +50,22 @@ def _rows():
     """
     global _rows_cache
     if _rows_cache is None:
-        ws = _tab()
-        if ws is None:
-            _rows_cache = []
-        else:
-            _rows_cache = _READ_FAILED
-            for attempt in range(4):
-                try:
-                    _rows_cache = ws.get_all_values()[1:]
+        # Opening the tab is retried and fails safe too. It used to go through
+        # _tab(), which maps ANY error to "not configured" -> [] -> everyone
+        # looks unsent. On 26 Sep 2026 a single "connection reset" while
+        # opening the sheet re-texted 193 Omagh patients.
+        from marketing.sheets import tab
+        _rows_cache = _READ_FAILED
+        for attempt in range(4):
+            try:
+                _rows_cache = tab(_TAB).get_all_values()[1:]
+                break
+            except Exception as e:
+                if attempt == 3:
+                    print(f"  WARN: Sent Log read failed after retries ({e}) "
+                          f"— skipping sends this cycle to avoid duplicates")
                     break
-                except Exception as e:
-                    if attempt == 3:
-                        print(f"  WARN: Sent Log read failed after retries ({e}) "
-                              f"— skipping sends this cycle to avoid duplicates")
-                        break
-                    time.sleep(1.5 * (attempt + 1))
+                time.sleep(1.5 * (attempt + 1))
     return _rows_cache
 
 
