@@ -28,6 +28,10 @@ else
 fi
 
 # One-off: retire the job whatever happened, so it cannot fire again.
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
+# Order matters: bootout kills THIS script (it is the job's process), so the
+# plist must be gone and the log written first. It used to bootout first, never
+# reach the rm, and the plists (Day/Hour but no Month = MONTHLY) re-texted
+# Omagh patients on 25 + 26 Sep 2026. Schedule one-offs WITH a Month key.
 rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"
 echo "launchd job $LABEL removed" >> "$LOG"
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
