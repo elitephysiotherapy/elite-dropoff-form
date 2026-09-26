@@ -1326,66 +1326,6 @@ def get_or_create_tab(sh, tab_name):
         return ws, True
 
 
-def plan_week_tab_order(titles):
-    """The order the workbook's tabs should be in: every 'W/C ' tab in date order,
-    kept together as one block.
-
-    add_worksheet appends, so each new Monday tab landed at the far right of the
-    workbook — past the dashboards — instead of beside last week's. W/C 21 Sep
-    2026 sat on its own out there all morning before anyone found it (Martin,
-    2026-09-22).
-
-    The block goes back where the weekly tabs already live: at the position of
-    the first one. Every other tab keeps its relative order, so a dashboard
-    someone has deliberately placed is never moved. A 'W/C ' tab whose date
-    won't parse is left alone with the other tabs rather than guessed at.
-
-    Returns the full list of titles in the wanted order — equal to `titles` when
-    nothing needs to move. Pure, so the ordering is unit-tested without Sheets.
-    """
-    def week_start(title):
-        try:
-            return datetime.strptime(title[4:].strip(), "%d %b %Y")
-        except ValueError:
-            return None
-
-    weeks = [t for t in titles if t.startswith("W/C ") and week_start(t)]
-    if len(weeks) < 2:
-        return list(titles)
-    anchor = titles.index(weeks[0])
-    rest = [t for t in titles[anchor:] if t not in set(weeks)]
-    return list(titles[:anchor]) + sorted(weeks, key=week_start) + rest
-
-
-def sort_week_tabs(sh=None):
-    """Put the weekly tabs back in date order. Returns how many tabs moved.
-
-    Sheets applies a batch's requests in order, and an index update is a
-    remove-then-insert. Placing tabs left to right means the tab being placed
-    always comes from a position at or after its target, so the insert lands on
-    exactly that index. Idempotent: a workbook already in order sends nothing.
-    """
-    import sheets_retry
-    sh = sh or open_spreadsheet()
-    sheets = {w.title: w for w in sh.worksheets()}
-    current = list(sheets)
-    wanted = plan_week_tab_order(current)
-    moved = [t for i, t in enumerate(wanted) if current[i] != t]
-    if not moved:
-        return 0
-    # Every index is re-asserted, not just the ones that look wrong: once an
-    # earlier tab moves, the tab sitting at a later index is no longer the one
-    # `current` says is there, so "skip if it already matches" would skip a tab
-    # that does need moving.
-    reqs = [{"updateSheetProperties": {"properties": {"sheetId": sheets[t].id,
-                                                      "index": i},
-                                       "fields": "index"}}
-            for i, t in enumerate(wanted)]
-    sheets_retry.gs_retry(lambda: sh.batch_update({"requests": reqs}),
-                          "weekly tab sort")
-    return len(moved)
-
-
 def unwritable_tabs(tab_names):
     """Which of `tab_names` this service account is currently BLOCKED from writing.
 
@@ -3925,12 +3865,6 @@ def main():
             print(f"  duplicate sweep: {n} row(s) removed")
         except Exception as e:
             print(f"  WARN duplicate sweep failed: {e}")
-        print("Sorting weekly tabs into date order…")
-        try:
-            n = sort_week_tabs()
-            print(f"  tab order: {n} tab(s) moved")
-        except Exception as e:
-            print(f"  WARN weekly tab sort failed: {e}")
         print("Checking for auto-detected rebookings…")
         try:
             detect_rebookings()
