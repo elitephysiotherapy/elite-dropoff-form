@@ -14,6 +14,8 @@ Sources:
 
 Time windows:
   This week / Next week    Mon-Sun, current and next
+  New Bookings / Leads     Sun-Sat, matching the bookings sheet's W/C tabs
+                           (on Sunday — the weekly wrap — the week just ended)
   Reschedules / CDNR       since the previous working day's final shift
   Reactivations            week-to-date — since Monday 08:00
 
@@ -57,6 +59,25 @@ def week_bounds(now):
     today = now.date()
     this_mon = today - timedelta(days=today.weekday())
     return this_mon, this_mon + timedelta(days=7), this_mon + timedelta(days=14)
+
+
+def bookings_week(now):
+    """(sunday, end) for the New Bookings and Leads rows.
+
+    The bookings sheet files every booking into a Sunday-Saturday 'W/C' tab, so
+    these two rows use the same week (Martin 2026-10-01) — otherwise the EOD and
+    the sheet disagree by a whole day's bookings at each end of the week.
+
+    The only run on a Sunday is the 07:00 weekly wrap; a week starting that
+    morning would be empty, so on Sunday it reports the Sun-Sat week that just
+    ended. Returns the week's Sunday (a date) and the London datetime to count up
+    to (now, or the end of Saturday for the wrap).
+    """
+    today = now.date()
+    sunday = today - timedelta(days=(today.weekday() + 1) % 7)
+    if today.weekday() == 6:
+        return sunday - timedelta(days=7), _midnight(sunday)
+    return sunday, now
 
 
 def _midnight(d):
@@ -353,10 +374,10 @@ def pilates_counts(this_mon, next_mon):
 # Leads not booked
 # ===========================================================================
 
-def new_bookings_this_week(this_mon, now):
-    """Count of new-patient IA bookings MADE this week.
+def new_bookings_this_week(week_sunday, end):
+    """Count of new-patient IA bookings MADE this week (Sun-Sat, bookings_week).
 
-    Counts /individual_appointments whose booking was created since Monday
+    Counts /individual_appointments whose booking was created since Sunday
     00:00 (London) this week, of an IA type, and not cancelled — the same
     definition the New Patient Bookings tracker uses (bookings_fetch.py). This
     is keyed on when the booking was MADE (created_at), not when the
@@ -367,10 +388,9 @@ def new_bookings_this_week(this_mon, now):
     double-count as two new IAs — same rule as the bookings tracker.
     """
     import bookings_fetch
-    week_start = _midnight(this_mon)
     created = list(phase2.fetch_all("/individual_appointments", [
-        ("q[]", f"created_at:>={_iso(week_start)}"),
-        ("q[]", f"created_at:<{_iso(now)}"),
+        ("q[]", f"created_at:>={_iso(_midnight(week_sunday))}"),
+        ("q[]", f"created_at:<{_iso(end)}"),
     ]))
     history_cache = {}
     n = 0
@@ -392,8 +412,9 @@ def new_bookings_this_week(this_mon, now):
     return n
 
 
-def leads_not_booked(this_mon, next_mon):
-    """Count of Leads-tab rows dated within the current week that have NOT been
+def leads_not_booked(week_sunday):
+    """Count of Leads-tab rows dated within the Sun-Sat week (bookings_week) —
+    the same week the bookings sheet Dashboard buckets leads by — that have NOT been
     booked. A lead is 'booked' once its Status column is set to "booked";
     everything else (pending / declined / lost / blank) counts as not booked,
     matching the definition used in the drop-off Ops summary and Dashboard.
@@ -422,7 +443,7 @@ def leads_not_booked(this_mon, next_mon):
                 break
             except ValueError:
                 continue
-        if dt and this_mon <= dt.date() < next_mon:
+        if dt and week_sunday <= dt.date() < week_sunday + timedelta(days=7):
             n += 1
     return n
 
@@ -436,7 +457,8 @@ def _n(v):
 
 
 def build_report(now, this_mon, next_mon, appt, resched, cdnr, react,
-                 react_target, leads, new_bookings, pilates, pilates_next_mon):
+                 react_target, leads, new_bookings, pilates, pilates_next_mon,
+                 bk_sunday=None):
     """Build the monospace stats table."""
     def cell(d, key):
         return "?" if d is None else _n(d.get(key, 0))
@@ -515,6 +537,9 @@ def build_report(now, this_mon, next_mon, appt, resched, cdnr, react,
     header = f"EOD Stats — {now.strftime('%a %d %b %Y, %H:%M')}"
     sub = (f"This week W/C {this_mon.day} {this_mon:%b}  ·  "
            f"Next week W/C {next_mon.day} {next_mon:%b}")
+    if bk_sunday is not None:
+        sub += (f"  ·  New Bookings & Leads: Sun {bk_sunday.day} {bk_sunday:%b}"
+                f"–Sat (bookings sheet tab W/C {bk_sunday:%d %b})")
     return header, sub, "\n".join(body)
 
 
@@ -642,18 +667,20 @@ def main():
     react_target = (round(prev_count * config.REACTIVATION_TARGET_FRACTION)
                     if prev_count is not None else None)
 
+    bk_sunday, bk_end = bookings_week(now)
     print("  Leads not booked…")
-    leads = leads_not_booked(this_mon, next_mon)
+    leads = leads_not_booked(bk_sunday)
 
     print("  New bookings this week…")
-    new_bookings = new_bookings_this_week(this_mon, now)
+    new_bookings = new_bookings_this_week(bk_sunday, bk_end)
 
     print("  Pilates (Bookwhen)…")
     pilates, pilates_next_mon = pilates_counts(this_mon, next_mon)
 
     header, sub, table = build_report(
         now, this_mon, next_mon, appt, resched, cdnr, react,
-        react_target, leads, new_bookings, pilates, pilates_next_mon)
+        react_target, leads, new_bookings, pilates, pilates_next_mon,
+        bk_sunday)
     print("\n" + header)
     print(sub)
     print(table + "\n")

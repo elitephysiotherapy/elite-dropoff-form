@@ -13,6 +13,12 @@ Modes:
 
 Idempotent: re-runs skip any appointment already in the sheet (matched by
 appointment_id), so the 6 daily trawls never double-log a booking.
+
+Rows are logged once and the booking details never change after that, but the
+Status column is kept live: each --write re-checks appointments Cliniko changed
+in the last few days and marks a row "Cancelled", "Deleted" or "Changed to
+<type>" (greyed + struck through), and the Dashboard leaves those rows out.
+  --reconcile-all  re-check every row in every tab (preview; add --write to apply)
 """
 
 import os
@@ -39,12 +45,14 @@ CLINIKO_WEB_DOMAIN = "elite-physiotherapy.uk1.cliniko.com"
 
 BOOKINGS_LOOKBACK_DAYS = 2   # rolling window; dedup handles the overlap
 
-# Weekly-tab columns. The last two are hidden helper columns.
+# Weekly-tab columns. appointment_id + pulled_at are hidden helper columns;
+# status sits after them (added 2026-10-01) so older tabs only gained a column
+# on the right — nothing shifted. Never hardcode a column letter; use COLUMNS.
 COLUMNS = [
     "date_booked", "appointment_date", "patient", "clinic",
     "new_or_past", "appointment_type", "booking_source",
     "referrer", "body_area", "insurer", "auth_code", "booking_notes",
-    "appointment_id", "pulled_at",
+    "appointment_id", "pulled_at", "status",
 ]
 HIDDEN = ("appointment_id", "pulled_at")
 HEADERS = {
@@ -62,7 +70,9 @@ HEADERS = {
     "booking_notes": "Notes",
     "appointment_id": "appointment_id",
     "pulled_at": "pulled_at",
+    "status": "Status",
 }
+STATUS_LOOKBACK_DAYS = 3   # poll re-checks appts Cliniko changed this recently
 
 LEADS_TAB = "Leads"
 LEADS_HEADERS = ["Date", "Patient", "Clinic", "Body Area", "Referrer",
@@ -224,6 +234,7 @@ def collect_bookings(lookback_days=BOOKINGS_LOOKBACK_DAYS, skip_ids=None,
             "booking_notes": note["leftover"],
             "appointment_id": str(a.get("id")),
             "pulled_at": pulled_at,
+            "status": "",
             "_patient_id": patient_id,
         })
     rows.sort(key=lambda r: r["date_booked"])
@@ -273,8 +284,21 @@ def get_or_create_week_tab(sh, tab_name):
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title=tab_name, rows=300, cols=len(COLUMNS))
         ws.append_row([HEADERS[c] for c in COLUMNS], value_input_option="RAW")
-        ws.hide_columns(COLUMNS.index(HIDDEN[0]), len(COLUMNS))
+        first = COLUMNS.index(HIDDEN[0])
+        ws.hide_columns(first, first + len(HIDDEN))
         return ws, True
+
+
+def ensure_status_column(ws):
+    """Give a pre-Status tab (14 columns) its Status column + header. Tabs are
+    only ever widened together with the header, so width alone tells us."""
+    if ws.col_count >= len(COLUMNS):
+        return
+    _gs_retry(lambda: ws.add_cols(len(COLUMNS) - ws.col_count),
+              f"add_cols({ws.title})")
+    col = COLUMNS.index("status") + 1
+    _gs_retry(lambda: ws.update_cell(1, col, HEADERS["status"]),
+              f"status header({ws.title})")
 
 
 def ensure_leads_tab(sh):
@@ -348,6 +372,7 @@ def write_to_sheet(sh, rows):
     all_new = []
     for tab_name, tab_rows in sorted(by_tab.items()):
         ws, created = get_or_create_week_tab(sh, tab_name)
+        ensure_status_column(ws)
         existing = (set() if created
                     else set(_gs_retry(lambda c=appt_col, w=ws: w.col_values(c),
                                        f"col_values({tab_name})")))
@@ -361,6 +386,121 @@ def write_to_sheet(sh, rows):
         flag = "(NEW TAB)" if created else "(existing)"
         print(f"  Tab '{tab_name}' {flag}: appended {len(new)} of {len(tab_rows)}")
     return all_new
+
+
+# ---------------- Status (cancelled / deleted / changed) ----------------
+
+def status_for(appt, types_by_id):
+    """What the Status cell should say for this appointment's current state in
+    Cliniko — "" while it is still a live IA booking. A DNA stays "": the
+    booking was made, the patient just didn't come (the funnel tracks that)."""
+    if appt.get("deleted_at"):
+        return "Deleted"
+    if appt.get("cancelled_at"):
+        return "Cancelled"
+    type_id = phase2.id_from_link(appt.get("appointment_type"))
+    if type_id not in config.BOOKINGS_IA_TYPE_IDS:
+        return f"Changed to {types_by_id.get(type_id, 'a non-IA type')}"
+    return ""
+
+
+def fetch_appointments_all_states(field, since_iso):
+    """Every appointment with `field` >= since_iso, by id — live, cancelled and
+    deleted. Cliniko splits these: the default list hides cancelled + deleted,
+    and cancelled_at:? / deleted_at:? return ONLY that kind."""
+    out = {}
+    for extra in ([], [("q[]", "cancelled_at:?")], [("q[]", "deleted_at:?")]):
+        for a in phase2.fetch_all("/individual_appointments",
+                                  [("q[]", f"{field}:>={since_iso}")] + extra):
+            out[str(a["id"])] = a
+    return out
+
+
+def _week_tab_cells(sh):
+    """{tab: (worksheet, [(row_no, appointment_id, status), ...])} for every W/C
+    tab, in ONE Sheets read (see the quota note in _all_week_rows)."""
+    tabs = [ws for ws in _gs_retry(lambda: sh.worksheets(), "list worksheets")
+            if ws.title.startswith("W/C ")]
+    if not tabs:
+        return {}
+    id_col = gspread.utils.rowcol_to_a1(1, COLUMNS.index("appointment_id") + 1)[:-1]
+    st_col = gspread.utils.rowcol_to_a1(1, COLUMNS.index("status") + 1)[:-1]
+    ranges = []
+    for ws in tabs:
+        ranges.append(f"'{ws.title}'!{id_col}:{id_col}")
+        # A 14-column tab has no Status column yet — reading past the grid
+        # would fail the whole batch, so only ask for it where it exists.
+        if ws.col_count >= len(COLUMNS):
+            ranges.append(f"'{ws.title}'!{st_col}:{st_col}")
+    batch = _gs_retry(lambda: sh.values_batch_get(ranges), "batch read ids/status")
+    by_range = dict(zip(ranges, batch.get("valueRanges", [])))
+    out = {}
+    for ws in tabs:
+        ids = by_range[f"'{ws.title}'!{id_col}:{id_col}"].get("values") or []
+        st = (by_range.get(f"'{ws.title}'!{st_col}:{st_col}") or {}).get("values") or []
+        cells = []
+        for i, row in enumerate(ids[1:], start=2):
+            aid = str(row[0]).strip() if row else ""
+            if aid:
+                cur = st[i - 1][0] if i - 1 < len(st) and st[i - 1] else ""
+                cells.append((i, aid, str(cur).strip()))
+        out[ws.title] = (ws, cells)
+    return out
+
+
+def reconcile_statuses(sh, appts_by_id, types_by_id, write=True, report_missing=False):
+    """Set the Status cell (and grey/strike the row) for every sheet row whose
+    appointment is in `appts_by_id` and whose status has changed. A row that
+    comes back to life (un-cancelled, type changed back) is cleared again.
+    Returns the list of (tab, ws, row_no, appointment_id, old, new) changes."""
+    changes, missing = [], []
+    for tab, (ws, cells) in _week_tab_cells(sh).items():
+        for row_no, aid, cur in cells:
+            a = appts_by_id.get(aid)
+            if a is None:
+                missing.append((tab, row_no, aid))
+                continue
+            new = status_for(a, types_by_id)
+            if new != cur:
+                changes.append((tab, ws, row_no, aid, cur, new))
+    if report_missing and missing:
+        print(f"  WARN {len(missing)} row(s) not found in Cliniko in any state:")
+        for tab, row_no, aid in missing:
+            print(f"    {tab} row {row_no}: {aid}")
+    if not write or not changes:
+        return changes
+
+    for ws in {c[1].id: c[1] for c in changes}.values():
+        ensure_status_column(ws)
+    st_idx = COLUMNS.index("status")
+    last_visible = len(COLUMNS)   # strike/grey the whole row up to Status
+    data, requests = [], []
+    for tab, ws, row_no, aid, cur, new in changes:
+        data.append({"range": f"'{tab}'!{gspread.utils.rowcol_to_a1(row_no, st_idx + 1)}",
+                     "values": [[new]]})
+        # Flagged: grey + strikethrough. Cleared: an empty textFormat with the
+        # same field mask resets both back to the sheet default (keeps links).
+        fmt = ({"strikethrough": True,
+                "foregroundColor": {"red": 0.6, "green": 0.6, "blue": 0.6}}
+               if new else {})
+        requests.append({"repeatCell": {
+            "range": {"sheetId": ws.id, "startRowIndex": row_no - 1,
+                      "endRowIndex": row_no, "startColumnIndex": 0,
+                      "endColumnIndex": last_visible},
+            "cell": {"userEnteredFormat": {"textFormat": fmt}},
+            "fields": ("userEnteredFormat.textFormat.strikethrough,"
+                       "userEnteredFormat.textFormat.foregroundColor"),
+        }})
+    _gs_retry(lambda: sh.values_batch_update(
+        {"valueInputOption": "RAW", "data": data}), "write statuses")
+    _gs_retry(lambda: sh.batch_update({"requests": requests}), "format statuses")
+    return changes
+
+
+def print_status_changes(changes):
+    for c in changes:
+        tab, row_no, aid, cur, new = c[0], c[-4], c[-3], c[-2], c[-1]
+        print(f"  {tab} row {row_no} ({aid}): {cur or '(live)'} -> {new or '(live)'}")
 
 
 # ---------------- Dashboard ----------------
@@ -433,6 +573,10 @@ def write_dashboard(sh):
     all_rows = _all_week_rows(sh)
 
     def bucket(rows):
+        # Rows since cancelled / deleted / changed off an IA type (Status set by
+        # reconcile_statuses) aren't live bookings — leave them out, so the
+        # weekly total matches the EOD "New Bookings" figure.
+        rows = [r for r in rows if not str(r.get("Status") or "").strip()]
         new = sum(1 for r in rows if str(r.get("New / Past Patient")) == "New")
         past = sum(1 for r in rows if str(r.get("New / Past Patient")) == "Past")
         react = sum(1 for r in rows if str(r.get("New / Past Patient")) == "Reactivation")
@@ -466,7 +610,9 @@ def write_dashboard(sh):
     lead_w, lead_m = _lead_period_counts(sh)
     now = datetime.now(LONDON)
     out = [["New Patient Bookings — Dashboard"],
-           [f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"], []]
+           [f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"],
+           ["Excludes bookings since cancelled, deleted or changed to a "
+            "non-IA type (Status column on each week tab)."], []]
     hdr = ["Period", "Total IAs", "Brand New", "Past Patient", "IA Reactivations",
            "Online", "Phone / Walk-in", "Leads (not booked)"]
 
@@ -583,6 +729,9 @@ def print_preview(rows):
 def main():
     write_mode = "--write" in sys.argv
     summary_mode = "--summary" in sys.argv
+    if "--reconcile-all" in sys.argv:
+        reconcile_all(write_mode)
+        return
     since_date = None
     for i, a in enumerate(sys.argv):
         if a == "--since" and i + 1 < len(sys.argv):
@@ -616,12 +765,51 @@ def main():
     ensure_leads_tab(sh)
     new_rows = write_to_sheet(sh, rows)
     print(f"  {len(new_rows)} new booking(s) written.")
+    print("Re-checking recently changed bookings…")
+    try:
+        since = (datetime.now(timezone.utc) - timedelta(days=STATUS_LOOKBACK_DAYS)
+                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        types_by_id = {str(t["id"]): t.get("name", "?")
+                       for t in phase2.fetch_all("/appointment_types")}
+        changes = reconcile_statuses(
+            sh, fetch_appointments_all_states("updated_at", since), types_by_id)
+        print(f"  {len(changes)} status change(s).")
+        print_status_changes(changes)
+    except Exception as e:
+        # Never let the status pass block logging new bookings; the next poll
+        # re-checks the same 3-day window, so a single miss self-heals.
+        print(f"  WARN status re-check failed: {e}")
     print("Refreshing Dashboard…")
     write_dashboard(sh)
     if new_rows:
         print("Notifying reception on Slack…")
         notify_reception(new_rows)
     print("Done.")
+
+
+def reconcile_all(write):
+    """One-off / repair: re-check every row in every W/C tab against Cliniko."""
+    sh = open_spreadsheet()
+    titles = [ws.title for ws in sh.worksheets() if ws.title.startswith("W/C ")]
+    first = min(datetime.strptime(t[4:], "%d %b %Y") for t in titles)
+    since = (first.replace(tzinfo=LONDON) - timedelta(days=1)).astimezone(
+        timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    print(f"Fetching every appointment created since {since} (all states)…")
+    appts = fetch_appointments_all_states("created_at", since)
+    types_by_id = {str(t["id"]): t.get("name", "?")
+                   for t in phase2.fetch_all("/appointment_types")}
+    changes = reconcile_statuses(sh, appts, types_by_id, write=write,
+                                 report_missing=True)
+    print(f"{len(changes)} status change(s){'' if write else ' (preview)'}:")
+    print_status_changes(changes)
+    if write:
+        for ws in sh.worksheets():
+            if ws.title.startswith("W/C "):
+                ensure_status_column(ws)
+        print("Refreshing Dashboard…")
+        write_dashboard(sh)
+    else:
+        print("\n(Preview only. Re-run with --write to apply.)")
 
 
 if __name__ == "__main__":
