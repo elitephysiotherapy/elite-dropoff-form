@@ -6,7 +6,9 @@ carries a "Referrer" column (filled from reception's `Ref: …` booking note, or
 "Online" for self-bookings). This script aggregates that column across the
 previous calendar month and DMs Sinead a ranked list.
 
-Scope: booked appointments only (the W/C weekly tabs) — the Leads tab is excluded.
+Scope: booked appointments only (the W/C weekly tabs) — the Leads tab is excluded,
+as are rows whose Status says the booking was cancelled, deleted or changed off
+an IA type.
 
 Modes:
   python send_referrers_monthly.py            preview only — prints the DM
@@ -229,9 +231,15 @@ def collect_referrers(start_local, end_local):
         except ValueError:
             continue
         booked_i = header.index("Date Booked") if "Date Booked" in header else None
+        # Status (bookings_fetch.reconcile_statuses) is set once a booking is
+        # cancelled, deleted or changed off an IA type — not a live booking, so
+        # it doesn't count towards a referrer (matches the Dashboard).
+        status_i = header.index("Status") if "Status" in header else None
 
         for row in values[1:]:
             if len(row) <= ref_i:
+                continue
+            if status_i is not None and len(row) > status_i and row[status_i].strip():
                 continue
             dt = _parse_dt(row[appt_i] if len(row) > appt_i else "")
             if dt is None and booked_i is not None and len(row) > booked_i:
