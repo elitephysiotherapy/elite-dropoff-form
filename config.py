@@ -194,9 +194,11 @@ TEAM = [
      "start": "2023-06-01", "end": "2026-07-02", "monthly_hours": 128.6,
      "clinic_email": "daire@elitephysiocookstown.co.uk"},
 
+    # Started Mar 2025 (Martin 2026-10-01). Her Jan–Feb 2025 appointments were
+    # as a student — they still resolve to "Aoife" but aren't capacity.
     {"display": "Aoife", "full_names": ["Aoife O'Kane"],
      "practitioner_ids": ["1592625921783764576"],
-     "start": "2025-01-01", "end": None, "monthly_hours": 128.6,
+     "start": "2025-03-01", "end": None, "monthly_hours": 128.6,
      "clinic_email": "aoifeokane@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [7, 8], "appts": [40, 40]}},
 
@@ -206,6 +208,7 @@ TEAM = [
      "clinic_email": "ciara@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [6, 7], "appts": [35, 40]}},
 
+    # Started Jul 2025 (Martin 2026-10-01; first appointment 9 Jul).
     # Annual leave Mon 17 – Sun 23 Aug 2026 (confirmed by Martin 2026-08-24:
     # zero appointments all week, verified against Cliniko). "to" is the
     # INCLUSIVE last day off. Without this she kept full capacity for a week she
@@ -213,7 +216,7 @@ TEAM = [
     # still counting the hours against her.
     {"display": "Molaí", "full_names": ["Molaí Smith"],
      "practitioner_ids": ["1719373338607883970"],
-     "start": "2025-09-01", "end": None, "monthly_hours": 128.6,
+     "start": "2025-07-01", "end": None, "monthly_hours": 128.6,
      "leave": [{"from": "2026-08-17", "to": "2026-08-23"}],
      "clinic_email": "molai@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [7, 8], "appts": [40, 45]}},
