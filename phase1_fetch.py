@@ -45,12 +45,8 @@ ID_RE = re.compile(r"/(\d+)(?:/[^/]*)?/?$")
 
 # Used ONLY for no_rebook detection (a real IA that expects a follow-up).
 # Phase 2 uses a broader list for "find episode start to read notes".
-PHASE1_DROPOFF_IA_TYPE_IDS = {
-    "382563815654429852",   # 1. Initial Appointment
-    "392015278608749674",   # 3. Club Initial Assessment
-    "1558530673046721630",  # 5. Private Health Insurance Initial Assessment
-    "945551547020874765",   # 7. ACL Initial Assessment
-}
+# One list, in config — a local copy here missed the Omagh IA type (2026-10-05).
+PHASE1_DROPOFF_IA_TYPE_IDS = config.PHASE1_DROPOFF_IA_TYPE_IDS
 
 SPREADSHEET_ID = "1RC7QkHGAa8dH5ShmwbFyswdrmMOo6HTgkcKZEvqoZbI"
 SERVICE_ACCOUNT_FILE = "service_account.json"
@@ -2672,6 +2668,7 @@ _FUNNEL_GEN_IDS = {
     "382563815654429852",   # 1. Initial Appointment
     "382563815511823515",   # 2. Review Appointment
     "1558530673046721630",  # 5. PHI Initial Assessment
+    "2035469725424686828",  # 1. Omagh Initial Assessment Offer
     "1558531409491006559",  # 6. PHI Review
     "1118674052857206233",  # Mummy MOT Initial Assessment
     "1118674366867969498",  # Mummy MOT Review

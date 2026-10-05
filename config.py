@@ -20,6 +20,7 @@ PHASE1_DROPOFF_IA_TYPE_IDS = {
     "392015278608749674",   # 3. Club Initial Assessment
     "1558530673046721630",  # 5. Private Health Insurance Initial Assessment
     "945551547020874765",   # 7. ACL Initial Assessment
+    "2035469725424686828",  # 1. Omagh Initial Assessment Offer (Omagh, from Sep 2026)
 }
 
 # Broader list — used to identify the start of a patient's current episode of care

@@ -48,12 +48,9 @@ LONDON = bf.LONDON
 ATTENDED_BUFFER_H = 2     # treat an appt as "passed" this long after its start
 FUNNEL_TAB = "Funnel"
 
-CORE_IA_TYPE_IDS = {
-    "382563815654429852",   # 1. Initial Appointment
-    "392015278608749674",   # 3. Club Initial Assessment
-    "1558530673046721630",  # 5. Private Health Insurance Initial Assessment
-    "945551547020874765",   # 7. ACL Initial Assessment
-}
+# Same list as drop-offs / EOD / diary summary — kept in config so a new IA
+# type (e.g. the Omagh offer, 2026-10-05) only has to be added once.
+CORE_IA_TYPE_IDS = set(config.PHASE1_DROPOFF_IA_TYPE_IDS)
 
 
 def _iso(dt):

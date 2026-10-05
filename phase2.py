@@ -29,6 +29,7 @@ PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS = {
     "392015278608749674",   # 3. Club Initial Assessment
     "1558530673046721630",  # 5. Private Health Insurance Initial Assessment
     "945551547020874765",   # 7. ACL Initial Assessment
+    "2035469725424686828",  # 1. Omagh Initial Assessment Offer
     "1521627460095973060",  # 2. Sports & MSK Clinical Consultation
     "1118674052857206233",  # Mummy MOT Initial Assessment
     "1194028405859816854",  # Pelvic Health Assessment
@@ -40,6 +41,7 @@ PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS = {
 STRICT_IA_TYPE_IDS = {
     "382563815654429852", "392015278608749674",
     "1558530673046721630", "945551547020874765",
+    "2035469725424686828",  # 1. Omagh Initial Assessment Offer
 }
 
 GAP_DAYS_FOR_NEW_EPISODE = 180
