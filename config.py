@@ -795,9 +795,7 @@ EOD_TARGETS = {
     "total_appts_Cookstown": 258,
     "total_appts_Maghera": 114,
     "total_appts_Omagh": 7,     # opening target, Sept 2026 — low on purpose
-    "ias_Cookstown": 43,
-    "ias_Maghera": 19,
-    "ias_Omagh": 2,             # opening target, Sept 2026 — low on purpose
+    # ias_* are derived from total_appts_* in eod_targets() — not set here.
     "pilates_matwork_cookstown": 31,
     "pilates_matwork_maghera": 44,
     "pilates_reformer_cookstown": 34,
@@ -817,10 +815,18 @@ EOD_TARGETS_TEMP = {
 
 
 def eod_targets(today):
-    """EOD_TARGETS with any temporary override active on `today` (a date)."""
+    """EOD_TARGETS with any temporary override active on `today` (a date).
+
+    IA targets are DERIVED from each clinic's Total Appts target (Martin
+    2026-10-07): total / 6, plus 10%, rounded UP to the next whole number —
+    e.g. 210 -> 38.5 -> 39. Integer maths (total * 11 / 60) so a whole result
+    like 60 -> 11 isn't pushed to 12 by float error."""
     targets = dict(EOD_TARGETS)
     if today.isoformat() < EOD_TARGETS_TEMP["until"]:
         targets.update(EOD_TARGETS_TEMP["targets"])
+    for clinic in ("Cookstown", "Maghera", "Omagh"):
+        total = targets[f"total_appts_{clinic}"]
+        targets[f"ias_{clinic}"] = -(-total * 11 // 60)
     return targets
 
 # Reactivation target = this fraction of the PREVIOUS week's drop-off count.
