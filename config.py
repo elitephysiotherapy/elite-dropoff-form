@@ -803,6 +803,26 @@ EOD_TARGETS = {
     "pilates_reformer_cookstown": 34,
 }
 
+# TEMPORARY achievable targets for the team, rest of 2026 (set 2026-10-07).
+# Overrides EOD_TARGETS for these keys on report dates BEFORE "until"; from
+# 1 Jan 2027 the full EOD_TARGETS above apply again automatically.
+EOD_TARGETS_TEMP = {
+    "until": "2027-01-01",
+    "targets": {
+        "total_appts_Cookstown": 210,
+        "total_appts_Maghera": 60,
+        "total_appts_Omagh": 7,
+    },
+}
+
+
+def eod_targets(today):
+    """EOD_TARGETS with any temporary override active on `today` (a date)."""
+    targets = dict(EOD_TARGETS)
+    if today.isoformat() < EOD_TARGETS_TEMP["until"]:
+        targets.update(EOD_TARGETS_TEMP["targets"])
+    return targets
+
 # Reactivation target = this fraction of the PREVIOUS week's drop-off count.
 REACTIVATION_TARGET_FRACTION = 0.40
 # Drop-off types excluded from that base — the pre-IA drop-offs where the
