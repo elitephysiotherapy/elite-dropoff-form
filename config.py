@@ -165,10 +165,10 @@ TEAM = [
 
     {"display": "Julie", "full_names": ["Julie McVey", "Julie McVey CS"],
      "practitioner_ids": ["382564987693962263", "1648706640343471203"],
-     "work_days": [0, 3],   # Mon + Thu (Martin 2026-10-13)
+     "work_days": [0, 3],   # Mon + Thu, 9:30–4:00 = 13 h/wk ×4.345 = 56.5/mo (Martin 2026-10-13; was 36.7)
      # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
      "leave": [{"from": "2026-01-19", "to": "2026-01-23"}, {"from": "2026-08-03", "to": "2026-08-07"}],
-     "start": None, "end": None, "monthly_hours": 36.7,
+     "start": None, "end": None, "monthly_hours": 56.5,
      "clinic_email": "julie@elitephysiocookstown.co.uk", "owner_consultant": True},
 
     {"display": "Sinead", "full_names": ["Sinead McGill"],
@@ -200,13 +200,13 @@ TEAM = [
      "clinic_email": "erin@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [7, 8], "appts": [40, 40]}},
 
-    # LEFT 2 Jul 2026. Kept here on purpose — this is what preserves her name on
+    # LEFT 3 Jul 2026 (last day worked; Martin 2026-10-13). Kept here on purpose — this is what preserves her name on
     # every historical dashboard, NPS column and drop-off row. Do not delete.
     {"display": "Daire", "full_names": ["Daire McKenna"],
      "practitioner_ids": ["1501275397424158535"],
      # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
      "leave": [{"from": "2026-02-20", "to": "2026-02-20"}, {"from": "2026-02-27", "to": "2026-02-27"}, {"from": "2026-03-16", "to": "2026-03-16"}, {"from": "2026-04-08", "to": "2026-04-08"}, {"from": "2026-05-29", "to": "2026-05-30"}, {"from": "2026-06-01", "to": "2026-06-01"}],
-     "start": "2023-06-01", "end": "2026-07-02", "monthly_hours": 128.6,
+     "start": "2023-06-01", "end": "2026-07-03", "monthly_hours": 128.6,
      "clinic_email": "daire@elitephysiocookstown.co.uk"},
 
     # Started Mar 2025 (Martin 2026-10-01). Her Jan–Feb 2025 appointments were
@@ -214,7 +214,7 @@ TEAM = [
     {"display": "Aoife", "full_names": ["Aoife O'Kane"],
      "practitioner_ids": ["1592625921783764576"],
      # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
-     "leave": [{"from": "2026-02-06", "to": "2026-02-06"}, {"from": "2026-05-14", "to": "2026-05-17"}, {"from": "2026-06-05", "to": "2026-06-05"}, {"from": "2026-06-08", "to": "2026-06-08"}, {"from": "2026-09-01", "to": "2026-09-04"}],
+     "leave": [{"from": "2026-02-06", "to": "2026-02-06"}, {"from": "2026-06-05", "to": "2026-06-05"}, {"from": "2026-06-08", "to": "2026-06-08"}, {"from": "2026-09-01", "to": "2026-09-04"}],
      "start": "2025-03-01", "end": None, "monthly_hours": 128.6,
      "clinic_email": "aoifeokane@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [7, 8], "appts": [40, 40]}},
@@ -245,7 +245,7 @@ TEAM = [
     {"display": "Shannagh", "full_names": ["Shannagh Conwell"],
      "practitioner_ids": ["1818200739135100480"],
      # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
-     "leave": [{"from": "2026-02-09", "to": "2026-02-09"}, {"from": "2026-03-16", "to": "2026-03-16"}, {"from": "2026-03-18", "to": "2026-03-18"}, {"from": "2026-06-04", "to": "2026-06-05"}, {"from": "2026-07-14", "to": "2026-07-17"}, {"from": "2026-07-20", "to": "2026-07-23"}, {"from": "2026-10-22", "to": "2026-10-23"}],
+     "leave": [{"from": "2026-02-09", "to": "2026-02-09"}, {"from": "2026-03-16", "to": "2026-03-16"}, {"from": "2026-03-18", "to": "2026-03-18"}, {"from": "2026-06-04", "to": "2026-06-05"}, {"from": "2026-07-14", "to": "2026-07-17"}, {"from": "2026-07-20", "to": "2026-07-22"}, {"from": "2026-10-22", "to": "2026-10-23"}],
      "start": "2025-11-01", "end": None, "monthly_hours": 128.6,
      "clinic_email": "shannagh@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [4, 5], "appts": [30, 35]}},

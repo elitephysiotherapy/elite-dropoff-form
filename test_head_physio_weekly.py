@@ -48,9 +48,9 @@ def test_available_days_leave_and_closures():
     import config
     d = date
     assert config.available_weekdays("Marty", d(2026, 3, 30), d(2026, 4, 5)) == 0     # leave 30 Mar–3 Apr
-    assert config.available_weekdays("Shannagh", d(2026, 7, 20), d(2026, 7, 26)) == 1  # off 20–23 Jul
+    assert config.available_weekdays("Shannagh", d(2026, 7, 20), d(2026, 7, 26)) == 2  # off 20–22 Jul
     assert config.available_weekdays("Sinead", d(2026, 3, 16), d(2026, 3, 22)) == 4    # 17 Mar closed
-    assert config.available_weekdays("Daire", d(2026, 6, 29), d(2026, 7, 5)) == 4      # left 2 Jul
+    assert config.available_weekdays("Daire", d(2026, 6, 29), d(2026, 7, 5)) == 5      # left 3 Jul (Fri)
     assert config.available_weekdays("Erin", d(2026, 6, 15), d(2026, 8, 31)) == 0      # sick leave
     assert config.available_weekdays("Aoife", d(2026, 9, 28), d(2026, 9, 30)) == 3     # part-week
     assert config.available_weekdays("Julie", d(2026, 9, 28), d(2026, 9, 30)) == 1     # Mon only
