@@ -157,21 +157,29 @@ CLINIC_MONTHLY_HOURS = 891.3       # total available service hours per month
 TEAM = [
     {"display": "Marty", "full_names": ["Martin Loughran", "Martin Loughran CS"],
      "practitioner_ids": ["382563813490168854", "1521620301232739358"],
+     "work_days": [1, 2, 3],   # Tue–Thu mornings (Martin 2026-10-13)
+     # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
+     "leave": [{"from": "2026-01-19", "to": "2026-01-23"}, {"from": "2026-03-30", "to": "2026-04-03"}, {"from": "2026-08-03", "to": "2026-08-07"}],
      "start": None, "end": None, "monthly_hours": 83.1,
      "clinic_email": "martin@elitephysiocookstown.co.uk", "owner_consultant": True},
 
     {"display": "Julie", "full_names": ["Julie McVey", "Julie McVey CS"],
      "practitioner_ids": ["382564987693962263", "1648706640343471203"],
+     "work_days": [0, 3],   # Mon + Thu (Martin 2026-10-13)
+     # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
+     "leave": [{"from": "2026-01-19", "to": "2026-01-23"}, {"from": "2026-08-03", "to": "2026-08-07"}],
      "start": None, "end": None, "monthly_hours": 36.7,
      "clinic_email": "julie@elitephysiocookstown.co.uk", "owner_consultant": True},
 
     {"display": "Sinead", "full_names": ["Sinead McGill"],
      "practitioner_ids": ["1172138415936771374"],
+     # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
+     "leave": [{"from": "2026-01-26", "to": "2026-01-30"}, {"from": "2026-02-23", "to": "2026-02-27"}, {"from": "2026-05-25", "to": "2026-05-27"}, {"from": "2026-06-15", "to": "2026-06-15"}, {"from": "2026-07-10", "to": "2026-07-10"}, {"from": "2026-07-30", "to": "2026-07-31"}, {"from": "2026-10-30", "to": "2026-10-30"}],
      "start": "2022-01-01", "end": None, "monthly_hours": 128.6,
      "clinic_email": "sineadmcgill@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [7, 8], "appts": [40, 45]}},
 
-    # ON LEAVE 13 Jul – 1 Sep 2026. While on leave she had ZERO available hours,
+    # ON LEAVE (sick) 15 Jun – 31 Aug 2026. While on leave she had ZERO available hours,
     # so she dropped out of the utilisation denominator — utilisation = hours
     # delivered ÷ hours physios were AVAILABLE, and leave is not availability
     # (Martin 2026-07-27). Back seeing patients from Wed 2 Sep 2026 (confirmed by
@@ -180,7 +188,11 @@ TEAM = [
     {"display": "Erin", "full_names": ["Erin McNicholl"],
      "practitioner_ids": ["1168999178748040474"],
      "start": "2023-01-01", "end": None, "monthly_hours": 128.6,
-     "leave": [{"from": "2026-07-13", "to": "2026-09-01"}],
+     "leave": [{"from": "2026-03-13", "to": "2026-03-13"}, {"from": "2026-03-18", "to": "2026-03-18"},
+               {"from": "2026-05-29", "to": "2026-05-29"}, {"from": "2026-06-12", "to": "2026-06-12"},
+               # Sick leave 15 Jun – 31 Aug inclusive (Martin 2026-10-13; was 13 Jul – 1 Sep).
+               {"from": "2026-06-15", "to": "2026-08-31"},
+               {"from": "2026-10-23", "to": "2026-10-23"}, {"from": "2026-10-26", "to": "2026-10-26"}],
      # Phased return after injury: capped at 50% capacity through September,
      # back to 100% from 1 Oct 2026 (Martin 2026-09-23). Starts 31 Aug so the
      # w/c 31 Aug week (her first week back) is on 50% too.
@@ -192,6 +204,8 @@ TEAM = [
     # every historical dashboard, NPS column and drop-off row. Do not delete.
     {"display": "Daire", "full_names": ["Daire McKenna"],
      "practitioner_ids": ["1501275397424158535"],
+     # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
+     "leave": [{"from": "2026-02-20", "to": "2026-02-20"}, {"from": "2026-02-27", "to": "2026-02-27"}, {"from": "2026-03-16", "to": "2026-03-16"}, {"from": "2026-04-08", "to": "2026-04-08"}, {"from": "2026-05-29", "to": "2026-05-30"}, {"from": "2026-06-01", "to": "2026-06-01"}],
      "start": "2023-06-01", "end": "2026-07-02", "monthly_hours": 128.6,
      "clinic_email": "daire@elitephysiocookstown.co.uk"},
 
@@ -199,12 +213,16 @@ TEAM = [
     # as a student — they still resolve to "Aoife" but aren't capacity.
     {"display": "Aoife", "full_names": ["Aoife O'Kane"],
      "practitioner_ids": ["1592625921783764576"],
+     # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
+     "leave": [{"from": "2026-02-06", "to": "2026-02-06"}, {"from": "2026-05-14", "to": "2026-05-17"}, {"from": "2026-06-05", "to": "2026-06-05"}, {"from": "2026-06-08", "to": "2026-06-08"}, {"from": "2026-09-01", "to": "2026-09-04"}],
      "start": "2025-03-01", "end": None, "monthly_hours": 128.6,
      "clinic_email": "aoifeokane@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [7, 8], "appts": [40, 40]}},
 
     {"display": "Ciara", "full_names": ["Ciara O'Kane"],
      "practitioner_ids": ["1965915462512416363"],
+     # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
+     "leave": [{"from": "2026-07-14", "to": "2026-07-17"}, {"from": "2026-07-20", "to": "2026-07-20"}, {"from": "2026-10-19", "to": "2026-10-19"}],
      "start": "2026-06-08", "end": None, "monthly_hours": 128.6,
      "clinic_email": "ciara@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [6, 7], "appts": [35, 40]}},
@@ -218,12 +236,16 @@ TEAM = [
     {"display": "Molaí", "full_names": ["Molaí Smith"],
      "practitioner_ids": ["1719373338607883970"],
      "start": "2025-07-01", "end": None, "monthly_hours": 128.6,
-     "leave": [{"from": "2026-08-17", "to": "2026-08-23"}],
+     "leave": [{"from": "2026-03-05", "to": "2026-03-06"}, {"from": "2026-06-09", "to": "2026-06-09"},
+               {"from": "2026-07-02", "to": "2026-07-03"}, {"from": "2026-07-20", "to": "2026-07-20"},
+               {"from": "2026-08-17", "to": "2026-08-23"}],
      "clinic_email": "molai@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [7, 8], "appts": [40, 45]}},
 
     {"display": "Shannagh", "full_names": ["Shannagh Conwell"],
      "practitioner_ids": ["1818200739135100480"],
+     # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
+     "leave": [{"from": "2026-02-09", "to": "2026-02-09"}, {"from": "2026-03-16", "to": "2026-03-16"}, {"from": "2026-03-18", "to": "2026-03-18"}, {"from": "2026-06-04", "to": "2026-06-05"}, {"from": "2026-07-14", "to": "2026-07-17"}, {"from": "2026-07-20", "to": "2026-07-23"}, {"from": "2026-10-22", "to": "2026-10-23"}],
      "start": "2025-11-01", "end": None, "monthly_hours": 128.6,
      "clinic_email": "shannagh@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [4, 5], "appts": [30, 35]}},
@@ -248,6 +270,8 @@ TEAM = [
     # the slack_email override once her Slack is moved to the clinic address.
     {"display": "Kelly", "full_names": ["Kelly Scott"],
      "practitioner_ids": ["1810741098981627376"],
+     # 2026 annual leave from Martin (2026-10-13). "to" = INCLUSIVE last day off.
+     "leave": [{"from": "2026-10-19", "to": "2026-10-20"}],
      "start": "2026-08-11", "end": None, "monthly_hours": 128.6,
      "clinic_email": "kelly@elitephysiocookstown.co.uk",
      "diary_target": {"ias": [4, 5], "appts": [30, 35]},
@@ -357,6 +381,44 @@ def on_leave_whole_period(member, period_start, period_end):
         ):
             return True
     return False
+
+
+# Weekdays the whole clinic was shut (bank holidays) — nobody is available.
+# From Martin 2026-10-13. Add future closures here (incl. Christmas).
+CLINIC_CLOSED_DAYS = {date(2026, 1, 1), date(2026, 1, 2),
+                      date(2026, 3, 17), date(2026, 4, 6), date(2026, 4, 7),
+                      date(2026, 5, 4), date(2026, 7, 13), date(2026, 8, 31),
+                      # Christmas closure 24–31 Dec inclusive
+                      *(date(2026, 12, d) for d in range(24, 32))}
+# (Open on the 25 May 2026 bank holiday — Martin 2026-10-13.)
+
+
+def work_days(display):
+    """Weekdays (Mon=0) this physio works — config.TEAM "work_days", default
+    Mon–Fri. Their weekly hours are spread over these days only."""
+    m = _member(display)
+    return (m or {}).get("work_days") or [0, 1, 2, 3, 4]
+
+
+def available_weekdays(display, first_day, last_day):
+    """Working days in [first_day, last_day] (both INCLUSIVE) that `display`
+    was available: one of their work_days, on the team, not on leave, clinic open. Day-level, so a
+    2-day holiday takes 2/5 off a week (on_leave_whole_period only zeroes
+    whole periods). Used by the Head Physio Weekly tab."""
+    m = _member(display)
+    if not m:
+        return 0
+    off = [(_as_date(lv["from"]), _as_date(lv.get("to") or lv["from"]))
+           for lv in m.get("leave") or []]
+    n, d = 0, _norm_date(first_day)
+    last = _norm_date(last_day)
+    while d <= last:
+        if (d.weekday() in work_days(display) and d not in CLINIC_CLOSED_DAYS
+                and is_active_on(m, d)
+                and not any(a <= d <= b for a, b in off)):
+            n += 1
+        d += timedelta(days=1)
+    return n
 
 
 def monthly_hours_on(display, period_start, period_end):
@@ -490,7 +552,7 @@ DIARY_TARGET_ORDER = ["Sinead", "Erin", "Aoife", "Molaí", "Ciara", "Shannagh",
 # (Settings ▸ List of Therapists, 2026-10-13). The "Head Physio Weekly" tab
 # writes exactly these rows so it can be typed straight into the Hub. When
 # someone joins/leaves, change the Hub's list AND this one.
-HUB_PHYSIO_ORDER = ["Marty", "Julie", "Sinead", "Erin", "Aoife", "Molaí",
+HUB_PHYSIO_ORDER = ["Marty", "Julie", "Sinead", "Erin", "Daire", "Aoife", "Molaí",
                     "Shannagh", "Ciara", "Conor", "Kelly"]
 
 # Slack channel where package-of-care sales are posted (used by the weekly

@@ -22,8 +22,11 @@ Dashboard / Monday team email), so nothing disagrees:
               (send_packages_weekly rules)
   CDNR      = CNA drop-offs (cancelled, no rebook, deduped per patient)
   DNAs      = DNA drop-offs (deduped per patient)
-  Available = roster weekly hours (config.weekly_hours_on, leave-aware) × 60,
-              pro-rated by weekdays for a part-week period
+  Available = contracted weekly hours (monthly ÷ 4.345) × 60 × days available
+              ÷ working days per week, where days available = the physio's
+              working days (config.TEAM "work_days", default Mon–Fri) minus annual
+              leave (config.TEAM "leave", day-level) and clinic closures
+              (config.CLINIC_CLOSED_DAYS)
   Treating  = non-cancelled appointment minutes incl. classes (the utilisation
               numerator everywhere else)
 The Hub computes its four % columns itself (verified by test entry 2026-10-13):
@@ -45,6 +48,7 @@ Usage:
   python head_physio_weekly.py                 add any finished, missing periods (last 14 days)
   python head_physio_weekly.py --since 2026-09-01   backfill from a date
   python head_physio_weekly.py --dry-run       compute + print, don't write
+  python head_physio_weekly.py --since 2026-01-01 --rebuild   recompute not-yet-entered blocks
   python head_physio_weekly.py --pending-json  print blocks still to type into the Hub
   python head_physio_weekly.py --mark-entered "October - Week 2"
 """
@@ -125,9 +129,16 @@ def finished_periods(since, today):
     return out
 
 
-def _weekdays(start, end):
-    return sum(1 for i in range((end - start).days + 1)
-               if (start + timedelta(days=i)).weekday() < 5)
+def _contracted_monthly_hours(name, day):
+    """Contracted monthly hours on `day` (hours_periods-aware), ignoring leave —
+    leave is taken off day by day via config.available_weekdays."""
+    m = next((t for t in config.TEAM if t["display"] == name), None)
+    if not m:
+        return None
+    for hp in m.get("hours_periods") or []:
+        if config._as_date(hp["from"]) <= day <= config._as_date(hp["to"]):
+            return hp["monthly_hours"]
+    return m.get("monthly_hours")
 
 
 # ---------------------------------------------------------------------------
@@ -155,18 +166,18 @@ def compute_period(period, packages_by_physio=None):
     if unknown:
         print(f"  NOTE {period[0]}: not on the Hub list, left out: {', '.join(unknown)}")
 
-    share = _weekdays(start, end) / 5
     rows, tot = [], [0] * 13
     for name in config.HUB_PHYSIO_ORDER:
         s = stats.get(name) or {}
         ias = s.get("nps", 0)
         rebooked = max(ias - s.get("iadnrs", 0), 0)
-        weekly = config.weekly_hours_on(name, start, end + timedelta(days=1))
+        monthly = _contracted_monthly_hours(name, start)
+        days = config.available_weekdays(name, start, end)
         vals = {
             1: s.get("total_apts", 0), 2: ias, 3: rebooked,
             5: packages_by_physio.get(name, 0),
             7: s.get("cnas_review", 0), 8: s.get("dnas_review", 0),
-            10: round(weekly * 60 * share) if weekly else 0,
+            10: round(monthly / 4.345 * 60 * days / len(config.work_days(name))) if monthly else 0,
             11: round(s.get("used_minutes", 0)),
         }
         rows.append(_row(name, vals))
@@ -231,8 +242,8 @@ def build_grid(blocks, now):
             "IA Rebook = Rebooked ÷ IAs · Package = Packages ÷ Rebooked · "
             "Drop Off = (CDNR + DNAs) ÷ Appts · Utilisation = Treating ÷ Available."],
            ["Rebooked = IAs − IADNRs · CDNR / DNAs = CNA / DNA drop-offs · "
-            "Packages = #packages posts · Available = roster hours (leave-aware), "
-            "pro-rated for part-weeks."],
+            "Packages = #packages posts · Available = weekly hours × own working days available ÷ days/week "
+            "(minus annual leave + bank-holiday closures)."],
            []]
     for key in sorted(blocks, key=_block_start, reverse=True):
         out.extend(blocks[key])
@@ -290,7 +301,10 @@ def _read_tab(sh):
     return ws, _gs_retry(ws.get_all_values, f"{TAB} read")
 
 
-def write_head_physio_weekly_tab(since=None, dry_run=False):
+def write_head_physio_weekly_tab(since=None, dry_run=False, rebuild=False):
+    """Add finished Hub periods missing from the tab. rebuild=True also
+    recomputes blocks still "Hub: not entered" (entered ones stay frozen) —
+    use after correcting leave/roster data."""
     from phase1_fetch import LONDON, open_spreadsheet, write_tab_atomically
     now = datetime.now(LONDON)
     today = now.date()
@@ -299,6 +313,9 @@ def write_head_physio_weekly_tab(since=None, dry_run=False):
     sh = None if dry_run else open_spreadsheet()
     _ws, values = (None, []) if dry_run else _read_tab(sh)
     blocks = parse_blocks(values)
+    if rebuild:
+        blocks = {k: v for k, v in blocks.items()
+                  if not (len(v[0]) > STATUS_COL and v[0][STATUS_COL] == HUB_NOT_ENTERED)}
 
     added = []
     for p in finished_periods(since, today):
@@ -369,4 +386,5 @@ if __name__ == "__main__":
         since = None
         if "--since" in args:
             since = date.fromisoformat(args[args.index("--since") + 1])
-        write_head_physio_weekly_tab(since=since, dry_run="--dry-run" in args)
+        write_head_physio_weekly_tab(since=since, dry_run="--dry-run" in args,
+                                     rebuild="--rebuild" in args)
