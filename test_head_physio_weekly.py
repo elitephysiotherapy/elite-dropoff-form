@@ -59,6 +59,19 @@ def test_available_days_leave_and_closures():
     assert config.available_weekdays("Aoife", d(2026, 8, 31), d(2026, 8, 31)) == 0     # closed
 
 
+def test_only_employed_physios_listed():
+    import config
+    d = date
+    active = lambda a, b: [n for n in config.HUB_PHYSIO_ORDER
+                           if config.is_active_in_period(config._member(n), a, b)]
+    assert "Daire" in active(d(2026, 6, 29), d(2026, 7, 5))      # left Fri 3 Jul
+    assert "Daire" not in active(d(2026, 7, 6), d(2026, 7, 12))
+    assert "Ciara" not in active(d(2026, 6, 1), d(2026, 6, 7))    # starts 8 Jun
+    assert "Ciara" in active(d(2026, 6, 8), d(2026, 6, 14))
+    assert not {"Conor", "Kelly"} & set(active(d(2026, 8, 3), d(2026, 8, 9)))
+    assert {"Conor", "Kelly"} <= set(active(d(2026, 8, 10), d(2026, 8, 16)))
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

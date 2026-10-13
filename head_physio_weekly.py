@@ -168,6 +168,11 @@ def compute_period(period, packages_by_physio=None):
 
     rows, tot = [], [0] * 13
     for name in config.HUB_PHYSIO_ORDER:
+        # Only people employed during the period (config.TEAM start/end) —
+        # matches the Hub, which hides therapists outside their active dates.
+        member = next((t for t in config.TEAM if t["display"] == name), None)
+        if member and not config.is_active_in_period(member, start, end):
+            continue
         s = stats.get(name) or {}
         ias = s.get("nps", 0)
         rebooked = max(ias - s.get("iadnrs", 0), 0)
