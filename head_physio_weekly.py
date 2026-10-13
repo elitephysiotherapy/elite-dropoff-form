@@ -141,6 +141,15 @@ def _contracted_monthly_hours(name, day):
     return m.get("monthly_hours")
 
 
+def clinic_days(start, end):
+    """Open weekdays in the period (Mon–Fri minus config.CLINIC_CLOSED_DAYS) —
+    the Hub's weekly "Clinic Days" box. Sums to the monthly clinic days in the
+    Hub's Settings for every month of 2026 (checked 2026-10-14)."""
+    return sum(1 for i in range((end - start).days + 1)
+               if (start + timedelta(days=i)).weekday() < 5
+               and start + timedelta(days=i) not in config.CLINIC_CLOSED_DAYS)
+
+
 # ---------------------------------------------------------------------------
 # Compute one period
 # ---------------------------------------------------------------------------
@@ -359,8 +368,10 @@ def pending_blocks():
     for key, rows in parse_blocks(values).items():
         if len(rows[0]) > STATUS_COL and rows[0][STATUS_COL] == HUB_NOT_ENTERED:
             title, rng = key.split("|", 1)
+            start = _block_start(key)
             out.append({"title": title, "date_range": rng,
-                        "start": _block_start(key).isoformat(),
+                        "start": start.isoformat(),
+                        "clinic_days": clinic_days(*hub_period_for(start)[1:]),
                         "columns": rows[1],
                         "rows": [r for r in rows[2:] if r[0] != "Clinic Total"],
                         "clinic_total": next((r for r in rows[2:] if r[0] == "Clinic Total"), None)})

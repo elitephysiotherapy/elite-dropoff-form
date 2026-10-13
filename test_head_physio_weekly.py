@@ -72,6 +72,12 @@ def test_only_employed_physios_listed():
     assert {"Conor", "Kelly"} <= set(active(d(2026, 8, 10), d(2026, 8, 16)))
 
 
+def test_clinic_days_match_hub_monthly_settings():
+    hub = {1: 20, 2: 20, 3: 21, 4: 20, 5: 20, 6: 22, 7: 22, 8: 20, 9: 22, 10: 22, 11: 21, 12: 17}
+    for m, want in hub.items():
+        assert sum(h.clinic_days(s, e) for _t, s, e in h.hub_periods_in_month(2026, m)) == want, m
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
