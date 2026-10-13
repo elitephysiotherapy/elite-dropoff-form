@@ -3951,6 +3951,12 @@ def main():
             ("Weekly Team Stats", lambda: write_weekly_team_stats_tab(weeks_back=4), "Weekly Team Stats"),
             ("Performance Dashboard", write_performance_dashboard_tab, "Performance Dashboard"),
             ("Weekly Drop-off Analysis", write_weekly_dropoff_analysis_tab, "Weekly Drop-off Analysis"),
+            # Adds only finished Hub periods not yet on the tab (cheap when
+            # there's nothing new) — Mondays add last week; a missed run
+            # self-heals the next day. Feeds the weekly Chrome Hub-entry task.
+            ("Head Physio Weekly",
+             lambda: __import__("head_physio_weekly").write_head_physio_weekly_tab(),
+             "Head Physio Weekly"),
         ]
         # Physio Trends rebuilds 12 months of stats — heavy (~5–8 min). Only
         # refresh on Mondays + on the 1st of each month so the data stays

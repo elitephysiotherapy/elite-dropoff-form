@@ -486,6 +486,13 @@ DIARY_TARGETS_SLACK_EMAILS = [
 DIARY_TARGET_ORDER = ["Sinead", "Erin", "Aoife", "Molaí", "Ciara", "Shannagh",
                       "Conor", "Kelly"]
 
+# Go-To Clinic Hub ▸ Head Physio Dashboard therapist list, in the Hub's order
+# (Settings ▸ List of Therapists, 2026-10-13). The "Head Physio Weekly" tab
+# writes exactly these rows so it can be typed straight into the Hub. When
+# someone joins/leaves, change the Hub's list AND this one.
+HUB_PHYSIO_ORDER = ["Marty", "Julie", "Sinead", "Erin", "Aoife", "Molaí",
+                    "Shannagh", "Ciara", "Conor", "Kelly"]
+
 # Slack channel where package-of-care sales are posted (used by the weekly
 # packages count DM to Sinead Rocks). #packages.
 PACKAGES_CHANNEL_ID = "C04G5CKN60Y"
