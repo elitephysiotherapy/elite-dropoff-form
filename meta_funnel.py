@@ -8,6 +8,7 @@ Leads come from the bookings sheet Leads tab (Lead Source == "Meta Ad"; the
 hourly meta_leads.py sync fills it). Each lead is linked to a Cliniko patient:
   1. phone — any patient created since the campaigns began whose phone matches
      (last 10 digits), then a last-name search across ALL patients, phone-checked;
+  0. manual — config.META_LEAD_PATIENT_LINKS (hand-confirmed by Martin);
   2. name — ONLY a brand-new patient (created on/after the lead date) with the
      exact same full name, and only if exactly one. Never name-only against old
      records: same name ≠ same person (two Martin Mallons).
@@ -89,6 +90,7 @@ def load_meta_leads(gc):
             "clinic": str(r.get("Preferred Clinic") or "").strip() or "(not set)",
             "ad": str(r.get("Ad / Campaign") or "").strip() or "(unknown ad)",
             "tab_status": str(r.get("Status") or "").strip().lower(),
+            "meta_id": str(r.get("Meta Lead ID") or "").strip(),
         })
     leads.sort(key=lambda l: l["date"])
     return leads
@@ -115,7 +117,13 @@ def match_patients(leads):
     for p in recent:
         for ph in _phones(p):
             by_phone.setdefault(ph, p)
+    links = getattr(config, "META_LEAD_PATIENT_LINKS", {})
     for l in leads:
+        if l["meta_id"] in links:
+            p = next(iter(phase2.fetch_all("/patients", [("q[]", f"id:={links[l['meta_id']]}")])), None)
+            if p:
+                l["patient"], l["match"] = p, "manual link"
+                continue
         ph = meta_leads._norm_phone(l["phone"])
         p = by_phone.get(ph) if ph else None
         how = "phone" if p else ""

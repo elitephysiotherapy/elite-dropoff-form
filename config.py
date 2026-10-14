@@ -792,6 +792,14 @@ BOOKINGS_SPREADSHEET_ID = "1zoFhXPGzDnrCVTgTYs-YRm8EUzx91LL5Q_8L5Bd7_iU"
 META_LEADS_SPREADSHEET_ID = "11DAA0DAfkqWi4c7YOEuNMpmrvHUYeG3YhMv0iaRcBk8"
 META_LEADS_START_DATE = "2026-09-11"
 
+# Hand-confirmed Meta lead -> Cliniko patient links, for leads the phone/name
+# matching can't make (meta_funnel.py). Meta Lead ID -> Cliniko patient id.
+META_LEAD_PATIENT_LINKS = {
+    # "Francie Nugent" lead 15/09/26 = Francis Nugent (Martin 2026-10-14);
+    # lead phone ...752 vs Cliniko ...756, one digit apart.
+    "l:1612973716847725": "599679066399839956",
+}
+
 # The reception Slack profile that gets the "new bookings" DM after each trawl.
 # This is the profile's MEMBER ID (a "U…" code), not an email — in Slack:
 # open the reception profile → ⋮ (more) → Copy member ID.
