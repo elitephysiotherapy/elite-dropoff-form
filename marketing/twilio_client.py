@@ -23,7 +23,9 @@ def normalise_uk_phone(phone):
         return ""
     if p.startswith("+"):
         return p
-    if p.startswith("0044"):
+    if p.startswith("00"):
+        # International dialling prefix (00353 Irish, 0044 UK, …). Treating
+        # this as a UK "0" made +44035… and Twilio rejected it (21211).
         return "+" + p[2:]
     if p.startswith("44"):
         return "+" + p
