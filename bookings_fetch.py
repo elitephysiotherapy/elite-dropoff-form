@@ -814,13 +814,6 @@ def main():
         # Never let the status pass block logging new bookings; the next poll
         # re-checks the same 3-day window, so a single miss self-heals.
         print(f"  WARN status re-check failed: {e}")
-    print("Copying new Meta ad leads into the Leads tab…")
-    try:
-        import meta_leads
-        meta_leads.sync_meta_leads(sh, write=True, retry=_gs_retry)
-    except Exception as e:
-        # Never block bookings on the leads copy; the next poll retries it.
-        print(f"  WARN Meta leads sync failed: {e}")
     print("Refreshing Dashboard…")
     write_dashboard(sh)
     if new_rows:

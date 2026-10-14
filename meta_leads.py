@@ -2,8 +2,9 @@
 
 Meta's lead forms land in the "Online Leads" Google Sheet (one tab per clinic:
 "Maghera Leads", "Omagh Leads"). Reception used to retype each one into the
-New Patient Bookings sheet's Leads tab by hand. This runs on every bookings
-poll (bookings_fetch.py --write, 6x/day) and appends any lead not already there.
+New Patient Bookings sheet's Leads tab by hand. This runs hourly 07:00–21:00
+Mon–Fri (Render cron elite-meta-leads -> run_cloud.py meta_leads) and appends
+any lead not already there.
 
 Rules
   - A lead is keyed by its Meta lead id (column "id", e.g. "l:1117…"), stored
@@ -28,14 +29,25 @@ Run alone:  python meta_leads.py           (dry run — prints what it would do)
             python meta_leads.py --write
 """
 
+import json
+import os
 import re
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import gspread
+from google.oauth2.service_account import Credentials
 
 import config
+import sheets_retry
+
+# Self-contained on purpose: importing bookings_fetch pulls in phase2, which
+# needs the Cliniko API key just to import — this job only needs Google.
+LEADS_TAB = "Leads"
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SERVICE_ACCOUNT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "service_account.json")
 
 LONDON = ZoneInfo("Europe/London")
 
@@ -50,6 +62,18 @@ SOURCE_TABS = {"Maghera Leads": "Maghera", "Omagh Leads": "Omagh"}
 _META_FIELDS = {"id", "created_time", "ad_id", "ad_name", "adset_id",
                 "adset_name", "campaign_id", "campaign_name", "form_id",
                 "form_name", "is_organic", "platform"}
+
+
+def _credentials():
+    """SERVICE_ACCOUNT_JSON env var on Render; local file on the Mac."""
+    raw = os.environ.get("SERVICE_ACCOUNT_JSON")
+    if raw:
+        return Credentials.from_service_account_info(json.loads(raw), scopes=SCOPES)
+    return Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+
+
+def _retry(call, label):
+    return sheets_retry.gs_retry(call, label, prefix="  ")
 
 
 def _norm_phone(raw):
@@ -133,12 +157,11 @@ def _start_date():
 def sync_meta_leads(sh, write=False, gc=None, retry=None):
     """Append new Meta leads to sh's Leads tab. Returns the list of leads added
     (or that would be added, in a dry run)."""
-    import bookings_fetch
-    retry = retry or (lambda call, label: call())
-    gc = gc or gspread.authorize(bookings_fetch._sheets_credentials())
+    retry = retry or _retry
+    gc = gc or gspread.authorize(_credentials())
     source = retry(lambda: read_source_leads(gc), "read Online Leads")
 
-    ws = retry(lambda: sh.worksheet(bookings_fetch.LEADS_TAB), "open Leads tab")
+    ws = retry(lambda: sh.worksheet(LEADS_TAB), "open Leads tab")
     vals = retry(lambda: ws.get_all_values(), "read Leads tab")
     hdr = vals[0] if vals else []
     col = {h.strip(): i for i, h in enumerate(hdr)}
@@ -239,9 +262,9 @@ def sync_meta_leads(sh, write=False, gc=None, retry=None):
 
 
 if __name__ == "__main__":
-    import bookings_fetch
     write = "--write" in sys.argv
-    sync_meta_leads(bookings_fetch.open_spreadsheet(), write=write,
-                    retry=bookings_fetch._gs_retry)
+    gc = gspread.authorize(_credentials())
+    sh = _retry(lambda: gc.open_by_key(config.BOOKINGS_SPREADSHEET_ID), "open bookings sheet")
+    sync_meta_leads(sh, write=write, gc=gc)
     if not write:
         print("\n(Dry run. Re-run with --write to update the Leads tab.)")

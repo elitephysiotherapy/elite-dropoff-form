@@ -13,6 +13,7 @@ Each clinic job maps to the same command its local launchd wrapper used:
     eod       -> eod_stats.py --post          (eod_poll.sh)
     eod_sunday-> eod_stats.py --dm            (Sun 07:00 weekly wrap, DM to Martin only)
     bookings  -> bookings_fetch.py --write     (bookings_poll.sh)
+    meta_leads-> meta_leads.py --write         (Meta ad leads -> bookings Leads tab)
     progress  -> progress_scan.py             (progress_poll.sh)
     marketing -> python -m marketing.poller    (marketing_poll.sh)
 
@@ -32,6 +33,7 @@ COMMANDS = {
     "eod":          [PY, "eod_stats.py", "--post"],
     "eod_sunday":   [PY, "eod_stats.py", "--dm"],
     "bookings":     [PY, "bookings_fetch.py", "--write"],
+    "meta_leads":   [PY, "meta_leads.py", "--write"],
     "progress":     [PY, "progress_scan.py"],
     "marketing":    [PY, "-m", "marketing.poller"],
     "monthly_kpi":  [PY, "send_monthly_physio_kpis.py", "--post"],
@@ -73,6 +75,11 @@ TARGETS = {
     # Per-physio diary DMs to Sinead Rocks + reception. Fri also sends next week.
     # Render cron: 0 7,8 * * 1,3,5 (both BST and GMT UTC hours; the other no-ops).
     "diary_summary": [({0, 2, 4}, 8, 0)],                         # Mon/Wed/Fri 08:00
+    # Copy new Meta ad leads into the bookings Leads tab — hourly 07:00–21:00
+    # Mon–Fri (Martin 2026-10-14). The ONLY writer of Meta leads (taken out of
+    # the bookings poll so two jobs can't append the same lead at once).
+    # Render cron: 0 6-21 * * 1-5 (both BST and GMT UTC hours; extras no-op).
+    "meta_leads": [({0, 1, 2, 3, 4}, h, 0) for h in range(7, 22)],
 }
 
 # Minutes after a target time during which a firing still counts as "on time".
