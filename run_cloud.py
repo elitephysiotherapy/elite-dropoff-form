@@ -14,6 +14,7 @@ Each clinic job maps to the same command its local launchd wrapper used:
     eod_sunday-> eod_stats.py --dm            (Sun 07:00 weekly wrap, DM to Martin only)
     bookings  -> bookings_fetch.py --write     (bookings_poll.sh)
     meta_leads-> meta_leads.py --write         (Meta ad leads -> bookings Leads tab)
+    meta_funnel-> meta_funnel.py --write       (Meta Ads tab on the drop-off sheet)
     progress  -> progress_scan.py             (progress_poll.sh)
     marketing -> python -m marketing.poller    (marketing_poll.sh)
 
@@ -34,6 +35,7 @@ COMMANDS = {
     "eod_sunday":   [PY, "eod_stats.py", "--dm"],
     "bookings":     [PY, "bookings_fetch.py", "--write"],
     "meta_leads":   [PY, "meta_leads.py", "--write"],
+    "meta_funnel":  [PY, "meta_funnel.py", "--write"],
     "progress":     [PY, "progress_scan.py"],
     "marketing":    [PY, "-m", "marketing.poller"],
     "monthly_kpi":  [PY, "send_monthly_physio_kpis.py", "--post"],
@@ -80,6 +82,10 @@ TARGETS = {
     # the bookings poll so two jobs can't append the same lead at once).
     # Render cron: 0 6-21 * * 1-5 (both BST and GMT UTC hours; extras no-op).
     "meta_leads": [({0, 1, 2, 3, 4}, h, 0) for h in range(7, 22)],
+    # "Meta Ads" tab on the drop-off sheet (lead -> booked -> IA -> rebook ->
+    # appts -> revenue). Daily 06:30, clear of the 07:00 drop-off run's Sheets
+    # quota. Render cron: 30 5,6 * * *.
+    "meta_funnel": [(None, 6, 30)],
 }
 
 # Minutes after a target time during which a firing still counts as "on time".
