@@ -75,8 +75,13 @@ HEADERS = {
 STATUS_LOOKBACK_DAYS = 3   # poll re-checks appts Cliniko changed this recently
 
 LEADS_TAB = "Leads"
-LEADS_HEADERS = ["Date", "Patient", "Clinic", "Body Area", "Referrer",
-                 "Reason Not Booked", "Callback Needed (by who)", "Notes"]
+# Layout since 14 Oct 2026 (Phone / Preferred Clinic / Lead Source dropdowns,
+# contact tracking, Meta ad columns). Every reader finds columns by header.
+LEADS_HEADERS = ["Date", "Patient", "Phone", "Preferred Clinic", "Lead Source",
+                 "Referrer", "Body Area", "Status", "Contact Attempts",
+                 "Last Contacted", "Reason Not Booked", "Callback Needed (by who)",
+                 "Notes", "Ad / Campaign", "Meta Lead ID"]
+META_LEAD_SOURCE = "Meta Ad"
 DASHBOARD_TAB = "Dashboard"
 
 
@@ -307,7 +312,7 @@ def ensure_leads_tab(sh):
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title=LEADS_TAB, rows=300, cols=len(LEADS_HEADERS))
         ws.append_row(LEADS_HEADERS, value_input_option="RAW")
-        ws.format("A1:H1", {"textFormat": {"bold": True}})
+        ws.format("1:1", {"textFormat": {"bold": True}})
 
 
 def cell_for(row, col):
@@ -505,32 +510,55 @@ def print_status_changes(changes):
 
 # ---------------- Dashboard ----------------
 
-def _lead_period_counts(sh):
+def _leads_records(sh):
+    try:
+        return _gs_retry(lambda: sh.worksheet(LEADS_TAB).get_all_records(),
+                         "read Leads tab")
+    except Exception:
+        return []
+
+
+def _lead_date(rec):
+    raw = str(rec.get("Date") or "").strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d %b %Y", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(raw[:len(datetime.now().strftime(fmt))], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _lead_period_counts(sh, records=None):
     """Per-week / per-month counts of leads that have NOT been booked, from the
     Leads tab. A lead with Status == "booked" is excluded (it converted);
     everything else (pending / declined / lost / blank) counts as not booked."""
     weekly, monthly = {}, {}
-    try:
-        ws = sh.worksheet(LEADS_TAB)
-        records = ws.get_all_records()
-    except Exception:
-        return weekly, monthly
-    for rec in records:
+    for rec in _leads_records(sh) if records is None else records:
         # Skip leads that have been booked — they are not "not booked".
         if str(rec.get("Status") or "").strip().lower() == "booked":
             continue
-        raw = str(rec.get("Date") or "").strip()
-        dt = None
-        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d %b %Y", "%Y-%m-%d %H:%M"):
-            try:
-                dt = datetime.strptime(raw[:len(datetime.now().strftime(fmt))], fmt)
-                break
-            except ValueError:
-                continue
+        dt = _lead_date(rec)
         if not dt:
             continue
         weekly[week_tab_name(dt)] = weekly.get(week_tab_name(dt), 0) + 1
         monthly[dt.strftime("%Y-%m")] = monthly.get(dt.strftime("%Y-%m"), 0) + 1
+    return weekly, monthly
+
+
+def _meta_lead_period_counts(records):
+    """Per-week / per-month [leads, booked] for Lead Source == "Meta Ad"."""
+    weekly, monthly = {}, {}
+    for rec in records:
+        if str(rec.get("Lead Source") or "").strip() != META_LEAD_SOURCE:
+            continue
+        dt = _lead_date(rec)
+        if not dt:
+            continue
+        booked = str(rec.get("Status") or "").strip().lower() == "booked"
+        for d, k in ((weekly, week_tab_name(dt)), (monthly, dt.strftime("%Y-%m"))):
+            c = d.setdefault(k, [0, 0])
+            c[0] += 1
+            c[1] += booked
     return weekly, monthly
 
 
@@ -607,14 +635,17 @@ def write_dashboard(sh):
         weekly.setdefault(week_tab_name(dt), []).append(r)
         monthly.setdefault(dt.strftime("%Y-%m"), []).append(r)
 
-    lead_w, lead_m = _lead_period_counts(sh)
+    lead_recs = _leads_records(sh)
+    lead_w, lead_m = _lead_period_counts(sh, lead_recs)
+    meta_w, meta_m = _meta_lead_period_counts(lead_recs)
     now = datetime.now(LONDON)
     out = [["New Patient Bookings — Dashboard"],
            [f"Last updated: {now.strftime('%Y-%m-%d %H:%M')}"],
            ["Excludes bookings since cancelled, deleted or changed to a "
             "non-IA type (Status column on each week tab)."], []]
     hdr = ["Period", "Total IAs", "Brand New", "Past Patient", "IA Reactivations",
-           "Online", "Phone / Walk-in", "Leads (not booked)"]
+           "Online", "Phone / Walk-in", "Leads (not booked)",
+           "Meta Ad Leads", "Meta Ad Booked"]
 
     out.append(["BY WEEK (Sunday-Saturday)"])
     out.append(hdr)
@@ -622,7 +653,8 @@ def write_dashboard(sh):
                       reverse=True):
         b = bucket(weekly[tab])
         out.append([tab, b["total"], b["new"], b["past"], b["reactivation"],
-                    b["online"], b["total"] - b["online"], lead_w.get(tab, 0)])
+                    b["online"], b["total"] - b["online"], lead_w.get(tab, 0),
+                    *meta_w.get(tab, [0, 0])])
     out.append([])
 
     # One weekly section per clinic — new clinics appear automatically once
@@ -645,14 +677,17 @@ def write_dashboard(sh):
         b = bucket(monthly[mk])
         label = datetime.strptime(mk + "-01", "%Y-%m-%d").strftime("%B %Y")
         out.append([label, b["total"], b["new"], b["past"], b["reactivation"],
-                    b["online"], b["total"] - b["online"], lead_m.get(mk, 0)])
+                    b["online"], b["total"] - b["online"], lead_m.get(mk, 0),
+                    *meta_m.get(mk, [0, 0])])
 
     try:
         ws = _gs_retry(lambda: sh.worksheet(DASHBOARD_TAB), "dashboard read")
         _gs_retry(lambda w=ws: w.clear(), "dashboard clear")
     except gspread.exceptions.WorksheetNotFound:
-        ws = _gs_retry(lambda: sh.add_worksheet(title=DASHBOARD_TAB, rows=200, cols=8),
+        ws = _gs_retry(lambda: sh.add_worksheet(title=DASHBOARD_TAB, rows=200, cols=len(hdr)),
                        "dashboard create")
+    if ws.col_count < len(hdr):
+        _gs_retry(lambda w=ws: w.add_cols(len(hdr) - w.col_count), "dashboard widen")
     _gs_retry(lambda w=ws: w.update(values=out, range_name="A1",
                                     value_input_option="RAW"), "dashboard write")
 

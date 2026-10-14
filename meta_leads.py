@@ -15,6 +15,9 @@ Rules
   - Leads created before META_LEADS_START_DATE are ignored — older ones were
     handled before this sync existed, and adding them would restate past weeks'
     "Leads not booked" on the Dashboard and EOD.
+  - Each lead lands with Lead Source "Meta Ad", Preferred Clinic = the
+    clinic whose campaign it came through (Maghera/Omagh tab), Referrer =
+    Facebook/Instagram, and the campaign + ad name in "Ad / Campaign".
   - Status on insert: booked / declined if the Online Leads sheet already says
     so, else pending. Afterwards a synced row's Status is only ever moved OFF
     pending/blank (to booked or declined) when the Online Leads sheet says so —
@@ -37,7 +40,7 @@ import config
 LONDON = ZoneInfo("Europe/London")
 
 META_ID_HEADER = "Meta Lead ID"
-REFERRER = "FB Ad"   # what reception already used for these leads
+LEAD_SOURCE = "Meta Ad"   # Lead Source dropdown value for these leads
 
 # Source tab -> clinic name on the Leads tab.
 SOURCE_TABS = {"Maghera Leads": "Maghera", "Omagh Leads": "Omagh"}
@@ -114,6 +117,10 @@ def read_source_leads(gc):
                 "name": name, "phone": re.sub(r"^p:\s*", "", phone, flags=re.I),
                 "issue": cell(row, issue_i), "notes": cell(row, notes_i),
                 "status": _source_status([cell(row, i) for i in status_is]),
+                "platform": {"fb": "Facebook", "ig": "Instagram"}.get(
+                    cell(row, col.get("platform")).lower(), ""),
+                "ad": " — ".join(x for x in (cell(row, col.get("campaign_name")),
+                                             cell(row, col.get("ad_name"))) if x),
             })
     leads.sort(key=lambda l: l["dt"] or datetime.max.replace(tzinfo=LONDON))
     return leads
@@ -149,7 +156,9 @@ def sync_meta_leads(sh, write=False, gc=None, retry=None):
             retry(lambda: ws.update_cell(1, id_i + 1, META_ID_HEADER), "id header")
 
     by_id, by_phone, by_name = {}, {}, {}
-    phone_i = col.get("Callback Needed (by who)")
+    # "Phone" since the 14 Oct 2026 restructure; phones used to be typed
+    # into "Callback Needed (by who)".
+    phone_i = col.get("Phone", col.get("Callback Needed (by who)"))
     for r, row in enumerate(vals[1:], start=2):
         get = lambda i: row[i] if i is not None and i < len(row) else ""
         if get(id_i):
@@ -190,13 +199,14 @@ def sync_meta_leads(sh, write=False, gc=None, retry=None):
         values = {
             "Date": lead["dt"].strftime("%d/%m/%y"),
             "Patient": lead["name"],
-            "Clinic": lead["clinic"],
+            "Phone": lead["phone"],
+            "Preferred Clinic": lead["clinic"],
+            "Lead Source": LEAD_SOURCE,
+            "Referrer": lead["platform"],
             "Body Area": lead["issue"],
-            "Referrer": REFERRER,
-            "Reason Not Booked": lead["notes"],
-            "Callback Needed (by who)": lead["phone"],
-            "Notes": "",
             "Status": lead["status"] or "pending",
+            "Reason Not Booked": lead["notes"],
+            "Ad / Campaign": lead["ad"],
             META_ID_HEADER: lead["key"],
         }
         to_add.append((lead, [values.get(h, "") for h in headers]))

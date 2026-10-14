@@ -1430,7 +1430,7 @@ def unwritable_tabs(tab_names):
 
 # ---------- Leads sheet (separate spreadsheet) ----------
 
-LEADS_STATUS_COL_LETTER = "I"   # column we add to the Leads tab
+LEADS_STATUS_COL_LETTER = "H"   # Status column on the Leads tab (moved I→H 14 Oct 2026)
 LEADS_STATUS_VALUES = ["pending", "booked", "declined", "lost"]
 
 
@@ -1685,7 +1685,7 @@ def setup_leads_tab():
                   value_input_option="RAW")
         print(f"  Added 'Status' header at column {LEADS_STATUS_COL_LETTER}")
 
-    notes_col = ws.col_values(8)  # H = Notes
+    notes_col = ws.col_values(header.index("Notes") + 1)
     status_col_vals = ws.col_values(status_col_1based)
     pending_set = 0
     booked_set = 0
