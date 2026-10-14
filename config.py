@@ -786,6 +786,12 @@ CLINIKO_BUSINESS_TO_CLINIC = {
 # The "Elite Physio — New Patient Bookings" Google Sheet.
 BOOKINGS_SPREADSHEET_ID = "1zoFhXPGzDnrCVTgTYs-YRm8EUzx91LL5Q_8L5Bd7_iU"
 
+# Meta (Facebook/Instagram) lead-form sheet — "Online Leads", one tab per
+# clinic. meta_leads.py copies new leads from it into the Leads tab on every
+# bookings poll. Leads created before the start date are left alone.
+META_LEADS_SPREADSHEET_ID = "11DAA0DAfkqWi4c7YOEuNMpmrvHUYeG3YhMv0iaRcBk8"
+META_LEADS_START_DATE = "2026-09-11"
+
 # The reception Slack profile that gets the "new bookings" DM after each trawl.
 # This is the profile's MEMBER ID (a "U…" code), not an email — in Slack:
 # open the reception profile → ⋮ (more) → Copy member ID.
