@@ -143,6 +143,8 @@ def read_source_leads(gc):
                 "status": _source_status([cell(row, i) for i in status_is]),
                 "platform": {"fb": "Facebook", "ig": "Instagram"}.get(
                     cell(row, col.get("platform")).lower(), ""),
+                "ad_id": re.sub(r"^ag:", "", cell(row, col.get("ad_id"))),
+                "campaign_id": re.sub(r"^c:", "", cell(row, col.get("campaign_id"))),
                 "ad": " — ".join(x for x in (cell(row, col.get("campaign_name")),
                                              cell(row, col.get("ad_name"))) if x),
             })

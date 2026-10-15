@@ -27,8 +27,9 @@ Stage definitions (everything counted from the lead date onwards):
   Revenue £       — the patient's Cliniko invoices issued on/after the lead date.
 A patient who came in through two forms is counted once, on the earliest lead.
 
-"Ad Spend £" on the monthly table is typed in by hand and kept across rebuilds;
-cost per lead / per IA and return are sheet formulas off it.
+Meta spend is pulled live from the Marketing API (META_ACCESS_TOKEN, read-only
+System User token) — by month, clinic and ad — giving cost per lead / booking /
+IA and return. No token or an API failure -> spend columns blank, rest unchanged.
 
 Runs daily 06:30 (Render elite-meta-funnel -> run_cloud.py meta_funnel).
   python meta_funnel.py            preview
@@ -53,7 +54,6 @@ TAB = "Meta Ads"
 DROPOFF_SPREADSHEET_ID = "1RC7QkHGAa8dH5ShmwbFyswdrmMOo6HTgkcKZEvqoZbI"
 ATTENDED_BUFFER_H = 2
 IA_TYPE_IDS = set(config.NEW_PATIENT_TYPE_IDS) | set(getattr(config, "PHASE1_DROPOFF_IA_TYPE_IDS", set()))
-SPEND_HEADER = "Ad Spend £ (enter)"
 
 
 def _retry(call, label):
@@ -92,6 +92,10 @@ def load_meta_leads(gc):
             "tab_status": str(r.get("Status") or "").strip().lower(),
             "meta_id": str(r.get("Meta Lead ID") or "").strip(),
         })
+    ids = {l["key"]: l for l in meta_leads.read_source_leads(gc)}
+    for l in leads:
+        src = ids.get(l["meta_id"], {})
+        l["ad_id"], l["campaign_id"] = src.get("ad_id", ""), src.get("campaign_id", "")
     leads.sort(key=lambda l: l["date"])
     return leads
 
@@ -210,82 +214,166 @@ def score_lead(l, now, seen_patients):
 STAGE_HDR = ["Total Leads", "Leads Booked", "Book %", "IAs Performed", "IA %",
              "IAs Rebooked", "Rebook %", "Total Appointments", "Upcoming Appts",
              "Revenue £", "Revenue / Lead £"]
+SPEND_HDR = ["Meta Spend £", "Meta-Reported Leads", "Cost / Lead £",
+             "Cost / Booking £", "Cost / IA £", "Return (Revenue ÷ Spend)"]
+
+
+# --------------------------------------------------------------------------
+# Meta spend (Marketing API, read-only ads_read token — System User
+# "EliteReporting" in the Elite Physiotherapy business, set up 2026-10-15)
+# --------------------------------------------------------------------------
+
+GRAPH = "https://graph.facebook.com/v23.0"
+
+
+def fetch_meta_spend(since):
+    """Daily spend + Meta-counted leads per ad since `since` (date), or None
+    when there's no token / the API fails (the tab then shows no spend)."""
+    import json
+    import os
+    import urllib.parse
+    import urllib.request
+    token = os.environ.get("META_ACCESS_TOKEN")
+    acct = os.environ.get("META_AD_ACCOUNT_ID", "164830011")
+    if not token:
+        print("  WARN no META_ACCESS_TOKEN — spend columns left blank")
+        return None
+    q = {"level": "ad", "time_increment": 1, "limit": 500,
+         "time_range": json.dumps({"since": since.isoformat(),
+                                   "until": datetime.now(LONDON).date().isoformat()}),
+         "fields": "date_start,campaign_id,campaign_name,ad_id,ad_name,spend,actions",
+         "access_token": token}
+    url = f"{GRAPH}/act_{acct}/insights?" + urllib.parse.urlencode(q)
+    rows = []
+    try:
+        while url:
+            with urllib.request.urlopen(url, timeout=60) as r:
+                data = json.load(r)
+            rows += data.get("data", [])
+            url = (data.get("paging") or {}).get("next")
+    except Exception as e:      # never let Meta break the Cliniko side of the tab
+        msg = getattr(e, "read", lambda: b"")()[:200]
+        print(f"  WARN Meta spend fetch failed: {e} {msg}")
+        return None
+    out = []
+    for x in rows:
+        leads = sum(int(a.get("value", 0)) for a in x.get("actions", [])
+                    if a.get("action_type") == "lead")
+        out.append({"date": datetime.strptime(x["date_start"], "%Y-%m-%d").date(),
+                    "campaign_id": x["campaign_id"], "campaign": x["campaign_name"],
+                    "ad_id": x["ad_id"], "ad": x["ad_name"],
+                    "spend": float(x.get("spend") or 0), "meta_leads": leads})
+    print(f"  Meta: {len(out)} ad-days, £{sum(r['spend'] for r in out):.2f} spend")
+    return out
 
 
 def _pct(n, d):
     return f"{round(100 * n / d)}%" if d else "—"
 
 
-def _stage_row(label, ls):
+def _money(n, d):
+    return round(n / d, 2) if d else ""
+
+
+def _stage_row(label, ls, spend=None, meta_leads=None):
     ls = [l for l in ls if not l["duplicate"]]
     n = len(ls)
     b = sum(l["booked"] for l in ls)
     perf = sum(l["performed"] for l in ls)
     reb = sum(l["rebooked"] for l in ls)
     rev = round(sum(l["revenue"] for l in ls), 2)
-    return [label, n, b, _pct(b, n), perf, _pct(perf, b), reb, _pct(reb, perf),
-            sum(l["appts"] for l in ls), sum(l["upcoming"] for l in ls),
-            rev, round(rev / n, 2) if n else 0]
+    row = [label, n, b, _pct(b, n), perf, _pct(perf, b), reb, _pct(reb, perf),
+           sum(l["appts"] for l in ls), sum(l["upcoming"] for l in ls),
+           rev, round(rev / n, 2) if n else 0]
+    if spend is None:
+        return row + [""] * len(SPEND_HDR)
+    spend = round(spend, 2)
+    return row + [spend, meta_leads, _money(spend, n), _money(spend, b),
+                  _money(spend, perf), f"{rev / spend:.1f}x" if spend else ""]
 
 
-def _old_spend(ws):
-    """{month label: spend} typed into the existing tab — kept across rebuilds."""
-    try:
-        vals = ws.get_all_values()
-    except Exception:
-        return {}
-    out, col = {}, None
-    for row in vals:
-        if SPEND_HEADER in row:
-            col = row.index(SPEND_HEADER)
+def _campaign_clinic(spend_rows, leads):
+    """campaign_id -> clinic: the Preferred Clinic most of its leads chose,
+    else the clinic named in the campaign, else 'Other'."""
+    votes = defaultdict(lambda: defaultdict(int))
+    for l in leads:
+        if l.get("campaign_id"):
+            votes[l["campaign_id"]][l["clinic"]] += 1
+    out = {}
+    for r in spend_rows or []:
+        cid = r["campaign_id"]
+        if cid in out:
             continue
-        if col is not None:
-            if not row or not row[0].strip():
-                break
-            if col < len(row) and row[col].strip():
-                out[row[0].strip()] = row[col].strip()
+        if votes.get(cid):
+            out[cid] = max(votes[cid], key=votes[cid].get)
+        else:
+            name = r["campaign"].lower()
+            out[cid] = next((c for c in ("Maghera", "Omagh", "Cookstown") if c.lower() in name), "Other")
     return out
 
 
-def build_rows(leads, now, spend):
+def build_rows(leads, now, spend_rows):
+    have_spend = spend_rows is not None
+    spend_rows = spend_rows or []
     months = defaultdict(list)
     for l in leads:
         months[l["date"].strftime("%B %Y")].append(l)
-    month_keys = sorted(months, key=lambda m: datetime.strptime(m, "%B %Y"), reverse=True)
+    m_spend, m_mleads = defaultdict(float), defaultdict(int)
+    for r in spend_rows:
+        k = r["date"].strftime("%B %Y")
+        m_spend[k] += r["spend"]
+        m_mleads[k] += r["meta_leads"]
+    month_keys = sorted(set(months) | {k for k, v in m_spend.items() if v},
+                        key=lambda m: datetime.strptime(m, "%B %Y"), reverse=True)
+    tot_spend = sum(r["spend"] for r in spend_rows)
 
     out = [["Meta Ads — Lead Value Tracker"],
            [f"Last updated: {now.astimezone(LONDON):%Y-%m-%d %H:%M}  ·  "
             f"{len(leads)} Meta leads since {leads[0]['date']:%d %b %Y}  ·  "
-            f"{sum(1 for l in leads if l['patient'])} found in Cliniko"],
-           [], ["BY MONTH (month the lead came in)"]]
-    hdr = ["Month"] + STAGE_HDR + [SPEND_HEADER, "Cost / Lead £", "Cost / IA £",
-                                   "Return (Revenue ÷ Spend)"]
-    out.append(hdr)
-    first = len(out) + 1
-    for m in month_keys + ["TOTAL"]:
-        row = _stage_row(m, leads if m == "TOTAL" else months[m])
-        r = len(out) + 1
-        if m == "TOTAL":
-            sp = f"=IF(COUNT(M{first}:M{r - 1}),SUM(M{first}:M{r - 1}),\"\")"
-        else:
-            sp = spend.get(m, "")
-        row += [sp,
-                f'=IF(OR(M{r}="",B{r}=0),"",ROUND(M{r}/B{r},2))',
-                f'=IF(OR(M{r}="",E{r}=0),"",ROUND(M{r}/E{r},2))',
-                f'=IF(OR(M{r}="",M{r}=0),"",TEXT(K{r}/M{r},"0.0")&"x")']
-        out.append(row)
-    spend_rows = (first, len(out))   # 1-based, inclusive
+            f"{sum(1 for l in leads if l['patient'])} found in Cliniko  ·  "
+            + (f"Meta spend £{tot_spend:,.2f} (live from Meta)" if have_spend
+               else "⚠ Meta spend unavailable this run")],
+           [], ["BY MONTH (month the lead came in / month the money was spent)"],
+           ["Month"] + STAGE_HDR + SPEND_HDR]
+    sp = (lambda v: v) if have_spend else (lambda v: None)
+    for m in month_keys:
+        out.append(_stage_row(m, months.get(m, []), sp(m_spend[m]), m_mleads[m]))
+    out.append(_stage_row("TOTAL", leads, sp(tot_spend), sum(m_mleads.values())))
     out.append([])
 
-    for title, key in (("BY CLINIC (Preferred Clinic)", "clinic"), ("BY AD (campaign — ad)", "ad")):
-        out.append([title])
-        out.append([title.split(" (")[0].replace("BY ", "").title()] + STAGE_HDR)
-        groups = defaultdict(list)
-        for l in leads:
-            groups[l[key]].append(l)
-        for g in sorted(groups, key=lambda g: -len(groups[g])):
-            out.append(_stage_row(g, groups[g]))
-        out.append([])
+    # By clinic — spend follows the clinic its campaign serves.
+    camp_clinic = _campaign_clinic(spend_rows, leads)
+    c_spend, c_mleads = defaultdict(float), defaultdict(int)
+    for r in spend_rows:
+        c_spend[camp_clinic[r["campaign_id"]]] += r["spend"]
+        c_mleads[camp_clinic[r["campaign_id"]]] += r["meta_leads"]
+    groups = defaultdict(list)
+    for l in leads:
+        groups[l["clinic"]].append(l)
+    out += [["BY CLINIC (Preferred Clinic; spend by the clinic each campaign serves)"],
+            ["Clinic"] + STAGE_HDR + SPEND_HDR]
+    for g in sorted(set(groups) | {k for k, v in c_spend.items() if v},
+                    key=lambda g: (-len(groups.get(g, [])), -c_spend.get(g, 0))):
+        out.append(_stage_row(g, groups.get(g, []), sp(c_spend.get(g, 0.0)), c_mleads.get(g, 0)))
+    out.append([])
+
+    # By ad — keyed on Meta's ad id, so renaming a campaign/ad doesn't split it.
+    a_spend, a_mleads, a_name = defaultdict(float), defaultdict(int), {}
+    for r in sorted(spend_rows, key=lambda r: r["date"]):
+        a_spend[r["ad_id"]] += r["spend"]
+        a_mleads[r["ad_id"]] += r["meta_leads"]
+        a_name[r["ad_id"]] = f"{r['campaign']} — {r['ad']}"   # latest name wins
+    agroups = defaultdict(list)
+    for l in leads:
+        aid = l.get("ad_id") or ""
+        agroups[aid].append(l)
+        a_name.setdefault(aid, l["ad"] if aid else "(ad not known)")
+    out += [["BY AD (campaign — ad, current names)"], ["Ad"] + STAGE_HDR + SPEND_HDR]
+    for aid in sorted(set(agroups) | {k for k, v in a_spend.items() if v},
+                      key=lambda a: (-len(agroups.get(a, [])), -a_spend.get(a, 0))):
+        out.append(_stage_row(a_name[aid], agroups.get(aid, []),
+                              sp(a_spend.get(aid, 0.0)) if aid else None, a_mleads.get(aid, 0)))
+    out.append([])
 
     out.append(["LEAD DETAIL (newest first)"])
     out.append(["Lead Date", "Patient", "Clinic", "Ad / Campaign", "Leads Tab Status",
@@ -309,8 +397,9 @@ def build_rows(leads, now, spend):
             ["  Booked = any appointment made on/after the lead date. IA % = IAs performed ÷ booked. Rebook % = rebooked ÷ IAs performed."],
             ["  IA performed = first IA after the lead, attended. Rebooked = a later appointment that wasn't cancelled/DNA."],
             ["  Total Appointments = attended 1-to-1 appointments since the lead (Pilates classes not included). Revenue = Cliniko invoices since the lead date."],
-            ["  Type monthly Meta spend into the Ad Spend column — it is kept when the tab refreshes, and the cost/return columns fill in."]]
-    return out, spend_rows
+            ["  Meta Spend = live from Meta (ad account 164830011), every campaign incl. ones that don't collect leads (e.g. Omagh Launch). Cost / Lead uses OUR lead count; Meta-Reported Leads is Meta's own count, for comparison."],
+            ["  Return = revenue so far ÷ spend. It grows as treatment courses complete, so recent months always look lower."]]
+    return out
 
 
 def main():
@@ -324,16 +413,16 @@ def main():
     for l in leads:
         score_lead(l, now, seen)
 
+    spend = fetch_meta_spend(min(l["date"] for l in leads).replace(day=1))
     sh = _retry(lambda: gc.open_by_key(DROPOFF_SPREADSHEET_ID), "open drop-off sheet")
     try:
         ws = _retry(lambda: sh.worksheet(TAB), "open tab")
-        spend = _old_spend(ws)
     except gspread.exceptions.WorksheetNotFound:
-        ws, spend = None, {}
-    rows, spend_rows = build_rows(leads, now, spend)
-    for r in rows[:12]:
-        print(r[:13])
-    print(f"... {len(rows)} rows; spend kept: {spend}")
+        ws = None
+    rows = build_rows(leads, now, spend)
+    for r in rows[:9]:
+        print([c for i, c in enumerate(r) if i in (0, 1, 2, 4, 10, 12, 14, 16, 17)])
+    print(f"... {len(rows)} rows")
     if not write:
         print("\n(Preview only. Re-run with --write to rebuild the tab.)")
         return
@@ -354,12 +443,9 @@ def main():
     reqs = [{"repeatCell": {"range": {"sheetId": ws.id, "startRowIndex": r - 1, "endRowIndex": r},
                             "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
                             "fields": "userEnteredFormat.textFormat.bold"}} for r in bold]
-    spend_col = rows[4].index(SPEND_HEADER)
-    reqs.append({"repeatCell": {"range": {"sheetId": ws.id, "startRowIndex": spend_rows[0] - 1,
-                 "endRowIndex": spend_rows[1] - 1,
-                 "startColumnIndex": spend_col, "endColumnIndex": spend_col + 1},
-                 "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 0.95, "blue": 0.8}}},
-                 "fields": "userEnteredFormat.backgroundColor"}})
+    # Clear the old hand-typed-spend highlight (pre-API layout).
+    reqs.append({"repeatCell": {"range": {"sheetId": ws.id},
+                 "cell": {"userEnteredFormat": {}}, "fields": "userEnteredFormat.backgroundColor"}})
     _retry(lambda: sh.batch_update({"requests": reqs}), "format")
     print("Meta Ads tab written.")
 
