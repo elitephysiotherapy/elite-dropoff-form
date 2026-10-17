@@ -983,6 +983,9 @@ CLUB_ALERT_NON_CLUB_ITEMS = [
     "Pilates Reformer Cookstown (6 weeks)", "Pilates Reformer PAYG", "Pilates Matwork Maghera",
     "Pilates Matwork Maghera (5weeks)", "Pilates Matwork Maghera PAYG",
     "Pilates Matwork Maghera (4weeks)", "Pilates Matwork Maghera (6 weeks)",
+    # TeamUp-era item names (Pilates booked + paid in TeamUp from 9 Oct 2026)
+    "Matwork Single", "Matwork 5", "Matwork 10", "Reformer Single", "Reformer 5",
+    "Reformer 10", "Reformer", "Reformer Golf",
     # ACL / rehab classes
     "Lower Limb Workshop", "Lower Limb Workshops x5", "Lower LimbWorkshops x4",
     "ACL Class (8)", "Pitch class", "Knee Class",
