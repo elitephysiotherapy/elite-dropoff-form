@@ -337,7 +337,7 @@ def _ia_rebook_rate(start: datetime, end: datetime) -> tuple[int, int, float]:
         ("q[]", f"starts_at:>={iso_start}"),
         ("q[]", f"starts_at:<={iso_end}"),
     ]))
-    IA_IDS = set(config.PHASE1_DROPOFF_IA_TYPE_IDS)
+    IA_IDS = set(config.COUNTED_IA_TYPE_IDS)
     performed_ids: list[str] = []
     for a in apps:
         if phase2.id_from_link(a.get("appointment_type")) not in IA_IDS:

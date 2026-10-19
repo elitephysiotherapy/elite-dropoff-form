@@ -4,7 +4,7 @@ Pins the rules that make the EOD "New Bookings" figure and the bookings sheet's
 weekly tab agree:
   - EOD New Bookings + Leads use the same Sunday-Saturday week as the sheet's
     W/C tabs; the Sunday 07:00 weekly wrap reports the week that just ended,
-  - a row's Status says Deleted / Cancelled / Changed to <type>, and stays blank
+  - a row's Status says Deleted / Cancelled / Not an IA: <type>, and stays blank
     for a live IA (including a DNA — the booking was still made),
   - the Dashboard leaves Status-flagged rows out of its counts.
 
@@ -74,8 +74,8 @@ check("deleted -> Deleted",
 check("deleted wins over type change",
       bf.status_for(appt(NON_IA, deleted_at="x"), types) == "Deleted")
 got = bf.status_for(appt(NON_IA), types)
-check("type changed -> Changed to <name>",
-      got == "Changed to 4. Club Follow Up Appointment", got)
+check("type changed -> Not an IA: <name>",
+      got == "Not an IA: 4. Club Follow Up Appointment", got)
 
 # --- Column layout: Status added on the right, nothing shifted ----------------
 check("appointment_id still column M", bf.COLUMNS.index("appointment_id") == 12)

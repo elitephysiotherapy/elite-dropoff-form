@@ -1,7 +1,7 @@
 """Conversion funnel(s) for the New Patient Bookings tracker.
 
 Two funnels (Martin, 2026-06-26):
-  • ALL IAs   — every IA the bookings tracker logs (config.BOOKINGS_IA_TYPE_IDS).
+  • ALL IAs   — every IA the bookings tracker logs (config.BOOKINGS_IA_TYPE_IDS = COUNTED_IA_TYPE_IDS).
   • CORE IAs  — the four new-patient assessment types Martin tracks:
                 1. Initial Appointment, 3. Club Initial Assessment,
                 5. Private Health Insurance Initial Assessment, 7. ACL Initial Assessment.

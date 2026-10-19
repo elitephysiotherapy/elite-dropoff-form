@@ -18,8 +18,8 @@ Schedule (Europe/London, via run_cloud.py):
              balance it (two separate DMs)
 
 What each number means:
-  IAs      the 4 real IA types (config.PHASE1_DROPOFF_IA_TYPE_IDS), the same
-           definition as the EOD report and its IA targets.
+  IAs      config.COUNTED_IA_TYPE_IDS — the one IA definition used by every
+           sheet, the EOD report and the CFO Cockpit.
   1:1      individual appointments, not cancelled and not DNA'd (so for past
            days it's who actually came, and for future days who's booked).
            Class, event and Recovery Suite types (EXCLUDED_FROM_TOTAL_APPTS)
@@ -102,7 +102,7 @@ def diary_counts(monday, next_monday):
             continue
         c = counts[_name_of(phase2.id_from_link(a.get("practitioner")), members, pracs)]
         c["one2one"] += 1
-        if type_id in config.PHASE1_DROPOFF_IA_TYPE_IDS:
+        if type_id in config.COUNTED_IA_TYPE_IDS:
             c["ias"] += 1
 
     type_names = {str(t["id"]): t.get("name", "")

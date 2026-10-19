@@ -2548,7 +2548,7 @@ def write_weekly_snapshot_tab(weeks_back=1):
 
     out.append([])
     out.append(["Definitions:"])
-    out.append(["  IAs Performed = all attended IA-type appointments (broader 8: Initial Appt, Club IA, PHI IA, ACL IA, Sports & MSK Consult, Mummy MOT, Pelvic Health, Club Consultation)."])
+    out.append(["  IAs Performed = attended IAs: Initial Appt (incl. Omagh offer), Club IA, ACL IA, PHI IA, Sports & MSK Consult, ACL / Hip & Groin / Back & Hamstring / Off Season Profiling."])
     out.append(["  IA Rebook % = of strict-4 IAs performed, how many ATTENDED a follow-up or have an active future booking. A booked 2nd visit later DNA'd or cancelled does NOT count."])
     out.append(["  ⏳ IA Rebook % is PROVISIONAL for recent weeks — it looks high at first because many 2nd visits are booked but then CNA'd/DNA'd before attending. It's recomputed daily and SETTLES (drops) over ~1-2 weeks, so review the settled figure for a week once it's ~2 weeks old."])
     out.append(["  Review Appts = Total Appts Seen − IAs Performed (the denominator for DNA/CNA rates)."])
@@ -2693,8 +2693,7 @@ def write_weekly_team_stats_tab(weeks_back=4):
 # ===========================================================================
 
 # All "Initial Assessment"-style appointment types (the broad new-patient set).
-_FUNNEL_IA_IDS = set(config.NEW_PATIENT_TYPE_IDS) if hasattr(
-    config, "NEW_PATIENT_TYPE_IDS") else set()
+_FUNNEL_IA_IDS = set(config.COUNTED_IA_TYPE_IDS)
 
 # Club appointment types: Club IA, Club Follow Up, Club Consultation, ACL
 # (initial + profiling), Sports Massage (all variants), Injury Update Testing
@@ -3403,7 +3402,7 @@ def write_weekly_dropoff_analysis_tab():
             tid = p2.id_from_link(a.get("appointment_type"))
             if tid in config.EXCLUDED_FROM_TOTAL_APPTS:
                 continue  # classes / group sessions
-            if tid in config.NEW_PATIENT_TYPE_IDS:
+            if tid in config.COUNTED_IA_TYPE_IDS:
                 ias += 1
             else:
                 reviews += 1

@@ -44,6 +44,27 @@ NEW_PATIENT_TYPE_IDS = PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS | {
     "1810765504990680283",  # 4. Lab 60 Screening
 }
 
+# ⭐ THE definition of "an IA" for every IA / new-patient COUNT on every sheet,
+# Slack message and the CFO Cockpit (Martin 2026-10-19). Change it HERE only.
+# Drop-off RULES (IADNR / IACNA / IADNA / episode anchors) deliberately still use
+# PHASE1_DROPOFF_IA_TYPE_IDS / PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS above — the
+# drop-off list is working and wasn't changed.
+# The Omagh offer is an Initial Appointment at a launch discount, so it counts.
+# NOT IAs: Ultrasound, Injection Therapy, Club Consultation, Injury Update
+# Testing, Lab 60, Golf Profiling, Mummy MOT, Pelvic Health.
+COUNTED_IA_TYPE_IDS = {
+    "382563815654429852",   # 2. Initial Appointment
+    "2035469725424686828",  # 1. Omagh Initial Assessment Offer (= Initial Appointment, discounted)
+    "392015278608749674",   # 3. Club Initial Assessment
+    "945551547020874765",   # 7. ACL Initial Assessment
+    "1558530673046721630",  # 5. Private Health Insurance Initial Assessment
+    "1521627460095973060",  # 2. Sports & MSK Clinical Consultation
+    "1031259844406941435",  # 2. ACL Profiling
+    "998332399567770890",   # 4. Hip & Groin Profiling
+    "998334021563847947",   # 3. Back & Hamstring Profiling
+    "2052252638237431051",  # 1. Off Season Profiling
+}
+
 # Sports Massage cancellations / DNAs never counted toward physio drop-off
 # stats in Martin's manual tracker — apply the same exclusion here so the
 # Performance Dashboard stays consistent. Sports Massage IS still a 1-to-1
@@ -812,7 +833,7 @@ KNOWN_INSURERS = ["AXA", "Aviva", "WPA", "Bupa", "Vitality", "Healix",
 
 # A booking counts as an "initial assessment" for the tracker if its appointment
 # type is in this set — reuse the broad new-patient list the stats already use.
-BOOKINGS_IA_TYPE_IDS = NEW_PATIENT_TYPE_IDS
+BOOKINGS_IA_TYPE_IDS = COUNTED_IA_TYPE_IDS   # one IA definition — see COUNTED_IA_TYPE_IDS
 
 
 # ---- Poller behaviour ----
@@ -926,7 +947,7 @@ EOD_PILATES_ADJUSTMENTS = {
 }
 
 # IA appointment types counted as "expected IAs" in the report.
-EOD_IA_TYPE_IDS = PHASE1_DROPOFF_IA_TYPE_IDS
+EOD_IA_TYPE_IDS = COUNTED_IA_TYPE_IDS   # one IA definition — see COUNTED_IA_TYPE_IDS
 
 # Times the EOD report is generated/posted (clinic-local, 24h) by weekday
 # (Mon=0 … Sun=6). These mirror the cron times in server.crontab. The LAST

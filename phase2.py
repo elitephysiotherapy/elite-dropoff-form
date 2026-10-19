@@ -600,7 +600,8 @@ def weekly_clinic_stats(start_utc, end_utc):
         if is_excluded:
             continue
 
-        is_np = type_id in config.NEW_PATIENT_TYPE_IDS  # broader 13
+        is_np = type_id in config.NEW_PATIENT_TYPE_IDS  # broader 13 — IACNA/IADNA buckets only
+        is_counted_ia = type_id in config.COUNTED_IA_TYPE_IDS  # IAs Performed
         is_strict_ia = type_id in config.PHASE1_DROPOFF_IA_TYPE_IDS  # strict 4
         is_sports_massage = type_id in config.EXCLUDED_FROM_DROPOFF_STATS
         is_attended = not is_cancelled and not is_dna
@@ -626,8 +627,8 @@ def weekly_clinic_stats(start_utc, end_utc):
         else:
             seen_appts.append(a)
 
-        # IAs Performed = NPs (broader 13) — matches Martin's tracker count
-        if is_np and is_attended:
+        # IAs Performed = the one counted-IA list (config.COUNTED_IA_TYPE_IDS)
+        if is_counted_ia and is_attended:
             n_ias_performed += 1
         # IA Rebook %: only the strict 4 IA types (those with genuine follow-up
         # expectations — excludes Ultrasound, Profiling, Injury Update Testing which
@@ -706,7 +707,7 @@ def weekly_clinic_stats(start_utc, end_utc):
     return {
         "window_start_local": start_utc,
         "window_end_local": end_utc,
-        "ias_performed": n_ias_performed,          # broader 13 (NPs)
+        "ias_performed": n_ias_performed,          # config.COUNTED_IA_TYPE_IDS
         "strict_ias_performed": n_strict_ias_performed,  # strict 4 (for IA Rebook % only)
         "ias_rebooked": n_ias_rebooked,
         "ia_rebook_pct": ia_rebook_pct,
@@ -1182,6 +1183,7 @@ def _monthly_stats_per_physio_uncached(start_utc, end_utc):
         # CNA-1st % (= (IACNAs + IADNAs) / NPs) has a consistent numerator and
         # denominator. (Martin 2026-05-28.)
         is_np = type_id in config.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS
+        is_counted_ia = type_id in config.COUNTED_IA_TYPE_IDS   # NPs column only
 
         if is_cancelled:
             if _is_reschedule(a):
@@ -1222,8 +1224,9 @@ def _monthly_stats_per_physio_uncached(start_utc, end_utc):
                     pass  # counted once per episode by the pass below
         else:  # attended
             stats["total_apts"] += 1
+            if is_counted_ia:
+                stats["nps"] += 1   # NPs = config.COUNTED_IA_TYPE_IDS
             if is_np:
-                stats["nps"] += 1
                 # ATTENDED IA + NO FUTURE BOOKING = IADNR — but ONLY for the
                 # strict 4 IA types that expect a follow-up. Mummy MOT, Pelvic
                 # Health Assessment, Sports & MSK Consult and Club Consultation

@@ -405,7 +405,9 @@ def status_for(appt, types_by_id):
         return "Cancelled"
     type_id = phase2.id_from_link(appt.get("appointment_type"))
     if type_id not in config.BOOKINGS_IA_TYPE_IDS:
-        return f"Changed to {types_by_id.get(type_id, 'a non-IA type')}"
+        # Either retyped in Cliniko or a type that no longer counts as an IA
+        # (config.COUNTED_IA_TYPE_IDS, 2026-10-19) — both leave the IA counts.
+        return f"Not an IA: {types_by_id.get(type_id, 'non-IA type')}"
     return ""
 
 

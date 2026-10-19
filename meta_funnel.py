@@ -53,7 +53,7 @@ LONDON = ZoneInfo("Europe/London")
 TAB = "Meta Ads"
 DROPOFF_SPREADSHEET_ID = "1RC7QkHGAa8dH5ShmwbFyswdrmMOo6HTgkcKZEvqoZbI"
 ATTENDED_BUFFER_H = 2
-IA_TYPE_IDS = set(config.NEW_PATIENT_TYPE_IDS) | set(getattr(config, "PHASE1_DROPOFF_IA_TYPE_IDS", set()))
+IA_TYPE_IDS = set(config.COUNTED_IA_TYPE_IDS)
 
 
 def _retry(call, label):
