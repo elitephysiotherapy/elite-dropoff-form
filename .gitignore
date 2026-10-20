@@ -21,3 +21,4 @@ manual_*.xlsx
 
 # Campaign send lists — patient data, never commit
 data/
+named_patients.txt
