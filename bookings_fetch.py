@@ -169,7 +169,7 @@ def _is_reactivation(this_appt, history, window_days=None):
 
 
 def collect_bookings(lookback_days=BOOKINGS_LOOKBACK_DAYS, skip_ids=None,
-                     since_date=None):
+                     since_date=None, appts=None):
     """Return a list of booking row dicts for IA appointments created recently
     (or since `since_date` for a backfill)."""
     skip_ids = skip_ids or set()
@@ -179,12 +179,16 @@ def collect_bookings(lookback_days=BOOKINGS_LOOKBACK_DAYS, skip_ids=None,
     types_by_id = {str(t["id"]): t.get("name", "?")
                    for t in phase2.fetch_all("/appointment_types")}
 
-    appts = list(phase2.fetch_all("/individual_appointments", [
-        ("q[]", f"created_at:>={s_iso}"),
-        ("q[]", f"created_at:<{e_iso}"),
-    ]))
-    window_desc = (f"since {since_date}" if since_date
-                   else f"in the last {lookback_days} days")
+    if appts is None:
+        appts = list(phase2.fetch_all("/individual_appointments", [
+            ("q[]", f"created_at:>={s_iso}"),
+            ("q[]", f"created_at:<{e_iso}"),
+        ]))
+        window_desc = (f"since {since_date}" if since_date
+                       else f"in the last {lookback_days} days")
+    else:
+        appts = list(appts)
+        window_desc = "(given list)"
     print(f"Cliniko: {len(appts)} appointments created {window_desc}; "
           f"already in sheet: {len(skip_ids)}")
 
@@ -808,10 +812,11 @@ def main():
                  ).strftime("%Y-%m-%dT%H:%M:%SZ")
         types_by_id = {str(t["id"]): t.get("name", "?")
                        for t in phase2.fetch_all("/appointment_types")}
-        changes = reconcile_statuses(
-            sh, fetch_appointments_all_states("updated_at", since), types_by_id)
+        recent = fetch_appointments_all_states("updated_at", since)
+        changes = reconcile_statuses(sh, recent, types_by_id)
         print(f"  {len(changes)} status change(s).")
         print_status_changes(changes)
+        log_retyped_ias(sh, recent)   # not a new booking — no reception ping
     except Exception as e:
         # Never let the status pass block logging new bookings; the next poll
         # re-checks the same 3-day window, so a single miss self-heals.
@@ -822,6 +827,42 @@ def main():
         print("Notifying reception on Slack…")
         notify_reception(new_rows)
     print("Done.")
+
+
+def log_retyped_ias(sh, recent_by_id):
+    """Add IA bookings that the created_at trawl can never see: an appointment
+    booked as another type and later CHANGED to an IA type (common for PHI /
+    ACL IAs). The trawl only looks at appointments created in the last
+    BOOKINGS_LOOKBACK_DAYS, and the status pass only re-checks rows already on
+    the sheet — so before this, those IAs were silently never logged (15 found
+    Jun–Sep 2026). `recent_by_id` = appointments Cliniko changed recently.
+    Returns the rows written."""
+    s_iso, _ = created_window(BOOKINGS_LOOKBACK_DAYS)
+    cands = [a for a in recent_by_id.values()
+             if not a.get("cancelled_at") and not a.get("deleted_at")
+             and phase2.id_from_link(a.get("appointment_type")) in config.BOOKINGS_IA_TYPE_IDS
+             and (a.get("created_at") or "") < s_iso]          # newer ones: the trawl has them
+    # Only bookings made since the sheet started (its earliest W/C tab) — older
+    # appointments edited today (e.g. a 2023 booking) were never meant to be on it.
+    titles = [ws.title for ws in _gs_retry(lambda: sh.worksheets(), "list worksheets")
+              if ws.title.startswith("W/C ")]
+    if not titles:
+        return []
+    first = min(datetime.strptime(t[4:], "%d %b %Y") for t in titles).replace(tzinfo=LONDON)
+    cands = [a for a in cands
+             if datetime.fromisoformat(a["created_at"].replace("Z", "+00:00")) >= first]
+    if not cands:
+        return []
+    tabs = {week_tab_name(datetime.fromisoformat(a["created_at"].replace("Z", "+00:00"))
+                          .astimezone(LONDON)) for a in cands}
+    have = existing_appointment_ids(sh, tabs=tabs)
+    missing = [a for a in cands if str(a["id"]) not in have]
+    if not missing:
+        return []
+    rows = collect_bookings(appts=missing)
+    written = write_to_sheet(sh, rows)
+    print(f"  {len(written)} booking(s) changed INTO an IA type added.")
+    return written
 
 
 def reconcile_all(write):
