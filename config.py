@@ -1009,7 +1009,7 @@ CLUB_ALERT_NON_CLUB_ITEMS = [
     "Reformer 10", "Reformer", "Reformer Golf",
     # ACL / rehab classes
     "Lower Limb Workshop", "Lower Limb Workshops x5", "Lower LimbWorkshops x4",
-    "ACL Class (8)", "Pitch class", "Knee Class",
+    "ACL Class (8)", "Pitch class", "Knee Class", "ACL Gym Class", "ACL Pitch class",
     # Online / group programmes (priced £249–£343, one-off)
     "Bulletproof Program 2024", "Groin Restore Online 2025", "Knee Performance Online Programme",
     # Other
