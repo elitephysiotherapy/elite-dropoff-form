@@ -11,8 +11,8 @@ import phase2
 import config
 
 # Appointment types that count as a first/initial appointment.
-IA_TYPE_IDS = set(config.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS) \
-    if hasattr(config, "PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS") else set()
+IA_TYPE_IDS = set(config.MARKETING_IA_TYPE_IDS) \
+    if hasattr(config, "MARKETING_IA_TYPE_IDS") else set()
 if not IA_TYPE_IDS:
     IA_TYPE_IDS = set(phase2.PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS)
 

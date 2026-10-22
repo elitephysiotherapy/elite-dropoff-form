@@ -1247,7 +1247,7 @@ def _monthly_stats_per_physio_uncached(start_utc, end_utc):
                 # "Attended IA, never rebooked" is an IADNR too, but it is counted
                 # by the episode pass below so it can be deduped against the same
                 # patient's later cancellations and allocated to the right month.
-            if type_id == config.GENPOP_INITIAL_TYPE_ID:
+            if type_id in config.GENPOP_INITIAL_TYPE_IDS:
                 stats["gen_pop_initial"] += 1
             elif type_id == config.GENPOP_REVIEW_TYPE_ID:
                 stats["gen_pop_review"] += 1

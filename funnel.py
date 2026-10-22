@@ -2,8 +2,8 @@
 
 Two funnels (Martin, 2026-06-26):
   • ALL IAs   — every IA the bookings tracker logs (config.BOOKINGS_IA_TYPE_IDS = COUNTED_IA_TYPE_IDS).
-  • CORE IAs  — the four new-patient assessment types Martin tracks:
-                1. Initial Appointment, 3. Club Initial Assessment,
+  • CORE IAs  — the core new-patient assessment types Martin tracks:
+                1. Initial Appointment (incl. the Omagh offer), 3. Club Initial Assessment,
                 5. Private Health Insurance Initial Assessment, 7. ACL Initial Assessment.
 
 Stages:
@@ -324,7 +324,7 @@ def write_funnel_tab(sh=None):
     _funnel_block(out, "FUNNEL 1 — ALL IAs",
                   data["all"]["weeks"], data["all"]["months"],
                   data["leads_w"], data["leads_m"], with_leads=True)
-    _funnel_block(out, "FUNNEL 2 — CORE IAs (Initial / Club IA / PHI IA / ACL IA)",
+    _funnel_block(out, "FUNNEL 2 — CORE IAs (Initial incl. Omagh offer / Club IA / PHI IA / ACL IA)",
                   data["core"]["weeks"], data["core"]["months"], {}, {}, with_leads=False)
 
     # Per-physio breakdown of the core funnel, one block per month (recent first).
@@ -400,7 +400,7 @@ def main():
     else:
         data = compute_all(sh)
     _print_funnel("FUNNEL 1 — ALL IAs", data["all"], data["leads_w"], data["leads_m"], True)
-    _print_funnel("FUNNEL 2 — CORE IAs (Initial / Club IA / PHI IA / ACL IA)",
+    _print_funnel("FUNNEL 2 — CORE IAs (Initial incl. Omagh offer / Club IA / PHI IA / ACL IA)",
                   data["core"], {}, {}, False)
     _print_physio("FUNNEL 2b — CORE IAs BY PHYSIO", data["core_by_physio"])
     if not write:

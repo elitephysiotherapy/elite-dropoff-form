@@ -26,6 +26,11 @@ LIFECYCLE_HOUR = getattr(config, "MARKETING_LIFECYCLE_HOUR", 9)
 QUIET_START = getattr(config, "MARKETING_QUIET_START", 21)
 QUIET_END = getattr(config, "MARKETING_QUIET_END", 8)
 
+# "After an IA" flows limited to one send per patient per window (see collect loop).
+PER_PATIENT_FLOWS = {"ia_survey_sms", "ia_survey_email", "ia_survey_nurture",
+                     "welcome", "iadnr_nudge"}
+PER_PATIENT_FLOW_DAYS = 30
+
 
 def _mode():
     if config.MARKETING_LIVE:
@@ -100,6 +105,14 @@ def run_once():
 
     for t in touches:
         if sent_log.already_sent(t.patient_id, t.flow_name, t.anchor):
+            stats["dedup"] += 1
+            continue
+        # The "after an IA" flows fire for many appointment types since
+        # 2026-10-22 (ultrasound, injection, profiling …) — one patient can hit
+        # several in a fortnight. Send each such flow at most once per patient
+        # per PER_PATIENT_FLOW_DAYS, whatever appointment triggered it.
+        if t.flow_name in PER_PATIENT_FLOWS and sent_log.sent_flow_recently(
+                t.patient_id, t.flow_name, PER_PATIENT_FLOW_DAYS):
             stats["dedup"] += 1
             continue
 

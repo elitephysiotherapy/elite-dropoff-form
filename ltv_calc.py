@@ -11,9 +11,10 @@ Methodology (Martin 2026-06-06):
 
   Two cohort definitions:
     PHYSIO  — patient's FIRST individual appointment was type
-              "1. Initial Appointment" (382563815654429852). Strictly that
-              one type, NOT Club Initial / PHI Initial / ACL Initial / Mummy
-              MOT.
+              "1. Initial Appointment" (382563815654429852) or the Omagh
+              Initial Assessment Offer (same IA at a launch discount —
+              Martin 2026-10-22). NOT Club Initial / PHI Initial / ACL
+              Initial / Mummy MOT.
     PILATES — patient's FIRST invoice (by issue_date) contains a line item
               whose name contains "pilates" (case-insensitive).
 
@@ -52,7 +53,8 @@ load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT))
 import phase2  # noqa: E402
 
-PHYSIO_IA_TYPE = "382563815654429852"  # ONLY "1. Initial Appointment"
+PHYSIO_IA_TYPES = {"382563815654429852",   # 1. Initial Appointment
+                   "2035469725424686828"}  # 1. Omagh Initial Assessment Offer (= Initial Appointment)
 TAB_NAME = "LTV_Cache"
 SHEET_ID = os.environ.get("CFO_DASHBOARD_SHEET_ID", "")
 
@@ -134,7 +136,7 @@ def compute() -> dict:
             attended_count[pid] += 1
 
     physio_cohort = {pid for pid, (_, t) in first_indiv.items()
-                     if t == PHYSIO_IA_TYPE}
+                     if t in PHYSIO_IA_TYPES}
     print(f"[ltv] [3/5] physio cohort: {len(physio_cohort)}", flush=True)
 
     # 4. Invoices

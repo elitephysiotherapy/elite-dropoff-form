@@ -65,6 +65,17 @@ COUNTED_IA_TYPE_IDS = {
     "2052252638237431051",  # 1. Off Season Profiling
 }
 
+# Appointment types that trigger the marketing "after an IA" texts — the NPS
+# survey, the new-patient welcome email and the 72h didn't-rebook nudge
+# (marketing/cliniko.is_initial_appointment). Martin 2026-10-22: every counted
+# IA plus Ultrasound, Injection Therapy and the old episode-anchor types
+# (Club Consultation, Mummy MOT, Pelvic Health). Golf Profiling is NOT in it —
+# the golf programme has its own journey.
+MARKETING_IA_TYPE_IDS = PHASE2_EPISODE_ANCHOR_IA_TYPE_IDS | COUNTED_IA_TYPE_IDS | {
+    "1206575759565526893",  # 3. Ultrasound Assessment
+    "1192928323588592985",  # 1. Injection Therapy
+}
+
 # Sports Massage cancellations / DNAs never counted toward physio drop-off
 # stats in Martin's manual tracker — apply the same exclusion here so the
 # Performance Dashboard stays consistent. Sports Massage IS still a 1-to-1
@@ -705,6 +716,9 @@ STANDARDS = {
 
 # Cliniko appointment type IDs used in Gen Pop PVA = (Initial + Review) / Initial.
 GENPOP_INITIAL_TYPE_ID = "382563815654429852"  # 1. Initial Appointment
+# The Omagh offer IS an Initial Appointment (same £60 IA, launch discount) —
+# Martin 2026-10-22: treat it identically everywhere.
+GENPOP_INITIAL_TYPE_IDS = {GENPOP_INITIAL_TYPE_ID, "2035469725424686828"}
 GENPOP_REVIEW_TYPE_ID = "382563815511823515"   # 2. Review Appointment
 
 

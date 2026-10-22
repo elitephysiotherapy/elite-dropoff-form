@@ -110,6 +110,24 @@ def already_sent(patient_id, flow_name, anchor, within_days=45,
     return False
 
 
+def sent_flow_recently(patient_id, flow_name, within_days):
+    """True if this patient got `flow_name` for ANY anchor in the last
+    `within_days`. Fails safe (True) if the ledger can't be read."""
+    pid = str(patient_id)
+    cutoff = _now() - timedelta(days=within_days)
+    rows = _rows()
+    if rows is _READ_FAILED:
+        return True
+    for r in rows:
+        if len(r) >= 4 and r[1] == pid and r[3] == flow_name:
+            if len(r) > 7 and str(r[7]).startswith(("failed", "test-")):
+                continue
+            ts = _parse_ts(r[0])
+            if ts is None or ts >= cutoff:
+                return True
+    return False
+
+
 def log_send(patient_id, patient_name, flow_name, channel,
              anchor, template_used, status="sent"):
     """Append one row recording a send. No-op if the sheet isn't configured."""
