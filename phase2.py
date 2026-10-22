@@ -1343,8 +1343,11 @@ def ia_rebook_rate_for_window(start_dt_utc, end_dt_utc):
     at least one appointment AFTER the IA. IACNAs (cancelled IAs) and IADNAs (DNA'd
     IAs) are excluded entirely — physio never saw the patient.
 
-    Uses STRICT_IA_TYPE_IDS (the 4 real-IA types), not the broader episode-anchor list.
+    Uses config.COUNTED_IA_TYPE_IDS — the one IA definition every sheet uses
+    (Martin 2026-10-22: anyone attending one of these is meant to come back).
+    The drop-off / reactivation rules still use STRICT_IA_TYPE_IDS.
     """
+    import config
     s_iso = start_dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     e_iso = end_dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1359,7 +1362,7 @@ def ia_rebook_rate_for_window(start_dt_utc, end_dt_utc):
         by_id[a["id"]] = a
 
     ias = [a for a in by_id.values()
-           if id_from_link(a.get("appointment_type")) in STRICT_IA_TYPE_IDS]
+           if id_from_link(a.get("appointment_type")) in config.COUNTED_IA_TYPE_IDS]
     iacna = [a for a in ias if a.get("cancelled_at")]
     iadna = [a for a in ias if a.get("did_not_arrive") and not a.get("cancelled_at")]
     attended_ias = [a for a in ias if not a.get("cancelled_at") and not a.get("did_not_arrive")]
