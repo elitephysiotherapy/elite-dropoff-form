@@ -78,8 +78,8 @@ TARGETS = {
     # Per-physio diary DMs to Sinead Rocks + reception. Fri also sends next week.
     # Render cron: 0 7,8 * * 1,3,5 (both BST and GMT UTC hours; the other no-ops).
     "diary_summary": [({0, 2, 4}, 8, 0)],                         # Mon/Wed/Fri 08:00
-    # Patients the physios flagged "suitable for Pilates" in last week's notes
-    # → DM to Kerry. Render cron: 0 7,8 * * 5.
+    # Patients the physios flagged "suitable for Pilates" / "Profiling" in last
+    # week's notes → DMs to Kerry / Sinéad Rocks. Render cron: 0 7,8 * * 5.
     "pilates_flags_weekly": [({4}, 8, 0)],                        # Fri 08:00
     # Copy new Meta ad leads into the bookings Leads tab — hourly 07:00–21:00
     # Mon–Fri (Martin 2026-10-14). The ONLY writer of Meta leads (taken out of
