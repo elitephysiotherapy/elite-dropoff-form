@@ -79,6 +79,7 @@ def handle_response(resp):
         _write_raw_row(resp, cat)
     except Exception as e:
         print(f"  WARN: could not write NPS Raw Data row: {e}")
+        _alert_write_failed(resp, score, e)
 
     if cat == "Detractor":
         try:
@@ -90,6 +91,23 @@ def handle_response(resp):
     # Raw Data row (marketing/followups.py) within ~10 minutes. This service has
     # never held the Twilio/Resend keys, so sending here failed from May to Sept.
     return f"processed: {cat} ({score}/10) — follow-ups queued for the poller"
+
+
+def _alert_write_failed(resp, score, exc):
+    """Slack DM Martin when a response can't be saved — it is otherwise lost
+    (no follow-up, no review ask). Patient id only, never a name."""
+    try:
+        import config
+        import slack_notifier
+        slack_notifier._send_dm(
+            config.CEO_SLACK_EMAIL,
+            f":warning: An NPS response could NOT be saved to 'NPS - Raw Data' "
+            f"(patient id {resp.get('patient_id') or '—'}, "
+            f"{resp.get('clinic_name') or '—'}, score {score}). No follow-up or "
+            f"review ask will go out for it. Error: `{exc}`",
+            target_label="NPS write failure")
+    except Exception as alert_exc:
+        print(f"  (could not raise the NPS write alert: {alert_exc})")
 
 
 # ---------------- sheet writes ----------------

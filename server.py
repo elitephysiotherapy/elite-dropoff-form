@@ -28,6 +28,14 @@ from google.oauth2.service_account import Credentials
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+# Import the project modules here, on the main thread, before any background
+# thread starts. They used to be imported lazily inside worker threads; after the
+# 22 Oct 2026 restart every Tally webhook thread got a half-imported `config`
+# ("partially initialized module") and NPS responses were silently dropped
+# until 2 Nov.
+import config  # noqa: E402,F401
+from marketing import detractor  # noqa: E402,F401
+
 app = Flask(__name__)
 
 # ---------------- Configuration ----------------
