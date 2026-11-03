@@ -2126,7 +2126,10 @@ def write_tab_atomically(sh, title, out, rows=400, cols=15):
     from bookings_fetch import _gs_retry   # shared 429/5xx backoff (Sheets quota)
     prev_rows = prev_cols = 0
     try:
-        ws = sh.worksheet(title)
+        # The tab lookup is a metadata READ too — it was the one call left
+        # un-retried, and a 429 on it left Weekly Drop-off Analysis stale on
+        # 2026-11-03. WorksheetNotFound isn't retried, so creation still works.
+        ws = _gs_retry(lambda: sh.worksheet(title), f"{title} open")
         # The read and the write are BOTH retried: the 07:00 London cron runs at
         # 06:00 UTC, when several weekly Render jobs share the GCP Sheets quota,
         # and an un-retried 429 here threw and left the tab stale for a day
@@ -3385,6 +3388,7 @@ def write_weekly_dropoff_analysis_tab():
     """
     import config
     import phase2 as p2
+    from bookings_fetch import _gs_retry
     now = datetime.now(LONDON)
     sh = open_spreadsheet()
 
@@ -3413,7 +3417,9 @@ def write_weekly_dropoff_analysis_tab():
         if not ws.title.startswith("W/C "):
             continue
         try:
-            weeks[ws.title] = ws.get_all_records()
+            # Retried: ~30 W/C reads in a burst brush the per-minute quota, and
+            # a skipped week would silently vanish from the analysis.
+            weeks[ws.title] = _gs_retry(ws.get_all_records, f"{ws.title} read")
         except Exception as e:
             print(f"  WARN couldn't read {ws.title}: {e}")
 
