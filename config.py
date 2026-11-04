@@ -609,7 +609,7 @@ TEAM_SPREADSHEET_URL = (
 )
 TEAM_SHEET_TAB = "Drop-offs"
 # How many W/C weeks of drop-offs the physios see at once.
-TEAM_SHEET_WEEKS = 4
+TEAM_SHEET_WEEKS = 6
 
 # ===========================================================================
 # LEADS SHEET (separate spreadsheet — "Elite Physio — New Patient Bookings")
