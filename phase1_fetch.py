@@ -3753,7 +3753,24 @@ DAILY_LOOKBACK_DAYS = 10
 REBOOKING_RECHECK_WEEKS = 8
 
 
-def detect_rebookings():
+def _patient_id_for_appt(p2, appt_id):
+    """patient_id for an appointment id — INCLUDING cancelled ones.
+
+    GET /individual_appointments/{id} 404s for a cancelled appointment, so
+    every CNA / IACNA row used to be skipped silently and never went green
+    even after the patient rebooked and attended (Ethan Mulligan, cancelled
+    3 Nov IA, back in 08:00 the same day — still 'pending' on 4 Nov 2026).
+    Fall back to the list endpoint with the cancelled filter."""
+    r = p2.SESSION.get(f"{p2.BASE}/individual_appointments/{appt_id}", timeout=30)
+    if r.status_code == 200:
+        return id_from_link(r.json().get("patient"))
+    for a in p2.fetch_all("/individual_appointments", [
+            ("q[]", f"id:={appt_id}"), ("q[]", "cancelled_at:?")]):
+        return id_from_link(a.get("patient"))
+    return None
+
+
+def detect_rebookings(dry_run=False):
     """Auto-promote drop-off rows to 'rebooked' once the patient is back in the diary.
 
     Scans W/C tabs from the last REBOOKING_RECHECK_WEEKS weeks. For each row still
@@ -3769,6 +3786,7 @@ def detect_rebookings():
 
     checked = 0
     promoted = 0
+    skipped = 0
     for ws in sh.worksheets():
         if not ws.title.startswith("W/C "):
             continue
@@ -3801,13 +3819,11 @@ def detect_rebookings():
 
             # appointment_id → patient_id
             try:
-                r = p2.SESSION.get(f"{p2.BASE}/individual_appointments/{appt_id}", timeout=30)
-                if r.status_code != 200:
-                    continue
-                patient_id = id_from_link(r.json().get("patient"))
+                patient_id = _patient_id_for_appt(p2, appt_id)
             except Exception:
-                continue
+                patient_id = None
             if not patient_id:
+                skipped += 1
                 continue
 
             # Reference point = the drop-off appointment's start
@@ -3832,11 +3848,17 @@ def detect_rebookings():
                 continue
 
             if rebooked:
-                ws.update_cell(sheet_row, status_col, "reactivated")
+                if dry_run:
+                    print(f"    would promote: {ws.title} row {sheet_row} "
+                          f"{row.get('Drop-off Type')}")
+                else:
+                    ws.update_cell(sheet_row, status_col, "reactivated")
                 promoted += 1
 
     print(f"  Reactivation check: {checked} pending rows checked, "
-          f"{promoted} auto-promoted to 'reactivated'")
+          f"{promoted} {'would be ' if dry_run else ''}auto-promoted to 'reactivated'"
+          + (f", {skipped} skipped (appointment not found)" if skipped else ""))
+    return promoted
 
 
 def main():
