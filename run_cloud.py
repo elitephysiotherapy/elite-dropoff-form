@@ -48,6 +48,13 @@ COMMANDS = {
     "pilates_flags_weekly": [PY, "send_pilates_flags_weekly.py", "--post"],
 }
 
+# Hard wall-clock limit (seconds) per job. Render only kills a hung cron run
+# after 12 hours and won't start the next run meanwhile — on 6 Nov 2026 one
+# frozen marketing run blocked every 10-min cycle from 14:11 to 02:12. Killing
+# it after 8 min means a hang costs one cycle; the next run catches up (all
+# flows have 5+ day windows, dedup stops repeats). Exit 124 => Render emails.
+JOB_TIMEOUT_SECS = {"marketing": 8 * 60}
+
 # Jobs that fire only on the 1st of each calendar month (in addition to the
 # London-time hour/minute check). Used by send_monthly_physio_kpis on day 1.
 MONTHLY_DAY1_JOBS = {"monthly_kpi", "referrers_monthly", "club_alert_monthly"}
@@ -161,7 +168,22 @@ def main():
 
     cmd = COMMANDS[job]
     print(f"[run_cloud] {job}: {stamp} — running: {' '.join(cmd)}", flush=True)
-    rc = subprocess.call(cmd)
+    import os
+    env = dict(os.environ, PYTHONUNBUFFERED="1")   # stream logs live, so a hang shows where
+    limit = JOB_TIMEOUT_SECS.get(job)
+    proc = subprocess.Popen(cmd, env=env)
+    try:
+        rc = proc.wait(timeout=limit)
+    except subprocess.TimeoutExpired:
+        print(f"[run_cloud] {job}: ❌ still running after {limit // 60} min — killing it "
+              f"so the next cycle can run.", flush=True)
+        proc.terminate()
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        rc = 124
     print(f"[run_cloud] {job}: finished with exit code {rc}")
     sys.exit(rc)
 
