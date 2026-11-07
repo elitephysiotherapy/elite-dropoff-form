@@ -51,9 +51,11 @@ COMMANDS = {
 # Hard wall-clock limit (seconds) per job. Render only kills a hung cron run
 # after 12 hours and won't start the next run meanwhile — on 6 Nov 2026 one
 # frozen marketing run blocked every 10-min cycle from 14:11 to 02:12. Killing
-# it after 8 min means a hang costs one cycle; the next run catches up (all
-# flows have 5+ day windows, dedup stops repeats). Exit 124 => Render emails.
-JOB_TIMEOUT_SECS = {"marketing": 8 * 60}
+# it after 25 min means a hang costs at most two cycles; the next run catches up
+# (all flows have 5+ day windows, dedup stops repeats). Exit 124 => Render emails.
+# NOT 8 min: the once-a-day 09:00 lifecycle run takes ~8-10 min (6 min just to
+# collect) — an 8-min cap cut it off mid-send on 7 Nov 2026.
+JOB_TIMEOUT_SECS = {"marketing": 25 * 60}
 
 # Jobs that fire only on the 1st of each calendar month (in addition to the
 # London-time hour/minute check). Used by send_monthly_physio_kpis on day 1.
