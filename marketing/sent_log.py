@@ -27,6 +27,12 @@ def _now():
     return datetime.now(LONDON)
 
 
+def _as_text(v):
+    """Force Sheets to keep an ID as text under USER_ENTERED (see log_send)."""
+    s = str(v or "")
+    return "'" + s if s.isdigit() else s
+
+
 def _tab():
     """Return the Sent Log worksheet, or None if the sheet isn't configured."""
     try:
@@ -131,10 +137,15 @@ def sent_flow_recently(patient_id, flow_name, within_days):
 def log_send(patient_id, patient_name, flow_name, channel,
              anchor, template_used, status="sent"):
     """Append one row recording a send. No-op if the sheet isn't configured."""
+    # IDs are written with a leading apostrophe so Sheets stores them as TEXT.
+    # Under USER_ENTERED a bare 18-19 digit ID can be turned into a number
+    # (e.g. "1.23E+17"), which never matches in already_sent() — on 9 Oct 2026
+    # that re-sent one patient the no-show SMS+email every 10 min for 3.5 hours
+    # (43 messages). The apostrophe isn't stored; reads return the plain digits.
     row = [
         _now().strftime("%Y-%m-%d %H:%M:%S"),
-        str(patient_id), patient_name or "", flow_name, channel,
-        str(anchor or ""), template_used or "", status,
+        _as_text(patient_id), patient_name or "", flow_name, channel,
+        _as_text(anchor), template_used or "", status,
     ]
     ws = _tab()
     if ws is None:
@@ -152,4 +163,5 @@ def log_send(patient_id, patient_name, flow_name, channel,
                 return
             time.sleep(1.5 * (attempt + 1))
     if isinstance(_rows_cache, list):   # keep in-process cache in sync
-        _rows_cache.append(row)
+        _rows_cache.append([c.lstrip("'") if i in (1, 5) else c
+                            for i, c in enumerate(row)])
