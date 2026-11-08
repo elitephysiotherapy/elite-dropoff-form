@@ -101,5 +101,50 @@ check("phone keys match", stl.norm_phone("p:+447700900123") == stl.norm_phone("0
 check("mins fmt", stl.fmt_mins(dt("2026-11-09 10:47") - dt("2026-11-09 09:00")) == "1h 47m")
 check("slack escape", stl.esc("<b> & co") == "&lt;b&gt; &amp; co")
 
+# --- escalation never posts in #leads ----------------------------------------
+import config  # noqa: E402
+
+posts = []
+
+
+class FakeSlack:
+    def chat_postMessage(self, **kw):
+        posts.append(kw)
+        return {"channel": kw["channel"], "ts": "1"}
+
+    def chat_getPermalink(self, **kw):
+        return {"permalink": "https://slack/x"}
+
+
+row = {h: "" for h in stl.HEADERS}
+row.update({"Lead Key": "l:1", "Name": "Test", "Phone": "07700900000",
+            "Clinic": "Maghera", "Clock Start": "2026-11-09 08:30:00",
+            "Pings": "0", "Slack Channel": "CLEADS", "Slack TS": "1", "_row": 2})
+saved = {n: getattr(stl, n) for n in ("state_ws", "read_state", "read_leads",
+         "leads_tab_statuses", "update_cells", "slack", "_uid")}
+saved_cfg = (config.STL_LIVE, config.STL_CHANNEL)
+try:
+    stl.state_ws = lambda: None
+    stl.read_state = lambda ws: {"l:1": row}
+    stl.read_leads = lambda: []
+    stl.leads_tab_statuses = lambda: {}
+    stl.update_cells = lambda ws, r, vals: row.update(vals)
+    stl.slack = lambda: FakeSlack()
+    stl._uid = lambda email: "DMARTIN"
+    config.STL_LIVE, config.STL_CHANNEL = True, "CLEADS"
+    stl.tick(now=dt("2026-11-09 08:50"), log=lambda m: None)
+    stl.tick(now=dt("2026-11-09 09:05"), log=lambda m: None)
+finally:
+    for n, f in saved.items():
+        setattr(stl, n, f)
+    config.STL_LIVE, config.STL_CHANNEL = saved_cfg
+check("15-min reminder in #leads, pings reception",
+      posts and posts[0]["channel"] == "CLEADS"
+      and f"<@{config.STL_RECEPTION_USER_ID}>" in posts[0]["text"], posts[:1])
+check("30-min escalation goes to Martin's DM only",
+      len(posts) == 2 and posts[1]["channel"] == "DMARTIN", posts[1:])
+check("escalation text never names Martin in #leads",
+      all("Martin" not in p["text"] for p in posts if p["channel"] == "CLEADS"))
+
 print(f"\n{'ALL PASS' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)

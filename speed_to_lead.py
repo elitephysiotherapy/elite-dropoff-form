@@ -16,7 +16,8 @@ Flow (scope agreed with Martin 2026-11-08)
      and "Called" / "No answer" buttons.
   4. Nobody pressed a button 15 min after the desk opened (desk hours in
      config.STL_DESK_HOURS) -> one message pinging reception listing every
-     waiting lead; 30 min -> the same to STL_ESCALATE_SLACK_EMAIL. Leads that
+     waiting lead; 30 min -> a PRIVATE DM to STL_ESCALATE_SLACK_EMAIL (never
+     #leads — reception mustn't see the escalation). Leads that
      the Online Leads sheet or the Leads tab mark booked/declined stop being
      chased; so does anything older than STL_GIVE_UP_DAYS.
   5. A lead's text reply (server.py /twilio/inbound) lands in their thread.
@@ -394,8 +395,9 @@ def reception_mention() -> str:
     return "*@reception* _(safe mode — not pinged)_"
 
 
-def escalate_mention() -> str:
-    return f"<@{_uid(config.STL_ESCALATE_SLACK_EMAIL)}>"
+def escalate_channel() -> str:
+    """Private DM with the escalation person — never #leads."""
+    return _uid(config.STL_ESCALATE_SLACK_EMAIL)
 
 
 def esc(text: str) -> str:
@@ -597,11 +599,12 @@ def tick(now: datetime | None = None, dry_run: bool = False, log=print) -> dict:
         elif pings == 1 and waited >= timedelta(minutes=config.STL_ESCALATE_MIN):
             due_escalate.append(s)
 
-    for level, rows, who in ((1, due_first, reception_mention()),
-                             (2, due_escalate, None)):
+    # Level 1 goes in #leads for reception. Level 2 (the 30-min escalation)
+    # goes ONLY to the escalation person's private DM — Martin doesn't want
+    # reception seeing that he's chased (2026-11-08).
+    for level, rows in ((1, due_first), (2, due_escalate)):
         if not rows:
             continue
-        who = who or escalate_mention()
         lines = []
         for s in rows:
             try:
@@ -613,11 +616,19 @@ def tick(now: datetime | None = None, dry_run: bool = False, log=print) -> dict:
             waited = fmt_mins(now - _parse(s["Clock Start"]))
             lines.append(f"• {name} — {s['Clinic']} — <tel:{s['Phone']}|{s['Phone']}> "
                          f"(waiting {waited})")
-        head = (f":telephone_receiver: {who} {'these leads have' if len(rows) > 1 else 'this lead has'} "
-                f"not had a call yet:" if level == 1 else
-                f":rotating_light: {who} still no call after {config.STL_ESCALATE_MIN} min:")
+        plural = len(rows) > 1
+        if level == 1:
+            channel = post_channel()
+            head = (f":telephone_receiver: {reception_mention()} "
+                    f"{'these leads have' if plural else 'this lead has'} "
+                    f"not had a call yet:")
+        else:
+            channel = escalate_channel()
+            head = (f":rotating_light: Still no call after {config.STL_ESCALATE_MIN} "
+                    f"min — reception was reminded at {config.STL_FIRST_PING_MIN} min "
+                    f"(only you can see this):")
         try:
-            slack().chat_postMessage(channel=post_channel(), unfurl_links=False,
+            slack().chat_postMessage(channel=channel, unfurl_links=False,
                                      text=head + "\n" + "\n".join(lines))
         except Exception as exc:
             log(f"  reminder post failed: {exc}")
