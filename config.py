@@ -1091,3 +1091,59 @@ CLUB_ALERT_QUIET_MIN_LAST_YEAR = 1
 # First month the DM actually goes to Sinead. On that run nothing is a "repeat"
 # (she never received last month's), so every flagged club is listed in full.
 CLUB_ALERT_FIRST_RUN = "2026-10-01"
+
+
+# ===========================================================================
+# SPEED-TO-LEAD RESPONDER (speed_to_lead.py, run as a thread in server.py)
+# ===========================================================================
+# Every new Meta lead on the Online Leads sheet gets one text from the two-way
+# number within ~2 min, and a Slack post with "Called" / "No answer" buttons.
+# Nobody presses a button within 15 min of the desk being open -> reception is
+# pinged; 30 min -> STL_ESCALATE_SLACK_EMAIL. Scope agreed with Martin
+# 2026-11-08 (Meta leads only; keyword body area; one fixed call line).
+
+# Master switch. False = SAFE MODE: every text goes to MARKETING_TEST_PHONE
+# prefixed "[TEST → real number]" and every Slack post goes to Martin's DM,
+# so nothing reaches a real lead or reception. Flip on Render, no deploy.
+STL_LIVE = os.environ.get("STL_LIVE", "false").strip().lower() == "true"
+STL_ENABLED = os.environ.get("STL_ENABLED", "1") == "1"   # run the thread at all
+
+# Leads created before this are never texted (go-live cut-off). Leads more
+# than STL_MAX_AGE_HOURS old when first seen are posted but NOT texted —
+# guards against texting a backlog after an outage.
+STL_START_AT = os.environ.get("STL_START_AT", "2026-11-08T12:00:00+00:00")
+STL_MAX_AGE_HOURS = 24
+
+STL_CHANNEL = os.environ.get("STL_CHANNEL", "")      # #leads channel id (live)
+STL_RECEPTION_USER_ID = BOOKINGS_SLACK_USER_ID       # reception Slack profile
+STL_ESCALATE_SLACK_EMAIL = CEO_SLACK_EMAIL           # 30-min escalation
+STL_STATE_TAB = "Speed to Lead"                      # on the bookings sheet
+
+STL_POLL_SECONDS = 60
+STL_FIRST_PING_MIN = 15
+STL_ESCALATE_MIN = 30
+STL_GIVE_UP_DAYS = 3          # stop chasing an un-actioned lead after this
+STL_REPEAT_DAYS = 30          # same phone again within this = no second text
+
+# Texts are never sent 21:00–08:00 (held until 08:00 London).
+STL_QUIET_START = (21, 0)
+STL_QUIET_END = (8, 0)
+
+# Reception desk hours (Martin 2026-11-08). Weekday() -> (open, close);
+# missing day = desk closed. The 15-min clock starts when the desk opens.
+STL_DESK_HOURS = {
+    0: ((8, 30), (21, 0)),   # Mon
+    1: ((8, 30), (21, 0)),   # Tue
+    2: ((8, 30), (21, 0)),   # Wed
+    3: ((8, 30), (21, 0)),   # Thu
+    4: ((8, 30), (16, 0)),   # Fri
+}
+
+# Cliniko online booking page per clinic, via the SMS shortener (tokens made
+# 2026-11-08 on the marketing sheet's sms_shortener tab). Cliniko ignores
+# appointment_type_id, so these land on the clinic's service list.
+STL_BOOKING_LINKS = {
+    "Cookstown": "https://elite-sms-shortener.onrender.com/r/O0OZRA",
+    "Maghera": "https://elite-sms-shortener.onrender.com/r/HJvXlw",
+    "Omagh": "https://elite-sms-shortener.onrender.com/r/9Y-dWQ",
+}

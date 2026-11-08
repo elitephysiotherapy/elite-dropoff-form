@@ -461,6 +461,20 @@ def slack_interactive():
 
     action = payload.get("actions", [{}])[0]
     action_id = action.get("action_id", "")
+    if action_id.startswith("stl_"):
+        # Speed-to-lead "Called" / "No answer" buttons (speed_to_lead.py).
+        def _stl_click():
+            try:
+                import speed_to_lead
+                speed_to_lead.handle_button(
+                    action_id, payload.get("user", {}).get("id", ""),
+                    payload.get("response_url"),
+                    payload.get("message", {}).get("blocks", []),
+                    payload.get("message", {}).get("text", "New lead"))
+            except Exception as exc:
+                print(f"speed-to-lead button error for {action_id}: {exc}")
+        threading.Thread(target=_stl_click, daemon=True).start()
+        return make_response("", 200)
     parts = action_id.split(":")
     if len(parts) != 3:
         return make_response("", 200)
@@ -779,6 +793,21 @@ def twilio_inbound():
     from_number = (request.form.get("From") or "").strip()
     body = (request.form.get("Body") or "").strip()
 
+    # A reply from a speed-to-lead lead goes to that lead's #leads thread,
+    # not the Omagh campaign channel.
+    try:
+        import speed_to_lead
+        lead = speed_to_lead.find_lead_by_phone(from_number)
+    except Exception as exc:
+        print(f"twilio inbound: speed-to-lead lookup failed: {exc}")
+        lead = None
+    if lead:
+        optout = body.lower().strip(" .!") in _OPTOUT_EXACT
+        if body:
+            threading.Thread(target=speed_to_lead.post_reply,
+                             args=(lead, body, optout), daemon=True).start()
+        return make_response("<Response/>", 200, {"Content-Type": "text/xml"})
+
     if body.lower().strip(" .!") in _OPTOUT_EXACT:
         # Twilio has already stopped further messages from this sender; clear
         # the Cliniko consent flag too so the NEXT campaign does not text them.
@@ -833,3 +862,20 @@ if __name__ == "__main__":
     # Local dev runner
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
+
+
+# ---------------------------------------------------------------------------
+# Speed-to-lead responder — texts each new Meta lead within ~2 min and chases
+# reception to call (speed_to_lead.py). Same always-on pattern as the team
+# sheet sync; a file lock keeps it to one gunicorn worker.
+# ---------------------------------------------------------------------------
+import config as _config  # noqa: E402
+
+if _config.STL_ENABLED:
+    def _start_speed_to_lead():
+        import speed_to_lead
+        speed_to_lead.run_forever()
+
+    threading.Thread(target=_start_speed_to_lead, daemon=True,
+                     name="speed-to-lead").start()
+    print(f"speed-to-lead thread started (live={_config.STL_LIVE})")
