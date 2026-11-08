@@ -1118,7 +1118,10 @@ STL_MAX_AGE_HOURS = 24
 
 STL_CHANNEL = os.environ.get("STL_CHANNEL", "")      # #leads channel id (live)
 STL_RECEPTION_USER_ID = BOOKINGS_SLACK_USER_ID       # reception Slack profile
-STL_REPORT_SLACK_EMAIL = CEO_SLACK_EMAIL             # end-of-day report DM
+STL_REPORT_SLACK_EMAILS = [                          # end-of-day report DMs
+    CEO_SLACK_EMAIL,
+    "julie@elitephysiocookstown.co.uk",              # Martin 2026-11-08
+]
 STL_STATE_TAB = "Speed to Lead"                      # on the bookings sheet
 
 STL_POLL_SECONDS = 60

@@ -718,10 +718,21 @@ def maybe_send_report(ws, state: dict, now: datetime, log=print) -> bool:
         return False                         # already sent today
     since = last or datetime.fromisoformat(config.STL_START_AT).astimezone(LONDON)
     text = build_report(list(state.values()), since, now)
-    channel = (_uid(config.STL_REPORT_SLACK_EMAIL))
     if not config.STL_LIVE:
         text = "_[SAFE MODE]_\n" + text
-    slack().chat_postMessage(channel=channel, text=text, unfurl_links=False)
+        emails = [config.CEO_SLACK_EMAIL]
+    else:
+        emails = config.STL_REPORT_SLACK_EMAILS
+    sent_any = False
+    for email in emails:                 # one private DM each, never #leads
+        try:
+            slack().chat_postMessage(channel=_uid(email), text=text,
+                                     unfurl_links=False)
+            sent_any = True
+        except Exception as exc:
+            log(f"  report DM to {email} failed: {exc}")
+    if not sent_any:
+        raise RuntimeError("end-of-day report could not be sent to anyone")
     if marker:
         update_cells(ws, marker["_row"], {"Seen At": _iso(now)})
     else:

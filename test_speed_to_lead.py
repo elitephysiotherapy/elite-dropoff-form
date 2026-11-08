@@ -187,8 +187,9 @@ saved = {n: getattr(stl, n) for n in ("slack", "_uid", "update_cells", "append_r
 try:
     stl.slack = lambda: type("S", (), {"chat_postMessage":
                                        lambda self, **kw: sent.append(kw)})()
-    stl._uid = lambda e: "DMARTIN"
+    stl._uid = lambda e: {"julie@elitephysiocookstown.co.uk": "DJULIE"}.get(e, "DMARTIN")
     stl.update_cells = lambda ws, r, v: state[stl.REPORT_KEY].update(v)
+    config.STL_LIVE = True
     stl.append_row = lambda ws, v: state.update({stl.REPORT_KEY: {**v, "_row": 9}}) or 9
     for t in ("2026-11-09 21:00", "2026-11-09 21:06", "2026-11-09 21:07",
               "2026-11-10 09:00", "2026-11-10 21:06"):
@@ -196,8 +197,12 @@ try:
 finally:
     for n, f in saved.items():
         setattr(stl, n, f)
+    config.STL_LIVE = saved_cfg[0]
 check("report: none before close, once at 21:06, again next evening",
-      len(sent) == 2 and all(p["channel"] == "DMARTIN" for p in sent), len(sent))
+      len(sent) == 4, len(sent))
+check("report goes privately to Martin AND Julie, nowhere else",
+      sorted(p["channel"] for p in sent) == ["DJULIE", "DJULIE", "DMARTIN", "DMARTIN"],
+      [p["channel"] for p in sent])
 
 print(f"\n{'ALL PASS' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)
