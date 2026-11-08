@@ -465,7 +465,6 @@ def slack_interactive():
         # Speed-to-lead "Called" / "No answer" buttons (speed_to_lead.py).
         def _stl_click():
             try:
-                import speed_to_lead
                 speed_to_lead.handle_button(
                     action_id, payload.get("user", {}).get("id", ""),
                     payload.get("response_url"),
@@ -796,7 +795,6 @@ def twilio_inbound():
     # A reply from a speed-to-lead lead goes to that lead's #leads thread,
     # not the Omagh campaign channel.
     try:
-        import speed_to_lead
         lead = speed_to_lead.find_lead_by_phone(from_number)
     except Exception as exc:
         print(f"twilio inbound: speed-to-lead lookup failed: {exc}")
@@ -848,9 +846,14 @@ def twilio_voice():
 # thread costs nothing and needs no new Render resource. team_sheet holds a
 # lock so only one gunicorn worker syncs at a time.
 # ---------------------------------------------------------------------------
+# Import on the main thread BEFORE any background thread starts, so no two
+# threads ever import the same module at once (that handed the speed-to-lead
+# button handler a half-loaded sheets_retry on 2026-11-08).
+import team_sheet  # noqa: E402
+import speed_to_lead  # noqa: E402
+
 if os.environ.get("TEAM_SHEET_SYNC", "1") == "1":
     def _start_team_sheet_sync():
-        import team_sheet
         team_sheet.run_forever()
 
     threading.Thread(target=_start_team_sheet_sync, daemon=True,
@@ -873,7 +876,6 @@ import config as _config  # noqa: E402
 
 if _config.STL_ENABLED:
     def _start_speed_to_lead():
-        import speed_to_lead
         speed_to_lead.run_forever()
 
     threading.Thread(target=_start_speed_to_lead, daemon=True,

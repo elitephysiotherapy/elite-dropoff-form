@@ -49,7 +49,21 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import gspread
+import requests
+from google.oauth2.service_account import Credentials
+from slack_sdk import WebClient
+
 import config
+import slack_notifier
+import meta_leads
+import sheets_retry
+from marketing import twilio_client
+
+# Everything this module needs is imported HERE, at import time, never inside
+# a function: functions below run in background threads, and two threads
+# importing the same module at once can be handed a half-initialised copy
+# ("partially initialized module 'sheets_retry'" — the 2026-11-08 button bug).
 
 LONDON = ZoneInfo("Europe/London")
 
@@ -209,8 +223,6 @@ _gc = None
 def _gspread():
     global _gc
     if _gc is None:
-        import gspread
-        from google.oauth2.service_account import Credentials
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         raw = os.environ.get("SERVICE_ACCOUNT_JSON")
         if raw:
@@ -224,7 +236,6 @@ def _gspread():
 
 
 def _retry(call, label):
-    import sheets_retry
     return sheets_retry.gs_retry(call, label, prefix="  stl ")
 
 
@@ -292,7 +303,6 @@ def append_row(ws, values: dict[str, str]) -> int:
 # Sources
 # ---------------------------------------------------------------------------
 def read_leads():
-    import meta_leads
     return _retry(lambda: meta_leads.read_source_leads(_gspread()), "read Online Leads")
 
 
@@ -329,7 +339,6 @@ def leads_tab_statuses() -> dict[str, str]:
 # Outbound: SMS + Slack
 # ---------------------------------------------------------------------------
 def send_text(phone: str, body: str) -> tuple[bool, str]:
-    from marketing import twilio_client
     dest = twilio_client.normalise_uk_phone(phone)
     if not dest:
         return False, "no usable phone number"
@@ -339,7 +348,6 @@ def send_text(phone: str, body: str) -> tuple[bool, str]:
     # Straight to Twilio rather than twilio_client.send_sms: that helper also
     # obeys MARKETING_SAFE_MODE, which defaults ON for this server, so a live
     # responder would still have texted Martin. STL_LIVE is the only switch.
-    import requests
     sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
     token = os.environ.get("TWILIO_AUTH_TOKEN", "")
     if not sid or not token:
@@ -363,7 +371,6 @@ _uid_cache: dict[str, str] = {}
 def slack():
     global _slack
     if _slack is None:
-        from slack_sdk import WebClient
         _slack = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
     return _slack
 
@@ -637,7 +644,25 @@ def _thread_note(s: dict, text: str):
 # ---------------------------------------------------------------------------
 def handle_button(action_id: str, user_id: str, response_url: str,
                   original_blocks: list, fallback_text: str):
-    import requests
+    try:
+        _handle_button(action_id, user_id, response_url, original_blocks,
+                       fallback_text)
+    except Exception:
+        # Never leave the clicker with a dead button: say it didn't save.
+        warn = {"type": "context", "block_id": "stl_warn", "elements": [{
+            "type": "mrkdwn", "text": ":warning: Couldn't save that just now "
+                                      "- please tap again in a minute."}]}
+        blocks = [b for b in original_blocks if b.get("block_id") != "stl_warn"]
+        try:
+            requests.post(response_url, json={"replace_original": True,
+                          "text": fallback_text, "blocks": blocks + [warn]},
+                          timeout=10)
+        finally:
+            raise
+
+
+def _handle_button(action_id: str, user_id: str, response_url: str,
+                   original_blocks: list, fallback_text: str):
     kind, key = action_id.split("|", 1)
     now = datetime.now(LONDON)
     ws = state_ws()
@@ -659,7 +684,8 @@ def handle_button(action_id: str, user_id: str, response_url: str,
             f"({since} after the enquiry)"
             + (" — tap *Called* when you get through." if outcome == "no answer" else "")}]}
     blocks = [b for b in original_blocks
-              if not str(b.get("block_id", "")).startswith(("stl_actions|", "stl_done|"))]
+              if not str(b.get("block_id", "")).startswith(
+                  ("stl_actions|", "stl_done|", "stl_warn"))]
     note["block_id"] = f"stl_done|{key}"
     blocks.append(note)
     if outcome == "no answer":
@@ -735,7 +761,6 @@ def run_forever(interval: int | None = None):
             print(f"speed-to-lead tick failed ({fails}): {exc}", flush=True)
             if fails in (5, 60):                       # ~5 min, then ~1 h
                 try:
-                    import slack_notifier
                     slack_notifier._send_dm(
                         config.CEO_SLACK_EMAIL,
                         f":warning: Speed-to-lead has failed {fails} times in a row "
