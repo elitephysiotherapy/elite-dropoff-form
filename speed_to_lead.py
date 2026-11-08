@@ -15,9 +15,10 @@ Flow (scope agreed with Martin 2026-11-08)
   3. A Slack post (#leads; Martin's DM in safe mode) with the lead's details
      and "Called" / "No answer" buttons.
   4. Nobody pressed a button 15 min after the desk opened (desk hours in
-     config.STL_DESK_HOURS) -> one message pinging reception listing every
-     waiting lead; 30 min -> a PRIVATE DM to STL_ESCALATE_SLACK_EMAIL (never
-     #leads — reception mustn't see the escalation). Leads that
+     config.STL_DESK_HOURS) -> one message in #leads pinging reception. No
+     further escalation: instead Martin gets a private end-of-day DM (desk
+     close + 5 min) with each lead's text/call speed and anyone not
+     actioned. Reception never sees it. Leads that
      the Online Leads sheet or the Leads tab mark booked/declined stop being
      chased; so does anything older than STL_GIVE_UP_DAYS.
   5. A lead's text reply (server.py /twilio/inbound) lands in their thread.
@@ -395,11 +396,6 @@ def reception_mention() -> str:
     return "*@reception* _(safe mode — not pinged)_"
 
 
-def escalate_channel() -> str:
-    """Private DM with the escalation person — never #leads."""
-    return _uid(config.STL_ESCALATE_SLACK_EMAIL)
-
-
 def esc(text: str) -> str:
     """Slack mrkdwn escaping for patient-typed text."""
     return (str(text or "").replace("&", "&amp;").replace("<", "&lt;")
@@ -566,10 +562,14 @@ def tick(now: datetime | None = None, dry_run: bool = False, log=print) -> dict:
         _thread_note(s, (f":white_check_mark: Text sent {now.strftime('%H:%M')}:\n>{body}"
                          if ok else f":x: Text failed ({info}) — please phone them."))
 
-    # 3. Chase un-actioned leads.
+    # 3. Remind reception (in #leads) once, 15 min after the desk opened.
+    #    No further escalation — Martin gets the end-of-day report instead
+    #    (2026-11-08: "I don't need a Slack post after 30 mins").
     statuses = None
-    due_first, due_escalate = [], []
+    due = []
     for key, s in state.items():
+        if key.startswith("__"):
+            continue
         if s.get("Closed") or s.get("Called At") or s.get("Outcome"):
             continue
         if not s.get("_row") or not s.get("Slack TS"):
@@ -584,29 +584,23 @@ def tick(now: datetime | None = None, dry_run: bool = False, log=print) -> dict:
               or statuses.get(f"phone:{norm_phone(s['Phone'])}") or "")
         if st in _CLOSED_STATUSES:
             update_cells(ws, s["_row"], {"Closed": st})
+            s["Closed"] = st
             _thread_note(s, f":ballot_box_with_check: Marked *{st}* on the sheet — "
                             f"no more reminders.")
             stats["closed"] += 1
             continue
         if now - clock > timedelta(days=config.STL_GIVE_UP_DAYS):
             update_cells(ws, s["_row"], {"Closed": "expired"})
+            s["Closed"] = "expired"
             stats["closed"] += 1
             continue
-        pings = int(s.get("Pings") or 0)
-        waited = now - clock
-        if pings == 0 and waited >= timedelta(minutes=config.STL_FIRST_PING_MIN):
-            due_first.append(s)
-        elif pings == 1 and waited >= timedelta(minutes=config.STL_ESCALATE_MIN):
-            due_escalate.append(s)
+        if (int(s.get("Pings") or 0) == 0
+                and now - clock >= timedelta(minutes=config.STL_FIRST_PING_MIN)):
+            due.append(s)
 
-    # Level 1 goes in #leads for reception. Level 2 (the 30-min escalation)
-    # goes ONLY to the escalation person's private DM — Martin doesn't want
-    # reception seeing that he's chased (2026-11-08).
-    for level, rows in ((1, due_first), (2, due_escalate)):
-        if not rows:
-            continue
+    if due:
         lines = []
-        for s in rows:
+        for s in due:
             try:
                 link = slack().chat_getPermalink(channel=s["Slack Channel"],
                                                  message_ts=s["Slack TS"])["permalink"]
@@ -616,28 +610,125 @@ def tick(now: datetime | None = None, dry_run: bool = False, log=print) -> dict:
             waited = fmt_mins(now - _parse(s["Clock Start"]))
             lines.append(f"• {name} — {s['Clinic']} — <tel:{s['Phone']}|{s['Phone']}> "
                          f"(waiting {waited})")
-        plural = len(rows) > 1
-        if level == 1:
-            channel = post_channel()
-            head = (f":telephone_receiver: {reception_mention()} "
-                    f"{'these leads have' if plural else 'this lead has'} "
-                    f"not had a call yet:")
-        else:
-            channel = escalate_channel()
-            head = (f":rotating_light: Still no call after {config.STL_ESCALATE_MIN} "
-                    f"min — reception was reminded at {config.STL_FIRST_PING_MIN} min "
-                    f"(only you can see this):")
+        head = (f":telephone_receiver: {reception_mention()} "
+                f"{'these leads have' if len(due) > 1 else 'this lead has'} "
+                f"not had a call yet:")
         try:
-            slack().chat_postMessage(channel=channel, unfurl_links=False,
+            slack().chat_postMessage(channel=post_channel(), unfurl_links=False,
                                      text=head + "\n" + "\n".join(lines))
+            for s in due:
+                update_cells(ws, s["_row"], {"Pings": "1"})
+                stats["pinged"] += 1
         except Exception as exc:
             log(f"  reminder post failed: {exc}")
-            continue
-        for s in rows:
-            update_cells(ws, s["_row"], {"Pings": str(level)})
-            stats["pinged"] += 1
+
+    # 4. End-of-day report to Martin's DM, once per desk day after closing.
+    if maybe_send_report(ws, state, now, log):
+        stats["report"] = 1
 
     return stats
+
+
+REPORT_KEY = "__report__"   # state row holding when the last report went
+
+
+def report_due_at(now: datetime) -> datetime | None:
+    """Today's report time (desk close + 5 min), or None on a closed day."""
+    t = now.astimezone(LONDON)
+    hours = config.STL_DESK_HOURS.get(t.weekday())
+    if not hours:
+        return None
+    return _at(t, hours[1]) + timedelta(minutes=5)
+
+
+def build_report(rows: list[dict], since: datetime, now: datetime) -> str:
+    """Martin's end-of-day speed-to-lead summary. Pure: rows are state dicts."""
+    rows = [{**{h: "" for h in HEADERS}, **r} for r in rows]   # new rows lack cols
+    leads = [r for r in rows if not r["Lead Key"].startswith(("__", "test:"))
+             and r.get("Closed") != "test"]
+    new = [r for r in leads if (_parse(r["Seen At"]) or since) > since]
+    new.sort(key=lambda r: r["Lead Created"])
+
+    def text_speed(r):
+        c, t = _parse(r["Lead Created"]), _parse(r["Texted At"])
+        return fmt_mins(t - c) if c and t else None
+
+    def outcome(r):
+        if r.get("Outcome") == "called":
+            return f"called {r['Mins to Call']} min after desk clock started"
+        if r.get("Outcome") == "no answer":
+            return f"no answer ({r['Mins to Call']} min) - not yet reached"
+        if r.get("Closed") in _CLOSED_STATUSES:
+            return f"marked {r['Closed']} on the sheet"
+        if r.get("Closed") == "repeat":
+            return "repeat enquiry"
+        clock = _parse(r["Clock Start"])
+        if clock and clock > now:
+            return f"waiting - desk opens {clock.strftime('%a %H:%M')}"
+        return "*NOT ACTIONED*"
+
+    def not_actioned(r):
+        return outcome(r) == "*NOT ACTIONED*"
+
+    title = (f":bar_chart: *Speed to lead — {now.strftime('%a %d %b')}*  "
+             f"_(leads since {since.astimezone(LONDON).strftime('%a %H:%M')})_")
+    if not new:
+        out = [title, "No new leads."]
+    else:
+        texted = [r for r in new if r.get("Texted At")]
+        called = [r for r in new if r.get("Outcome") == "called"
+                  and r.get("Mins to Call", "").isdigit()]
+        mins = sorted(int(r["Mins to Call"]) for r in called)
+        med = mins[len(mins) // 2] if mins else None
+        out = [title,
+               f"*{len(new)}* lead{'s' if len(new) != 1 else ''} · "
+               f"*{len(texted)}* texted · *{len(called)}* called"
+               + (f" · median time to call *{med} min*" if med is not None else "")
+               + (f" · within 15 min: *{sum(m <= 15 for m in mins)}/{len(mins)}*"
+                  if mins else ""),
+               ""]
+        for r in new:
+            arrived = (_parse(r["Lead Created"]) or now).strftime("%a %H:%M")
+            ts = text_speed(r)
+            out.append(f"• {esc(r['Name'])} ({r['Clinic']}) · in {arrived} · "
+                       + (f"texted in {ts}" if ts else f"text: {r['Text Status'] or '-'}")
+                       + f" · {outcome(r)}")
+    older = [r for r in leads if r not in new and not_actioned(r)
+             and r.get("Closed") != "expired"]
+    waiting = [r for r in new if not_actioned(r)] + older
+    out.append("")
+    if waiting:
+        out.append(f":warning: *Not actioned ({len(waiting)})* — no Called / No answer tap:")
+        for r in waiting:
+            out.append(f"• {esc(r['Name'])} ({r['Clinic']}) — "
+                       f"<tel:{r['Phone']}|{r['Phone']}> — came in "
+                       f"{(_parse(r['Lead Created']) or now).strftime('%a %H:%M')}")
+    else:
+        out.append(":white_check_mark: Every lead has been actioned.")
+    return "\n".join(out)
+
+
+def maybe_send_report(ws, state: dict, now: datetime, log=print) -> bool:
+    due = report_due_at(now)
+    if not due or now < due:
+        return False
+    marker = state.get(REPORT_KEY)
+    last = _parse(marker["Seen At"]) if marker else None
+    if last and last >= due:
+        return False                         # already sent today
+    since = last or datetime.fromisoformat(config.STL_START_AT).astimezone(LONDON)
+    text = build_report(list(state.values()), since, now)
+    channel = (_uid(config.STL_REPORT_SLACK_EMAIL))
+    if not config.STL_LIVE:
+        text = "_[SAFE MODE]_\n" + text
+    slack().chat_postMessage(channel=channel, text=text, unfurl_links=False)
+    if marker:
+        update_cells(ws, marker["_row"], {"Seen At": _iso(now)})
+    else:
+        append_row(ws, {"Lead Key": REPORT_KEY, "Seen At": _iso(now),
+                        "Name": "(end-of-day report marker)", "Closed": "meta"})
+    log(f"  end-of-day report sent ({since:%a %H:%M} -> {now:%a %H:%M})")
+    return True
 
 
 def _thread_note(s: dict, text: str):

@@ -101,7 +101,7 @@ check("phone keys match", stl.norm_phone("p:+447700900123") == stl.norm_phone("0
 check("mins fmt", stl.fmt_mins(dt("2026-11-09 10:47") - dt("2026-11-09 09:00")) == "1h 47m")
 check("slack escape", stl.esc("<b> & co") == "&lt;b&gt; &amp; co")
 
-# --- escalation never posts in #leads ----------------------------------------
+# --- reminder: once, in #leads; no escalation ----------------------------------------
 import config  # noqa: E402
 
 posts = []
@@ -141,10 +141,63 @@ finally:
 check("15-min reminder in #leads, pings reception",
       posts and posts[0]["channel"] == "CLEADS"
       and f"<@{config.STL_RECEPTION_USER_ID}>" in posts[0]["text"], posts[:1])
-check("30-min escalation goes to Martin's DM only",
-      len(posts) == 2 and posts[1]["channel"] == "DMARTIN", posts[1:])
-check("escalation text never names Martin in #leads",
-      all("Martin" not in p["text"] for p in posts if p["channel"] == "CLEADS"))
+check("no 30-min escalation post at all", len(posts) == 1, posts[1:])
+
+# --- end-of-day report --------------------------------------------------------
+check("report Mon 21:05", stl.report_due_at(dt("2026-11-09 12:00")) == dt("2026-11-09 21:05"))
+check("report Fri 16:05", stl.report_due_at(dt("2026-11-13 09:00")) == dt("2026-11-13 16:05"))
+check("no report Sat/Sun", stl.report_due_at(dt("2026-11-14 12:00")) is None
+      and stl.report_due_at(dt("2026-11-15 12:00")) is None)
+
+
+def lead_row(key, name, created, texted, outcome="", mins="", closed="", clock=None):
+    r = {h: "" for h in stl.HEADERS}
+    r.update({"Lead Key": key, "Name": name, "Clinic": "Maghera", "Phone": "07700900000",
+              "Seen At": created, "Lead Created": created, "Texted At": texted,
+              "Text Status": "sent" if texted else "queued", "Outcome": outcome,
+              "Mins to Call": mins, "Closed": closed, "Clock Start": clock or created})
+    return r
+
+
+rows = [
+    lead_row("l:1", "Amy", "2026-11-09 10:00:00", "2026-11-09 10:01:10", "called", "6"),
+    lead_row("l:2", "Ben", "2026-11-09 12:00:00", "2026-11-09 12:01:30", "called", "20"),
+    lead_row("l:3", "Cal", "2026-11-09 14:00:00", "2026-11-09 14:01:00"),
+    lead_row("l:4", "Dee", "2026-11-09 15:00:00", "2026-11-09 15:01:00", "no answer", "9"),
+    lead_row("l:5", "Old", "2026-11-06 10:00:00", "2026-11-06 10:01:00"),  # earlier, un-actioned
+    lead_row("test:1", "Test", "2026-11-09 11:00:00", "", closed="test"),
+    {**{h: "" for h in stl.HEADERS}, "Lead Key": "__report__", "Seen At": "2026-11-06 21:05:00"},
+]
+rep = stl.build_report(rows, dt("2026-11-06 21:05"), dt("2026-11-09 21:05"))
+check("report counts", "*4* leads · *4* texted · *2* called" in rep, rep)
+check("median + within 15", "median time to call *20 min*" in rep
+      and "within 15 min: *1/2*" in rep, rep)
+check("text speed shown", "texted in 1 min" in rep, rep)
+check("not actioned lists Cal + earlier Old, not Dee", "Not actioned (2)" in rep
+      and "Cal (" in rep.split("Not actioned")[1] and "Old (" in rep.split("Not actioned")[1]
+      and "Dee (" not in rep.split("Not actioned")[1], rep)
+check("test rows + marker excluded", "Test" not in rep and "report marker" not in rep)
+empty = stl.build_report([], dt("2026-11-09 08:00"), dt("2026-11-09 21:05"))
+check("quiet day", "No new leads." in empty and "Every lead has been actioned" in empty)
+
+# --- report sends once per desk day ------------------------------------------
+sent = []
+state = {}
+saved = {n: getattr(stl, n) for n in ("slack", "_uid", "update_cells", "append_row")}
+try:
+    stl.slack = lambda: type("S", (), {"chat_postMessage":
+                                       lambda self, **kw: sent.append(kw)})()
+    stl._uid = lambda e: "DMARTIN"
+    stl.update_cells = lambda ws, r, v: state[stl.REPORT_KEY].update(v)
+    stl.append_row = lambda ws, v: state.update({stl.REPORT_KEY: {**v, "_row": 9}}) or 9
+    for t in ("2026-11-09 21:00", "2026-11-09 21:06", "2026-11-09 21:07",
+              "2026-11-10 09:00", "2026-11-10 21:06"):
+        stl.maybe_send_report(None, state, dt(t), log=lambda m: None)
+finally:
+    for n, f in saved.items():
+        setattr(stl, n, f)
+check("report: none before close, once at 21:06, again next evening",
+      len(sent) == 2 and all(p["channel"] == "DMARTIN" for p in sent), len(sent))
 
 print(f"\n{'ALL PASS' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)

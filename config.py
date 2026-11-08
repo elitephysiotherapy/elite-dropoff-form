@@ -1099,7 +1099,9 @@ CLUB_ALERT_FIRST_RUN = "2026-10-01"
 # Every new Meta lead on the Online Leads sheet gets one text from the two-way
 # number within ~2 min, and a Slack post with "Called" / "No answer" buttons.
 # Nobody presses a button within 15 min of the desk being open -> reception is
-# pinged; 30 min -> STL_ESCALATE_SLACK_EMAIL. Scope agreed with Martin
+# pinged in #leads; no further escalation. Martin gets a private end-of-day
+# DM (desk close + 5 min) with speed-to-lead times + anyone not actioned
+# (Martin 2026-11-08). Scope agreed with Martin
 # 2026-11-08 (Meta leads only; keyword body area; one fixed call line).
 
 # Master switch. False = SAFE MODE: every text goes to MARKETING_TEST_PHONE
@@ -1116,12 +1118,11 @@ STL_MAX_AGE_HOURS = 24
 
 STL_CHANNEL = os.environ.get("STL_CHANNEL", "")      # #leads channel id (live)
 STL_RECEPTION_USER_ID = BOOKINGS_SLACK_USER_ID       # reception Slack profile
-STL_ESCALATE_SLACK_EMAIL = CEO_SLACK_EMAIL           # 30-min escalation
+STL_REPORT_SLACK_EMAIL = CEO_SLACK_EMAIL             # end-of-day report DM
 STL_STATE_TAB = "Speed to Lead"                      # on the bookings sheet
 
 STL_POLL_SECONDS = 60
 STL_FIRST_PING_MIN = 15
-STL_ESCALATE_MIN = 30
 STL_GIVE_UP_DAYS = 3          # stop chasing an un-actioned lead after this
 STL_REPEAT_DAYS = 30          # same phone again within this = no second text
 
