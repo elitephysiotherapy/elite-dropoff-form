@@ -9,7 +9,7 @@ collect(appts, responder_ids) -> list[Touch]   (touches that are due now)
 
 from datetime import timedelta
 
-from marketing import cliniko, common
+from marketing import cliniko, common, sent_log
 from marketing.common import Touch
 
 # Timing (hours after the appointment start).
@@ -26,6 +26,11 @@ WELCOME_LOOKBACK_DAYS = 2   # how far back to scan for newly-booked IAs each run
 
 # A patient counts as genuinely discharged only after a real course of care.
 DISCHARGE_MIN_ATTENDED = 3
+# Discharge is INFERRED (nothing booked), so patients who book one visit at a
+# time looked "discharged" after every visit — one got the survey weekly from
+# Aug to Nov 2026. Martin, 8 Nov 2026: at most once per patient per 90 days.
+DISCHARGE_REPEAT_DAYS = 90
+DISCHARGE_FLOWS = ("discharge_survey_sms", "discharge_survey_email")
 # The "well done" congrats email only goes to patients who completed a fuller
 # course of care THIS episode (Martin 2026: ≥6 attended in the current episode).
 # At ≥6 the discharge email is COMBINED — congrats + library + survey ask in one.
@@ -108,6 +113,8 @@ def _discharge_touches(appt, hrs, out):
     if cliniko.attended_appt_count(pid) < DISCHARGE_MIN_ATTENDED:
         return
     aid = str(appt["id"])
+    if sent_log.sent_flows_other_anchor(pid, DISCHARGE_FLOWS, aid, DISCHARGE_REPEAT_DAYS):
+        return
     ctx = common.appt_ctx(appt)
     # NOTE: discharge is INFERRED (no "discharged" flag in Cliniko), so this also
     # catches patients who've merely lapsed. The messages therefore must NOT claim

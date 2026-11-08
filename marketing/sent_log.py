@@ -134,6 +134,26 @@ def sent_flow_recently(patient_id, flow_name, within_days):
     return False
 
 
+def sent_flows_other_anchor(patient_id, flow_names, anchor, within_days):
+    """True if this patient got any of `flow_names` for a DIFFERENT anchor in
+    the last `within_days`. Same anchor is ignored so a touch's own follow-up
+    (e.g. the email a couple of hours after its SMS) still goes. Fails safe
+    (True) if the ledger can't be read."""
+    pid, anc = str(patient_id), str(anchor or "")
+    cutoff = _now() - timedelta(days=within_days)
+    rows = _rows()
+    if rows is _READ_FAILED:
+        return True
+    for r in rows:
+        if len(r) >= 6 and r[1] == pid and r[3] in flow_names and r[5] != anc:
+            if len(r) > 7 and str(r[7]).startswith(("failed", "test-")):
+                continue
+            ts = _parse_ts(r[0])
+            if ts is None or ts >= cutoff:
+                return True
+    return False
+
+
 def log_send(patient_id, patient_name, flow_name, channel,
              anchor, template_used, status="sent"):
     """Append one row recording a send. No-op if the sheet isn't configured."""
