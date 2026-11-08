@@ -8,8 +8,9 @@ is actually WRONG — never the agreed sequences:
                         STOP (Twilio or Cliniko), with no START since.
   R2  exact repeat    — the same message to the same person twice within 7
                         days (the 9 Oct 2026 bug: one patient got 43).
-  R3  system clash    — Cliniko AND our bots both sent a non-appointment
-                        message to one patient within 48h.
+  R3  system clash    — a Cliniko AUTOMATION and our bots both sent a
+                        non-appointment message to one patient within 48h.
+                        Manual texts typed by reception are never flagged.
 
 Deliberately NOT flagged (Martin's decision): message volume. SMS+email pairs,
 NPS + rebook after a DNA, etc. are the intended process.
@@ -63,6 +64,10 @@ APPT = {"Appointment Confirmation", "Appointment Reminder",
         "Upcoming appointments", "Online payment request"}
 STAFF = {"Practitioner Appointment Notification", "Patient Reply Forwarded",
          "Completed Patient Form"}
+# Texts a person typed and sent from Cliniko (reception). Real conversations,
+# not automations — Martin, 8 Nov 2026: don't flag them as clashes or repeats.
+# They are still checked for opt-out breaches (R1).
+MANUAL = {"SMS Message"}
 STOP_RE = re.compile(r"^\s*(stop|stopall|unsubscribe|end|quit|opt.?out|remove me)\b", re.I)
 START_RE = re.compile(r"^\s*(start|unstop|yes)\s*$", re.I)
 STL_MARK = "thanks for getting in touch with Elite Physio"   # speed-to-lead text
@@ -161,7 +166,7 @@ def find_issues(cliniko, python_sms, python_email, stop_events, now):
                            msgs=f"{fmt(a)} and {fmt(b)}"))
     g = defaultdict(list)
     for m in cliniko:
-        if m["dir"] == "Sent" and m["cat"] not in APPT | STAFF and m["contact"]:
+        if m["dir"] == "Sent" and m["cat"] not in APPT | STAFF | MANUAL and m["contact"]:
             g[(m["contact"], m["ckey"], m["pid"], m["cat"])].append(m["t"])
     for (contact, ck, pid, cat), a, b, n in repeats(g, None):
         ph = contact if contact.isdigit() else ""
@@ -171,8 +176,9 @@ def find_issues(cliniko, python_sms, python_email, stop_events, now):
 
     # R3 Cliniko + bots within 48h --------------------------------------------
     per = defaultdict(list)
+    manual = {f"Cliniko {c} (SMS)" for c in MANUAL} | {f"Cliniko {c} (Email)" for c in MANUAL}
     for e in events:
-        if e[2] != "speed-to-lead text":
+        if e[2] != "speed-to-lead text" and e[2] not in manual:
             per[e[3]].append(e)
     for who, evs in per.items():
         cl = [e for e in evs if e[1] == "Cliniko"]

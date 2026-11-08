@@ -96,16 +96,23 @@ check("Cliniko follow-up + bot text 20h apart -> R3",
                             cl(25, "Appointment Follow Up Message", "Email", contact="x@y.com")],
                            [sms(5)], [], [], NOW)) == ["R3"])
 check("clash via Sent Log email (patient id match) -> R3",
-      rules(cc.find_issues([cl(10, "SMS Message")], [], [em(5)], [], NOW)) == ["R3"])
+      rules(cc.find_issues([cl(10, "Appointment Follow Up Message", "Email", contact="x@y.com")],
+                           [], [em(5)], [], NOW)) == ["R3"])
+check("manual reception text + bot message -> not flagged (Martin)",
+      cc.find_issues([cl(10, "SMS Message")], [sms(5)], [em(4)], [], NOW) == [])
+check("manual reception text sent twice -> not flagged",
+      cc.find_issues([cl(10, "SMS Message"), cl(9, "SMS Message")], [], [], [], NOW) == [])
 check("Cliniko + bot 3 days apart -> not flagged",
-      cc.find_issues([cl(80, "SMS Message")], [sms(5)], [], [], NOW) == [])
+      cc.find_issues([cl(200, "Appointment Reminder"), cl(80, "Appointment Follow Up Message", "Email", contact="x@y.com")],
+                     [sms(5)], [], [], NOW) == [])
+FU = lambda h, k="k1": cl(h, "Appointment Follow Up Message", "Email", contact="x@y.com", ckey=k)
+LINK = cl(200, "Appointment Reminder")    # ties the phone to the patient
 check("bot text to a different patient -> not flagged",
-      cc.find_issues([cl(10, "SMS Message")], [sms(5, phone="7700900999")], [], [], NOW) == [])
+      cc.find_issues([LINK, FU(10)], [sms(5, phone="7700900999")], [], [], NOW) == [])
 check("speed-to-lead text never counts as a clash",
-      cc.find_issues([cl(10, "SMS Message")], [sms(5, stl=True)], [], [], NOW) == [])
+      cc.find_issues([LINK, FU(10)], [sms(5, stl=True)], [], [], NOW) == [])
 check("several clashes for one patient -> one issue",
-      len(cc.find_issues([cl(10, "SMS Message"), cl(9, "SMS Message", ckey="k2")],
-                         [sms(5, "a"), sms(4, "b")], [], [], NOW)) == 1)
+      len(cc.find_issues([LINK, FU(10), FU(9, "k2")], [sms(5, "a"), sms(4, "b")], [], [], NOW)) == 1)
 check("staff notifications ignored",
       cc.find_issues([cl(10, "Practitioner Appointment Notification", "Email")], [sms(5)], [], [], NOW) == [])
 
