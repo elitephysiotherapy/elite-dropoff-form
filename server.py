@@ -851,6 +851,7 @@ def twilio_voice():
 # button handler a half-loaded sheets_retry on 2026-11-08).
 import team_sheet  # noqa: E402
 import speed_to_lead  # noqa: E402
+import comms_check  # noqa: E402
 
 if os.environ.get("TEAM_SHEET_SYNC", "1") == "1":
     def _start_team_sheet_sync():
@@ -881,3 +882,16 @@ if _config.STL_ENABLED:
     threading.Thread(target=_start_speed_to_lead, daemon=True,
                      name="speed-to-lead").start()
     print(f"speed-to-lead thread started (live={_config.STL_LIVE})")
+
+
+# ---------------------------------------------------------------------------
+# Daily patient-comms check (comms_check.py) — 07:15 London: opt-out breaches,
+# exact repeats, Cliniko + bots clashes → "Comms Check" tab + DM to Martin.
+# ---------------------------------------------------------------------------
+if os.environ.get("COMMS_CHECK_ENABLED", "1") == "1":
+    def _start_comms_check():
+        comms_check.run_forever()
+
+    threading.Thread(target=_start_comms_check, daemon=True,
+                     name="comms-check").start()
+    print("comms check thread started")
