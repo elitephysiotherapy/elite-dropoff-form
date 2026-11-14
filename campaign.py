@@ -106,10 +106,12 @@ SMS_CLUB_2 = ("Hi {first}, it's Elite Physio. Another season of niggles and watc
               "reply with a day that suits. Reply STOP to opt out")
 # Cold Meta/Aeva leads — free 20-min call with a junior physio, booked online
 # (Martin 2026-11-14). DRAFT until Martin approves; cold is switched off.
-SMS_COLD_1 = ("Hi {first}, it's Elite Physio. You got in touch with us a while back - "
-              "is it still bothering you? Book a free 20-min call with one of our physios "
-              "to talk it through and find out if physio is right for you. No cost, no "
-              "pressure. Book: {link} or reply with a time that suits. Reply STOP to opt out")
+SMS_COLD_1 = ("Hi {first}, it's Elite Physio. You contacted us a while ago for help but "
+              "never got in to see us. We'd hate to think you're still putting up with it. "
+              "Is it holding you back from the things you love? It doesn't have to. Book a "
+              "free 20-min call with a physio to talk it through and see if Elite Physio is "
+              "right for you. No cost, no pressure. Book: {link} or reply with a time that "
+              "suits. Reply STOP to opt out")   # Option C2, Martin 2026-11-14
 SMS_COLD_2 = ("Hi {first}, just checking in from Elite Physio. If it's still bothering you, "
               "our free 20-min physio call is a no-pressure way to get some answers. "
               "Book: {link} or reply with a time that suits. Reply STOP to opt out")
