@@ -82,7 +82,8 @@ SMS_MOT_1 = ("Hi {first}, it's Elite Physio. We just wanted to check in with you
              "offer you our Black Friday MOT: a full re-check vs where you started, a "
              "1-page report + your 3 key exercises, £60. Book by Mon 30 Nov for a free "
              "Pilates class + a 2-for-1 to share. You'll leave knowing exactly where you "
-             "stand, or it's on us. Book: {link} Reply STOP to opt out")
+             "stand, or it's on us. Book: {link} or reply with a day that suits. "
+             "Reply STOP to opt out")
 SMS_MOT_2 = ("Hi {first}, last few days for your Elite Physio MOT - £60 re-check, free "
              "Pilates class + a 2-for-1. Ends Mon. Book: {link} Reply STOP to opt out")
 SMS_MOT_3 = ("Hi {first}, last MOT slots before we close for Christmas on 23 Dec: "
