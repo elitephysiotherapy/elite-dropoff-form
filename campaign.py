@@ -92,15 +92,18 @@ SMS_MOT_3 = ("Hi {first}, last MOT slots before we close for Christmas on 23 Dec
 # Club players — Winter GAA Profiling, £99 (usually £119), senior physios,
 # VALD + MoveTru, report + off-season plan (Martin 2026-11-14). DRAFT until
 # Martin approves; club is switched off until then.
-SMS_CLUB_1 = ("Hi {first}, it's Elite Physio. Find the real cause of your injuries "
-              "before pre-season. Our Winter GAA Profiling with a senior physio: "
-              "in-depth assessment, VALD strength + power testing and video movement "
-              "analysis, with your own report + off-season plan. £99 (usually £119) "
-              "until 18 Dec. Book: {link} or reply with a day that suits. Reply STOP "
-              "to opt out")
-SMS_CLUB_2 = ("Hi {first}, a reminder from Elite Physio: Winter GAA Profiling with a "
-              "senior physio, report + off-season plan, £99 (usually £119) until 18 Dec. "
-              "Book: {link} or reply with a day that suits. Reply STOP to opt out")
+# Martin 2026-11-14: SMS 1 = Option A, SMS 2 = a version of Option B,
+# £99 until Mon 30 Nov for urgency.
+SMS_CLUB_1 = ("Hi {first}, it's Elite Physio. Tired of the same injury keeping you on "
+              "the sideline every season? Our Winter GAA Profiling finds the real cause: "
+              "senior physio assessment, VALD strength + power testing and video movement "
+              "analysis, with your own report + off-season plan. No more niggles, no more "
+              "wondering why. £99 (usually £119) until 30 Nov. Book: {link} or reply with "
+              "a day that suits. Reply STOP to opt out")
+SMS_CLUB_2 = ("Hi {first}, it's Elite Physio. Another season of niggles and watching from "
+              "the sideline? Go into 2027 trusting your body again. Winter GAA Profiling "
+              "with a senior physio, £99 (usually £119), ends Mon 30 Nov. Book: {link} or "
+              "reply with a day that suits. Reply STOP to opt out")
 EMAIL_CLUB_SUBJECT = "No more time on the sidelines, {first}"
 EMAIL_CLUB_BODY = """Hi {first},
 
@@ -117,7 +120,7 @@ All underpinned by our unique Elite Physiotherapy methodology.
 
 No more niggles. No more lacking confidence in your body. No more time on the sidelines wondering why.
 
-£99 this winter (usually £119), when you book by Friday 18 December.
+£99 (usually £119) when you book by Monday 30 November.
 
 Book online here: {link}
 Or just reply with your preferred day and time and we'll sort it.
