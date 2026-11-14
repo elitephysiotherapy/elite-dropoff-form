@@ -207,5 +207,28 @@ check("first text still goes Wed 18 Nov (day 2 of the send)",
       c.text1_due(row(**{"Text OK": "Yes"}), date(2026, 11, 18)))
 check("no Email 1 weeks later", not c.email1_due(row(**{"Email OK": "Yes"}), date(2026, 11, 26)))
 
+# --- club schedule (only once switched on) -----------------------------------
+c.config.CAMPAIGN_ACTIVE_GROUPS = ["mot", "club"]
+cr = lambda **kw: row(Group="club", **kw)  # noqa: E731
+check("club text 1 not before Thu 19 Nov", not c.text1_due(cr(**{"Text OK": "Soft"}), date(2026, 11, 18)))
+check("club text 1 Thu 19 Nov (soft opt-in)", c.text1_due(cr(**{"Text OK": "Soft"}), date(2026, 11, 19)))
+check("club text 1 not after Tue 24 Nov", not c.text1_due(cr(**{"Text OK": "Yes"}), date(2026, 11, 25)))
+check("club email Mon 23 Nov", c.email1_due(cr(**{"Email OK": "Soft"}), date(2026, 11, 23)))
+check("club email not on MOT email day", not c.email1_due(cr(**{"Email OK": "Soft"}), date(2026, 11, 19)))
+check("club reminder Wed 25 Nov if not booked",
+      c.text2_due(cr(**{"Text OK": "Soft", "Text 1": "2026-11-19 09:30"}), date(2026, 11, 25)))
+check("no club reminder if booked",
+      not c.text2_due(cr(**{"Text OK": "Soft", "Text 1": "2026-11-19 09:30", "Booked": "2026-11-20"}), date(2026, 11, 25)))
+check("no club reminder weeks later",
+      not c.text2_due(cr(**{"Text OK": "Soft", "Text 1": "2026-11-19 09:30"}), date(2026, 12, 3)))
+check("club never gets the MOT Black Friday reminder",
+      not c.text2_due(cr(**{"Text OK": "Soft", "Text 1": "2026-11-19 09:30"}), date(2026, 11, 27)))
+check("opted-out club player never texted", not c.text1_due(cr(**{"Text OK": "Opted out"}), date(2026, 11, 19)))
+for name, tmpl in (("Club 1", c.SMS_CLUB_1), ("Club 2", c.SMS_CLUB_2)):
+    body = tmpl.format(**ctx)
+    check(f"{name} plain characters only (no curly quotes), {len(body)} chars",
+          all(ord(ch) < 128 or ch == "£" for ch in body))
+check("club email has unsubscribe", "{unsub}" in c.EMAIL_CLUB_BODY)
+
 print(f"\n{'ALL PASS' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)

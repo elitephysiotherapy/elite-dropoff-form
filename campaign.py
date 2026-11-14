@@ -89,11 +89,42 @@ SMS_MOT_2 = ("Hi {first}, last few days for your Elite Physio MOT - £60 re-chec
 SMS_MOT_3 = ("Hi {first}, last MOT slots before we close for Christmas on 23 Dec: "
              "full re-check, 1-page report + your 3 key exercises, £60, with a free "
              "Pilates class. Book: {link} Reply STOP to opt out")
-SMS_CLUB_1 = ("Hi {first}, it's Elite Physio. Now the season's over it's the best "
-              "time to sort anything still niggling. Our 80-min winter GAA profiling "
-              "(strength, speed + movement testing, with a plan for pre-season) is "
-              "£99. Book: {link} or reply YES and we'll ring you. Reply STOP to "
-              "opt out")
+# Club players — Winter GAA Profiling, £99 (usually £119), senior physios,
+# VALD + MoveTru, report + off-season plan (Martin 2026-11-14). DRAFT until
+# Martin approves; club is switched off until then.
+SMS_CLUB_1 = ("Hi {first}, it's Elite Physio. Find the real cause of your injuries "
+              "before pre-season. Our Winter GAA Profiling with a senior physio: "
+              "in-depth assessment, VALD strength + power testing and video movement "
+              "analysis, with your own report + off-season plan. £99 (usually £119) "
+              "until 18 Dec. Book: {link} or reply with a day that suits. Reply STOP "
+              "to opt out")
+SMS_CLUB_2 = ("Hi {first}, a reminder from Elite Physio: Winter GAA Profiling with a "
+              "senior physio, report + off-season plan, £99 (usually £119) until 18 Dec. "
+              "Book: {link} or reply with a day that suits. Reply STOP to opt out")
+EMAIL_CLUB_SUBJECT = "No more time on the sidelines, {first}"
+EMAIL_CLUB_BODY = """Hi {first},
+
+The season's over, so now's the time to find out why the niggles keep coming back, before pre-season starts.
+
+Our Winter GAA Profiling is carried out by our senior physio team:
+
+- An in-depth interview and orthopaedic assessment to find the true cause of your injury history
+- Strength and power diagnostics on our VALD suite
+- Video analysis of your key movements with MoveTru Vision
+- Your own in-depth profiling report and off-season plan
+
+All underpinned by our unique Elite Physiotherapy methodology.
+
+No more niggles. No more lacking confidence in your body. No more time on the sidelines wondering why.
+
+£99 this winter (usually £119), when you book by Friday 18 December.
+
+Book online here: {link}
+Or just reply with your preferred day and time and we'll sort it.
+
+Elite Physiotherapy
+
+You're receiving this because you've been a patient with us. Don't want these emails? Unsubscribe here: {unsub}"""
 SMS_VOUCHER = ("Thanks for coming in for your MOT, {first}! Here's your free Pilates "
                "matwork class (Cookstown or Maghera): use code {code} at "
                "{pilates_link}. Valid until {expiry}. Elite Physio")
@@ -216,6 +247,9 @@ def text1_due(r: dict, d: date) -> bool:
     # No first texts weeks after launch (Omagh lesson): late joiners are skipped.
     if r["Group"] == "mot" and d > date.fromisoformat(getattr(config, "CAMPAIGN_TEXT1_UNTIL", "2026-11-20")):
         return False
+    if r["Group"] == "club" and not (_cfg_date("CAMPAIGN_CLUB_TEXT1_FROM") <= d
+                                     <= _cfg_date("CAMPAIGN_CLUB_TEXT1_UNTIL")):
+        return False
     return (in_window(d) and r["Group"] in ("mot", "club") and sms_allowed(r)
             and not r["Text 1"] and not is_closed(r) and bool(r["Phone"]))
 
@@ -226,11 +260,15 @@ def email_allowed(r: dict) -> bool:
     opt-outs; every email carries a one-click unsubscribe link)."""
     if r["Email OK"] == "Yes":
         return True
-    return (r["Email OK"] == "Soft" and r["Group"] == "mot"
+    return (r["Email OK"] == "Soft" and r["Group"] in ("mot", "club")
             and getattr(config, "CAMPAIGN_EMAIL_SOFT_OPT_IN", False))
 
 
 def email1_due(r: dict, d: date) -> bool:
+    if r["Group"] == "club":
+        return (group_active(r) and in_window(d) and email_allowed(r)
+                and _cfg_date("CAMPAIGN_CLUB_EMAIL_ON") <= d <= _cfg_date("CAMPAIGN_CLUB_EMAIL_UNTIL")
+                and not r["Email 1"] and not is_closed(r) and bool(r["Email"]))
     return (in_window(d) and r["Group"] == "mot" and email_allowed(r)
             and d >= _cfg_date(getattr(config, "CAMPAIGN_EMAIL_ON", None) and "CAMPAIGN_EMAIL_ON" or "CAMPAIGN_TEXT1_FROM")
             and d <= date.fromisoformat(getattr(config, "CAMPAIGN_EMAIL1_UNTIL", "2026-11-21"))
@@ -238,8 +276,14 @@ def email1_due(r: dict, d: date) -> bool:
 
 
 def text2_due(r: dict, d: date) -> bool:
-    """MOT: the Black Friday reminder, Black Friday to Cyber Monday only."""
+    """MOT: the Black Friday reminder, Black Friday to Cyber Monday only.
+    Club: one reminder in its own short window, to anyone not booked."""
     t1 = _d(r["Text 1"])
+    if r["Group"] == "club":
+        return (group_active(r) and in_window(d) and t1 is not None and not r["Text 2"]
+                and not r["Replied"] and not is_closed(r) and sms_allowed(r)
+                and _cfg_date("CAMPAIGN_CLUB_TEXT2_ON") <= d <= _cfg_date("CAMPAIGN_CLUB_TEXT2_UNTIL")
+                and t1 < d)
     return (in_window(d) and r["Group"] == "mot" and t1 is not None and not r["Text 2"]
             and not r["Replied"] and not is_closed(r)
             and _cfg_date("CAMPAIGN_TEXT2_ON") <= d <= _cfg_date("CAMPAIGN_BF_DEADLINE")
@@ -576,7 +620,7 @@ def campaign_ledger() -> set | None:
 def daily_ceiling(channel: str) -> int:
     """Hard stop per channel per day, counted in memory (not from the sheet,
     so a failed sheet write can't hide sends). Generous vs the real plan."""
-    return config.CAMPAIGN_MOT_TEXTS_PER_DAY + 20 if channel == "sms" else 600
+    return 600 if channel == "sms" else 1000   # well above any planned day (max ≈ 410 texts)
 
 
 def recent_other_messages(days: int = RECENT_MESSAGE_DAYS) -> set[str]:
@@ -618,8 +662,11 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
         log("  campaign sends: Sent Log unreadable — sending nothing this round")
         return stats
     rows = read_rows()
+    # The 250/day pacing applies to FIRST texts (spreads the launch + replies
+    # over two days). Reminders go in one go on their day (MOT Text 2 ≈ 410 on
+    # Black Friday) — the in-memory ceiling still caps everything.
     budget = config.CAMPAIGN_MOT_TEXTS_PER_DAY - sum(
-        1 for r in rows for col in ("Text 1", "Text 2", "Text 3") if r[col][:10] == d.isoformat())
+        1 for r in rows if _d(r["Text 1"]) == d)
     link = lambda r: config.CAMPAIGN_BOOKING_LINKS.get(r["Clinic"]) or config.CAMPAIGN_BOOKING_LINKS["Cookstown"]
     # Family phones: one campaign text per number, whoever it's for.
     texted_phones = {norm_phone(r["Phone"]) for r in rows if r["Text 1"]}
@@ -634,11 +681,13 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
             jobs.append(("Text 1", "sms", SMS_MOT_1 if r["Group"] == "mot" else SMS_CLUB_1,
                          f"campaign_{r['Group']}_text1"))
         elif text2_due(r, d):
-            jobs.append(("Text 2", "sms", SMS_MOT_2, "campaign_mot_text2"))
+            jobs.append(("Text 2", "sms", SMS_MOT_2 if r["Group"] == "mot" else SMS_CLUB_2,
+                         f"campaign_{r['Group']}_text2"))
         elif text3_due(r, d):
             jobs.append(("Text 3", "sms", SMS_MOT_3, "campaign_mot_text3"))
         if email1_due(r, d):
-            jobs.append(("Email 1", "email", EMAIL_MOT_BODY, "campaign_mot_email1"))
+            jobs.append(("Email 1", "email", EMAIL_MOT_BODY if r["Group"] == "mot" else EMAIL_CLUB_BODY,
+                         f"campaign_{r['Group']}_email1"))
         elif email2_due(r, d):
             jobs.append(("Email 2", "email", EMAIL_MOT2_BODY, "campaign_mot_email2"))
         jobs = [j for j in jobs if time_ok(j[0])]
@@ -656,7 +705,7 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
                 update_cells(r["_row"], {"Text OK": "Opted out"}); r["Text OK"] = "Opted out"
                 stats["opted_out"] += 1
                 continue
-            if ch == "sms" and (budget <= 0 or not (sms_ok or soft) or not mob):
+            if ch == "sms" and ((col == "Text 1" and budget <= 0) or not (sms_ok or soft) or not mob):
                 if not (sms_ok or soft):
                     update_cells(r["_row"], {"Text OK": "No"}); r["Text OK"] = "No"
                     stats["consent_withdrawn"] += 1
@@ -702,9 +751,9 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
                        link=link(r), unsub=unsub_url(r["Key"]))
             if ch == "sms":
                 ok, info = send_sms(mob, tmpl.format(**ctx))
-                budget -= 1
+                budget -= 1 if col == "Text 1" else 0
             else:
-                subj = EMAIL_MOT2_SUBJECT if col == "Email 2" else EMAIL_MOT_SUBJECT
+                subj = (EMAIL_CLUB_SUBJECT if r["Group"] == "club" else EMAIL_MOT2_SUBJECT if col == "Email 2" else EMAIL_MOT_SUBJECT)
                 ok, info = send_email(email, subj.format(**ctx), tmpl.format(**ctx),
                                       unsub=ctx["unsub"])
             _sent_in_process[(d, ch)] += 1

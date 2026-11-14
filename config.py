@@ -1268,6 +1268,15 @@ CAMPAIGN_GENPOP_MIN_PRICE = 49
 CAMPAIGN_CLUB_SESSIONS_FROM = "2025-11-01"
 CAMPAIGN_CLUB_NOT_SEEN_SINCE = "2026-10-24"
 CAMPAIGN_CLUB_MIN_SESSIONS = 2
+# Club schedule (this week, not 1 Dec — Martin 2026-11-14): Text 1 Thu 19 +
+# Fri 20 Nov 9:30 (250/day), email Mon 23 Nov 8:30, reminder text Wed 25 Nov
+# 9:30 to anyone not booked. £99 offer ends Fri 18 Dec. Late joiners skipped.
+CAMPAIGN_CLUB_TEXT1_FROM = "2026-11-19"
+CAMPAIGN_CLUB_TEXT1_UNTIL = "2026-11-24"
+CAMPAIGN_CLUB_EMAIL_ON = "2026-11-23"
+CAMPAIGN_CLUB_EMAIL_UNTIL = "2026-11-24"
+CAMPAIGN_CLUB_TEXT2_ON = "2026-11-25"
+CAMPAIGN_CLUB_TEXT2_UNTIL = "2026-11-26"
 
 # Cliniko "Black Friday MOT" appointment type (Martin created 2026-11-14:
 # 40 min, £60, billable item "Initial Consultation", online bookable, the 8
