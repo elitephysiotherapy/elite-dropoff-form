@@ -1282,8 +1282,9 @@ CAMPAIGN_CLUB_TEXT2_UNTIL = "2026-11-26"
 # reminder Tue 24 Nov 9:00 to anyone not booked. Replies → Sinéad.
 CAMPAIGN_COLD_TEXT1_FROM = "2026-11-18"
 CAMPAIGN_COLD_TEXT1_UNTIL = "2026-11-20"
-CAMPAIGN_COLD_TEXT2_ON = "2026-11-24"
-CAMPAIGN_COLD_TEXT2_UNTIL = "2026-11-25"
+# One text only — no reminder (Martin 2026-11-14). Blank = off.
+CAMPAIGN_COLD_TEXT2_ON = ""
+CAMPAIGN_COLD_TEXT2_UNTIL = ""
 
 # Cliniko "Black Friday MOT" appointment type (Martin created 2026-11-14:
 # 40 min, £60, billable item "Initial Consultation", online bookable, the 8

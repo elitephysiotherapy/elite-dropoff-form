@@ -297,6 +297,8 @@ def text2_due(r: dict, d: date) -> bool:
     Club: one reminder in its own short window, to anyone not booked."""
     t1 = _d(r["Text 1"])
     if r["Group"] == "cold":
+        if not getattr(config, "CAMPAIGN_COLD_TEXT2_ON", ""):
+            return False                  # one text only (Martin 2026-11-14)
         return (group_active(r) and in_window(d) and t1 is not None and not r["Text 2"]
                 and not r["Replied"] and not is_closed(r) and sms_allowed(r)
                 and _cfg_date("CAMPAIGN_COLD_TEXT2_ON") <= d <= _cfg_date("CAMPAIGN_COLD_TEXT2_UNTIL")
