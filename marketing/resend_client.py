@@ -15,7 +15,7 @@ _RESEND_URL = "https://api.resend.com/emails"
 
 
 def send_email(*, to, subject, html=None, text=None,
-               from_name=None, from_email=None, reply_to=None):
+               from_name=None, from_email=None, reply_to=None, headers=None):
     """Send one email. Returns (ok: bool, info: str).
 
     `from_name`/`from_email` default to the clinic sender; pass config.EMAIL_SINEAD
@@ -41,6 +41,8 @@ def send_email(*, to, subject, html=None, text=None,
         "subject": subject,
         "reply_to": reply_to,
     }
+    if headers:
+        payload["headers"] = headers     # e.g. List-Unsubscribe (campaign emails)
     if html:
         payload["html"] = html
     if text:

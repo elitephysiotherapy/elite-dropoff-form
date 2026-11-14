@@ -474,6 +474,19 @@ def slack_interactive():
                 print(f"speed-to-lead button error for {action_id}: {exc}")
         threading.Thread(target=_stl_click, daemon=True).start()
         return make_response("", 200)
+    if action_id.startswith("cmp|"):
+        # Pre-Christmas campaign call-list / reply-card buttons (campaign.py).
+        def _cmp_click():
+            try:
+                campaign.handle_button(
+                    action_id, payload.get("user", {}).get("id", ""),
+                    payload.get("response_url"),
+                    payload.get("message", {}).get("blocks", []),
+                    payload.get("message", {}).get("text", "Campaign calls"))
+            except Exception as exc:
+                print(f"campaign button error for {action_id}: {exc}")
+        threading.Thread(target=_cmp_click, daemon=True).start()
+        return make_response("", 200)
     parts = action_id.split(":")
     if len(parts) != 3:
         return make_response("", 200)
@@ -812,6 +825,19 @@ def twilio_inbound():
         print(f"twilio inbound: opt-out from {from_number} — clearing consent")
         threading.Thread(target=_process_optout_async,
                          args=(from_number,), daemon=True).start()
+        threading.Thread(target=campaign.mark_opted_out,
+                         args=(from_number,), daemon=True).start()
+        return make_response("<Response/>", 200, {"Content-Type": "text/xml"})
+
+    # A reply from a Pre-Christmas campaign patient goes to their physio.
+    try:
+        crow = campaign.find_by_phone(from_number)
+    except Exception as exc:
+        print(f"twilio inbound: campaign lookup failed: {exc}")
+        crow = None
+    if crow and body:
+        threading.Thread(target=campaign.post_reply_card, args=(crow, body),
+                         daemon=True).start()
         return make_response("<Response/>", 200, {"Content-Type": "text/xml"})
 
     if body:
@@ -819,6 +845,26 @@ def twilio_inbound():
                          args=(from_number, body), daemon=True).start()
     # Empty TwiML: acknowledge without auto-replying.
     return make_response("<Response/>", 200, {"Content-Type": "text/xml"})
+
+
+@app.route("/campaign/unsubscribe", methods=["GET", "POST"])
+def campaign_unsubscribe():
+    """One-click unsubscribe from campaign emails (link + List-Unsubscribe
+    header). The token is opaque — no patient data in the URL."""
+    token = (request.args.get("t") or "").strip()
+    try:
+        ok = campaign.unsubscribe(token)
+    except Exception as exc:
+        print(f"campaign unsubscribe error: {exc}")
+        ok = False
+    msg = ("You've been unsubscribed and won't receive these emails from Elite "
+           "Physiotherapy again." if ok else
+           "Sorry, we couldn't process that link. Please reply to the email and we'll "
+           "remove you straight away.")
+    html = ("<!doctype html><html><body style=\"font-family:Helvetica,Arial,sans-serif;"
+            "max-width:520px;margin:60px auto;padding:0 20px;color:#33424E\">"
+            f"<h2>Elite Physiotherapy</h2><p>{msg}</p></body></html>")
+    return make_response(html, 200, {"Content-Type": "text/html"})
 
 
 CLINIC_LANDLINE = os.environ.get("CLINIC_LANDLINE", "+442886440995")
@@ -852,6 +898,7 @@ def twilio_voice():
 import team_sheet  # noqa: E402
 import speed_to_lead  # noqa: E402
 import comms_check  # noqa: E402
+import campaign  # noqa: E402
 
 if os.environ.get("TEAM_SHEET_SYNC", "1") == "1":
     def _start_team_sheet_sync():
@@ -895,3 +942,15 @@ if os.environ.get("COMMS_CHECK_ENABLED", "1") == "1":
     threading.Thread(target=_start_comms_check, daemon=True,
                      name="comms-check").start()
     print("comms check thread started")
+
+
+# ---------------------------------------------------------------------------
+# Pre-Christmas campaign (campaign.py) — texts/emails, physio call lists,
+# outcomes, vouchers. CAMPAIGN_MODE off / test / live on Render.
+# ---------------------------------------------------------------------------
+if _config.CAMPAIGN_MODE != "off":
+    def _start_campaign():
+        campaign.run_forever()
+
+    threading.Thread(target=_start_campaign, daemon=True, name="campaign").start()
+    print(f"campaign thread started (mode={_config.CAMPAIGN_MODE})")

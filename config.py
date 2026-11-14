@@ -1151,3 +1151,121 @@ STL_BOOKING_LINKS = {
     "Maghera": "https://elite-sms-shortener.onrender.com/r/HJvXlw",
     "Omagh": "https://elite-sms-shortener.onrender.com/r/9Y-dWQ",
 }
+
+
+# ===========================================================================
+# Pre-Christmas campaign (campaign.py) — built 2026-11-14, Julie + Martin OK'd.
+# MOT for lapsed private patients, club players (GAA profiling), cold leads and
+# IA rebooks. Texts/emails to consented patients; everyone else is phoned by
+# their own physio from a daily Slack list. State lives on the marketing
+# sheet's "Campaign" tab.
+# ===========================================================================
+# off  = nothing runs.
+# test = everything runs, but every patient text/email goes to Martin's phone /
+#        email and every physio/scorecard DM goes to Martin (capped per job).
+# live = real patients and physios. Flip on Render, no deploy needed.
+CAMPAIGN_MODE = os.environ.get("CAMPAIGN_MODE", "off").strip().lower()
+CAMPAIGN_START = "2026-11-16"          # first day texts / call lists go out
+CAMPAIGN_END = "2026-12-23"            # clinics close; nothing after this
+CAMPAIGN_TAB = "Campaign"              # on MARKETING_SPREADSHEET_ID
+CAMPAIGN_TEST_CAP = 3                  # max messages per job in test mode
+
+# Online booking: Cliniko ignores appointment_type_id in links, so texts point
+# at each clinic's booking page (the "Pre-Christmas MOT" type is listed there).
+CAMPAIGN_BOOKING_LINKS = STL_BOOKING_LINKS
+# Cliniko appointment type id of "Pre-Christmas MOT" (Martin to create). Blank
+# = the voucher text never fires.
+CAMPAIGN_MOT_TYPE_ID = os.environ.get("CAMPAIGN_MOT_TYPE_ID", "").strip()
+# TeamUp single-use free-class code text. Blank = the voucher text never fires.
+CAMPAIGN_VOUCHER_CODE = os.environ.get("CAMPAIGN_VOUCHER_CODE", "").strip()
+CAMPAIGN_VOUCHER_EXPIRY = "31 January"
+
+# Pacing
+CAMPAIGN_SEND_HOUR = 10                # texts/emails go out from 10:00 London
+CAMPAIGN_TEXTS_PER_DAY = 60            # stagger so replies stay manageable
+CAMPAIGN_TEXT2_AFTER_DAYS = 6          # second text if not booked
+CAMPAIGN_CALL_AFTER_TEXT2_DAYS = 3     # then their physio rings them
+CAMPAIGN_CALL_LIST_HOUR = 8            # physio call list DMs, Mon–Fri
+CAMPAIGN_CALLS_PER_PHYSIO_PER_DAY = 8
+CAMPAIGN_MAX_ATTEMPTS = 3
+CAMPAIGN_RETRY_AFTER_DAYS = 2          # "no answer" / "call back" → due again
+CAMPAIGN_OUTCOME_HOUR = 7              # morning Cliniko booked/attended check
+CAMPAIGN_SCORECARD_WEEKDAY = 0         # Monday
+CAMPAIGN_SCORECARD_HOUR = 9
+CAMPAIGN_SCORECARD_EMAILS = [
+    CEO_SLACK_EMAIL,
+    "julie@elitephysiocookstown.co.uk",
+    "sinead@elitephysiocookstown.co.uk",   # Sinéad Rocks
+]
+
+# Targets used by the scorecard (match the "Income targets" tab).
+CAMPAIGN_TARGETS = {
+    "mot": {"rate": 0.15, "value": 180},     # £60 MOT + 2 follow-ups
+    "club": {"rate": 0.10, "value": 99},     # £99 GAA profiling
+    "cold": {"rate": 0.20, "value": 286},    # new patient lifetime value
+    "rebook": {"rate": 0.30, "value": 286},
+}
+
+# Meta leads: DM the #leads card to a physio with free slots at that clinic and
+# ping THEM (not reception) at 15 min. Off = old behaviour.
+STL_ROUTE_TO_PHYSIO = os.environ.get("STL_ROUTE_TO_PHYSIO", "0") == "1"
+
+# MOT list rules (Martin 2026-11-14): last physio visit in this window, at
+# least this many physio sessions attended in it, NPS promoters / no score only.
+CAMPAIGN_MOT_LAST_SEEN_FROM = "2025-10-01"
+CAMPAIGN_MOT_LAST_SEEN_TO = "2026-09-30"
+CAMPAIGN_MOT_MIN_SESSIONS = 3
+
+# SMS for the MOT campaign (Martin 2026-11-14): text every past patient EXCEPT
+# those who have opted out of our SMS (STOP to us or to Cliniko). Relies on the
+# PECR "soft opt-in" for existing patients + an opt-out in every message.
+# Under-18s are still never texted. Email stays consent-only.
+CAMPAIGN_SMS_SOFT_OPT_IN = True
+
+# Black Friday MOT schedule (Martin 2026-11-14). Text 1 from Mon 23 Nov,
+# Text 2 on Black Friday, deadline Cyber Monday, then "last slots before
+# Christmas" text in December. Overrides the earlier 6-day Text 2 rule for MOT.
+CAMPAIGN_OFFER_NAME = "Black Friday MOT"
+CAMPAIGN_TEXT1_FROM = "2026-11-23"
+CAMPAIGN_TEXT2_ON = "2026-11-27"          # Black Friday
+CAMPAIGN_BF_DEADLINE = "2026-11-30"       # Cyber Monday: book by this date
+CAMPAIGN_TEXT3_ON = "2026-12-08"          # last slots before Christmas
+CAMPAIGN_MOT_TEXTS_PER_DAY = 250          # MOT list is ~450 textable
+# Second voucher code (2-for-1 to share) for people who booked by the deadline.
+CAMPAIGN_VOUCHER_CODE_2FOR1 = os.environ.get("CAMPAIGN_VOUCHER_CODE_2FOR1", "").strip()
+
+# Send times (Martin 2026-11-14, research-based; no Cyber Monday text because a
+# sports massage offer goes out that week). (hour, minute) London, weekdays.
+CAMPAIGN_TEXT1_FROM = "2026-11-24"        # Tue launch (overrides 23 Nov above)
+CAMPAIGN_EMAIL_ON = "2026-11-26"          # Thu morning email
+CAMPAIGN_SEND_TIMES = {"Text 1": (9, 30), "Email 1": (8, 30),
+                       "Text 2": (9, 0), "Text 3": (9, 30)}
+
+# Martin 2026-11-14: start THIS week, 2 SMS + 2 emails, no December text.
+CAMPAIGN_TEXT1_FROM = "2026-11-17"        # Tue 17 Nov launch
+CAMPAIGN_EMAIL_ON = "2026-11-19"          # Thu 19 Nov email 1
+CAMPAIGN_EMAIL2_ON = "2026-11-30"         # Cyber Monday "last day" email
+CAMPAIGN_TEXT3_ON = ""                    # "" = no December text
+CAMPAIGN_SEND_TIMES = {"Text 1": (9, 30), "Email 1": (8, 30), "Text 2": (9, 0),
+                       "Text 3": (9, 30), "Email 2": (8, 30)}
+
+# Martin 2026-11-14: physios are NOT phoning; every patient reply goes to
+# Sinéad Rocks as a plain Slack DM. Only the MOT campaign is live for now —
+# club / cold-lead / rebook campaigns stay off until each is worked through.
+CAMPAIGN_REPLIES_EMAIL = "sinead@elitephysiocookstown.co.uk"
+CAMPAIGN_CALL_LISTS = False
+CAMPAIGN_ACTIVE_GROUPS = ["mot"]
+
+# Gen pop vs club (Martin 2026-11-14): last physio visit invoiced at this or
+# more = gen pop (Black Friday MOT); under it = club list.
+CAMPAIGN_GENPOP_MIN_PRICE = 49
+
+# Cliniko "Black Friday MOT" appointment type (Martin created 2026-11-14:
+# 40 min, £60, billable item "Initial Consultation", online bookable, the 8
+# physios — not Marty/Julie). Env var still overrides.
+CAMPAIGN_MOT_TYPE_ID = os.environ.get("CAMPAIGN_MOT_TYPE_ID", "").strip() or "2083445880534341398"
+
+# Martin 2026-11-14: no phone number in texts; email EVERY MOT patient with an
+# email address except those who have unsubscribed (one-click link in each email).
+CAMPAIGN_EMAIL_SOFT_OPT_IN = True
+CAMPAIGN_PUBLIC_URL = "https://elite-dropoff-form.onrender.com"

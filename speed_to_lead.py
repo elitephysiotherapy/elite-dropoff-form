@@ -60,6 +60,7 @@ import config
 import slack_notifier
 import meta_leads
 import sheets_retry
+import campaign
 from marketing import twilio_client
 
 # Everything this module needs is imported HERE, at import time, never inside
@@ -193,7 +194,7 @@ def fmt_mins(delta: timedelta) -> str:
 HEADERS = ["Lead Key", "Seen At", "Lead Created", "Name", "Phone", "Clinic",
            "Body Area", "Text Status", "Text Due", "Texted At", "Clock Start",
            "Slack Channel", "Slack TS", "Pings", "Called At", "Called By",
-           "Outcome", "Mins to Call", "Closed"]
+           "Outcome", "Mins to Call", "Closed", "Assigned"]
 COL = {h: i for i, h in enumerate(HEADERS)}
 
 
@@ -256,7 +257,16 @@ def _open_state_ws():
     sh = _retry(lambda: _gspread().open_by_key(config.LEADS_SPREADSHEET_ID),
                 "open bookings sheet")
     try:
-        return _retry(lambda: sh.worksheet(config.STL_STATE_TAB), "open state tab")
+        ws = _retry(lambda: sh.worksheet(config.STL_STATE_TAB), "open state tab")
+        # 2026-11-14: "Assigned" column added (Meta leads routed to physios).
+        head = _retry(lambda: ws.row_values(1), "read state headers")
+        if head[:len(HEADERS) - 1] == HEADERS[:-1] and len(head) < len(HEADERS):
+            if ws.col_count < len(HEADERS):
+                _retry(lambda: ws.add_cols(len(HEADERS) - ws.col_count), "widen state tab")
+            _retry(lambda: ws.update(values=[["Assigned"]],
+                                     range_name=f"{_col_letter(len(HEADERS) - 1)}1"),
+                   "add Assigned header")
+        return ws
     except Exception as exc:  # gspread.WorksheetNotFound
         if type(exc).__name__ != "WorksheetNotFound":
             raise
@@ -396,6 +406,43 @@ def reception_mention() -> str:
     return "*@reception* _(safe mode — not pinged)_"
 
 
+def physio_mention(display: str) -> str:
+    """Slack mention for a physio (plain bold name in safe mode)."""
+    if not config.STL_LIVE:
+        return f"*@{display}* _(safe mode — not pinged)_"
+    try:
+        return f"<@{_uid(campaign.physio_email(display))}>"
+    except Exception:
+        return f"*{display}*"
+
+
+def assign_to_physio(ws, rec: dict, lead: dict, status: str, key: str, log=print):
+    """Meta lead → the physio with the most free slots at that clinic: DM them
+    the same card (with Called / No answer buttons) and note who has it."""
+    try:
+        pick = campaign.pick_physio(lead["clinic"])
+        if not pick:
+            log(f"  no physio found for {lead['clinic']} — reception keeps {key}")
+            return
+        display = pick[0]
+        email = campaign.physio_email(display)
+        target = email if config.STL_LIVE else config.CEO_SLACK_EMAIL
+        blocks = lead_blocks(lead, status + f"\n:bust_in_silhouette: Assigned to *{display}* "
+                             f"— please ring them in your next free slot.", key)
+        if not config.STL_LIVE:
+            blocks = [{"type": "context", "elements": [{"type": "mrkdwn",
+                       "text": f"[SAFE MODE → would DM {display}]"}]}] + blocks
+        slack().chat_postMessage(channel=_uid(target), unfurl_links=False,
+                                 text=f"New lead for you — {lead['clinic']}: {lead['name']}",
+                                 blocks=blocks)
+        rec["Assigned"] = display
+        if rec.get("_row"):
+            update_cells(ws, rec["_row"], {"Assigned": display})
+        _thread_note(rec, f":bust_in_silhouette: Sent to *{display}* to call.")
+    except Exception as exc:
+        log(f"  physio routing failed for {key}: {exc}")
+
+
 def esc(text: str) -> str:
     """Slack mrkdwn escaping for patient-typed text."""
     return (str(text or "").replace("&", "&amp;").replace("<", "&lt;")
@@ -531,6 +578,8 @@ def tick(now: datetime | None = None, dry_run: bool = False, log=print) -> dict:
                                        "Slack TS": resp["ts"]})
         except Exception as exc:
             log(f"  Slack post failed for {key}: {exc}")
+        if config.STL_ROUTE_TO_PHYSIO:
+            assign_to_physio(ws, rec, lead, status_line(status_txt, clock, now), key, log)
         state[key] = {**rec, "_lead": lead}
         if p:
             by_phone.setdefault(p, state[key])
@@ -610,7 +659,11 @@ def tick(now: datetime | None = None, dry_run: bool = False, log=print) -> dict:
             waited = fmt_mins(now - _parse(s["Clock Start"]))
             lines.append(f"• {name} — {s['Clinic']} — <tel:{s['Phone']}|{s['Phone']}> "
                          f"(waiting {waited})")
-        head = (f":telephone_receiver: {reception_mention()} "
+        who = reception_mention()
+        assigned = sorted({s.get("Assigned") for s in due if s.get("Assigned")})
+        if config.STL_ROUTE_TO_PHYSIO and assigned and all(s.get("Assigned") for s in due):
+            who = " ".join(physio_mention(a) for a in assigned)
+        head = (f":telephone_receiver: {who} "
                 f"{'these leads have' if len(due) > 1 else 'this lead has'} "
                 f"not had a call yet:")
         try:
