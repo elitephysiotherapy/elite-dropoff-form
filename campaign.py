@@ -165,8 +165,14 @@ def norm_phone(raw: str) -> str:
 
 
 def _d(s: str) -> date | None:
+    """Date in a cell — also reads 'sending …' / 'sent (from log) …' stamps.
+    A 'failed …' cell has no usable date (nothing was confirmed sent)."""
+    s = s or ""
+    if s.startswith("failed"):
+        return None
+    m = re.search(r"\d{4}-\d{2}-\d{2}", s)
     try:
-        return date.fromisoformat((s or "")[:10])
+        return date.fromisoformat(m.group(0)) if m else None
     except ValueError:
         return None
 
@@ -207,6 +213,9 @@ def text1_due(r: dict, d: date) -> bool:
         return False
     if r["Group"] == "mot" and d < _cfg_date("CAMPAIGN_TEXT1_FROM"):
         return False
+    # No first texts weeks after launch (Omagh lesson): late joiners are skipped.
+    if r["Group"] == "mot" and d > date.fromisoformat(getattr(config, "CAMPAIGN_TEXT1_UNTIL", "2026-11-20")):
+        return False
     return (in_window(d) and r["Group"] in ("mot", "club") and sms_allowed(r)
             and not r["Text 1"] and not is_closed(r) and bool(r["Phone"]))
 
@@ -224,6 +233,7 @@ def email_allowed(r: dict) -> bool:
 def email1_due(r: dict, d: date) -> bool:
     return (in_window(d) and r["Group"] == "mot" and email_allowed(r)
             and d >= _cfg_date(getattr(config, "CAMPAIGN_EMAIL_ON", None) and "CAMPAIGN_EMAIL_ON" or "CAMPAIGN_TEXT1_FROM")
+            and d <= date.fromisoformat(getattr(config, "CAMPAIGN_EMAIL1_UNTIL", "2026-11-21"))
             and not r["Email 1"] and not is_closed(r) and bool(r["Email"]))
 
 
@@ -539,6 +549,35 @@ def _alert(msg: str):
 
 RECENT_MESSAGE_DAYS = 3
 
+# ---- Repeat-send safeguards (Omagh lesson, 2026-11-14) ----------------------
+# The Omagh launch re-texted 193 people because the "already sent" check failed
+# open. Every guard below fails CLOSED: if we can't prove a message hasn't gone,
+# it doesn't go.
+_PROCESS_STARTED = time.monotonic()
+STARTUP_GRACE_SECONDS = 15 * 60     # Render keeps the old instance running a few
+                                    # minutes after a deploy; the new one waits.
+_sent_in_process = Counter()        # (date, channel) -> sends by THIS process
+_seen_this_process = set()          # (patient id, column) already sent here
+
+
+def campaign_ledger() -> set | None:
+    """(patient id, flow) pairs already sent for real, read fresh from the
+    Sent Log — an independent record from the Campaign tab. None = the ledger
+    couldn't be read, so the caller must send nothing."""
+    sent_log._rows_cache = None
+    rows = sent_log._rows()
+    if rows is sent_log._READ_FAILED or not isinstance(rows, list):
+        return None
+    return {(str(r[1]), r[3]) for r in rows
+            if len(r) >= 4 and str(r[3]).startswith("campaign_")
+            and not (len(r) > 7 and str(r[7]).startswith(("failed", "test-")))}
+
+
+def daily_ceiling(channel: str) -> int:
+    """Hard stop per channel per day, counted in memory (not from the sheet,
+    so a failed sheet write can't hide sends). Generous vs the real plan."""
+    return config.CAMPAIGN_MOT_TEXTS_PER_DAY + 20 if channel == "sms" else 600
+
 
 def recent_other_messages(days: int = RECENT_MESSAGE_DAYS) -> set[str]:
     """Patient IDs sent any non-campaign message (NPS, DNA rebook, etc.) in the
@@ -570,6 +609,13 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
     times = getattr(config, "CAMPAIGN_SEND_TIMES", {})
     time_ok = lambda col: (now.hour, now.minute) >= times.get(col, (config.CAMPAIGN_SEND_HOUR, 0))
     if not any(time_ok(col) for col in ("Text 1", "Text 2", "Text 3", "Email 1", "Email 2")):
+        return stats
+    if mode() == "live" and time.monotonic() - _PROCESS_STARTED < STARTUP_GRACE_SECONDS:
+        log("  campaign sends: waiting out the post-deploy grace period")
+        return stats
+    ledger = campaign_ledger()
+    if ledger is None:
+        log("  campaign sends: Sent Log unreadable — sending nothing this round")
         return stats
     rows = read_rows()
     budget = config.CAMPAIGN_MOT_TEXTS_PER_DAY - sum(
@@ -623,6 +669,35 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
             if _test_capped("sends"):
                 stats["test_capped"] += 1
                 continue
+            # --- Repeat-send guards -------------------------------------
+            pid = str(r["Patient ID"])
+            stamp = now.strftime("%Y-%m-%d %H:%M")
+            if mode() == "live" and ((pid, flow) in ledger or (pid, col) in _seen_this_process):
+                # Sent Log says it already went but the tab cell is blank —
+                # mend the tab, never re-send.
+                try:
+                    update_cells(r["_row"], {col: f"sent (from log) {stamp}"})
+                except Exception:
+                    pass
+                r[col] = f"sent (from log) {stamp}"
+                stats["blocked_already_sent"] += 1
+                continue
+            if _sent_in_process[(d, ch)] >= daily_ceiling(ch):
+                _alert(f"daily {ch} ceiling ({daily_ceiling(ch)}) reached — sends stopped "
+                       f"until tomorrow. Check the Campaign tab before it resumes.")
+                log(f"  campaign sends: {dict(stats)} — CEILING HIT")
+                return stats
+            # Claim the cell BEFORE sending. If we can't write to the sheet,
+            # we can't record the send, so we don't send.
+            try:
+                update_cells(r["_row"], {col: f"sending {stamp}"})
+            except Exception as exc:
+                _alert(f"couldn't write to the Campaign tab (`{str(exc)[:120]}`) — "
+                       f"sends paused this round so nobody is texted twice.")
+                log(f"  campaign sends: {dict(stats)} — sheet write failed, stopped")
+                return stats
+            r[col] = f"sending {stamp}"
+            _seen_this_process.add((pid, col))
             ctx = dict(first=first_name(r["Name"]), physio=r["Physio"] or "the team",
                        link=link(r), unsub=unsub_url(r["Key"]))
             if ch == "sms":
@@ -632,18 +707,36 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
                 subj = EMAIL_MOT2_SUBJECT if col == "Email 2" else EMAIL_MOT_SUBJECT
                 ok, info = send_email(email, subj.format(**ctx), tmpl.format(**ctx),
                                       unsub=ctx["unsub"])
+            _sent_in_process[(d, ch)] += 1
             status = "sent" if ok else f"failed: {info}"
             _log(r, flow, ch, status)
+            ledger.add((pid, flow))
+            # A failure is NOT retried automatically: a timeout can still have
+            # delivered the text. The cell keeps "failed …" so it never re-fires.
+            final = stamp if ok else f"failed {stamp}"
+            try:
+                update_cells(r["_row"], {col: final})
+            except Exception:
+                pass                       # the "sending …" claim still blocks a repeat
+            r[col] = final
             if ok:
-                update_cells(r["_row"], {col: now.strftime("%Y-%m-%d %H:%M")})
-                r[col] = now.strftime("%Y-%m-%d %H:%M")
                 if ch == "sms":
                     texted_phones.add(norm_phone(mob))
                 stats[f"{flow}"] += 1
             else:
                 stats["failed"] += 1
-                _alert(f"{ch} failed for patient {r['Patient ID']} ({flow}): `{str(info)[:150]}`")
+                _alert(f"{ch} failed for patient {r['Patient ID']} ({flow}): `{str(info)[:150]}` "
+                       f"— not retried automatically.")
     log(f"  campaign sends: {dict(stats)}")
+    sent = {k: v for k, v in stats.items() if k.startswith("campaign_")}
+    if sent and mode() == "live":
+        _alert_summary = ", ".join(f"{v} × {k.replace('campaign_mot_', '')}" for k, v in sent.items())
+        try:
+            dm(config.CEO_SLACK_EMAIL, f":outbox_tray: *Campaign sent this round:* {_alert_summary}"
+               + (f" · blocked repeats: {stats['blocked_already_sent']}"
+                  if stats.get("blocked_already_sent") else ""), force_martin=True)
+        except Exception:
+            pass
     return stats
 
 
@@ -947,8 +1040,20 @@ def run_vouchers(now: datetime | None = None, log=print) -> dict:
     now = now or datetime.now(LONDON)
     if now.hour < config.CAMPAIGN_SEND_HOUR or now.hour >= 20:
         return stats
+    if mode() == "live" and time.monotonic() - _PROCESS_STARTED < STARTUP_GRACE_SECONDS:
+        return stats
+    ledger = campaign_ledger()
+    if ledger is None:
+        return stats
     for r in read_rows():
         if not r["MOT Attended"] or r["Voucher Sent"] or not r["Patient ID"]:
+            continue
+        if mode() == "live" and ((str(r["Patient ID"]), "campaign_pilates_voucher") in ledger
+                                 or (str(r["Patient ID"]), "Voucher Sent") in _seen_this_process):
+            try:
+                update_cells(r["_row"], {"Voucher Sent": "sent (from log)"})
+            except Exception:
+                pass
             continue
         _, _, mob, _ = _consent_now(r["Patient ID"])
         if not mob:
@@ -961,10 +1066,20 @@ def run_vouchers(now: datetime | None = None, log=print) -> dict:
             first=first_name(r["Name"]), code=config.CAMPAIGN_VOUCHER_CODE,
             code2=config.CAMPAIGN_VOUCHER_CODE_2FOR1, pilates_link=link,
             expiry=config.CAMPAIGN_VOUCHER_EXPIRY)
+        stamp = now.strftime("%Y-%m-%d %H:%M")
+        try:
+            update_cells(r["_row"], {"Voucher Sent": f"sending {stamp}"})
+        except Exception as exc:
+            _alert(f"couldn't write to the Campaign tab (`{str(exc)[:120]}`) — vouchers paused.")
+            return stats
+        _seen_this_process.add((str(r["Patient ID"]), "Voucher Sent"))
         ok, info = send_sms(mob, body)
         _log(r, "campaign_pilates_voucher", "sms", "sent" if ok else f"failed: {info}")
+        try:
+            update_cells(r["_row"], {"Voucher Sent": stamp if ok else f"failed {stamp}"})
+        except Exception:
+            pass
         if ok:
-            update_cells(r["_row"], {"Voucher Sent": now.strftime("%Y-%m-%d %H:%M")})
             stats["sent"] += 1
         else:
             _alert(f"voucher text failed for patient {r['Patient ID']}: `{str(info)[:150]}`")

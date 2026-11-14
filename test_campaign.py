@@ -100,5 +100,112 @@ e = c.EMAIL_MOT_BODY.format(first="A", link="L", unsub="https://x/u")
 check("email has unsubscribe link, no STOP line", "https://x/u" in e and "STOP" not in e)
 check("first name cleaned", c.first_name("  o'neill mary") == "O'neill")
 
+# --- repeat-send safeguards (Omagh lesson) ---------------------------------------
+import copy  # noqa: E402
+from datetime import datetime  # noqa: E402
+
+
+class FakeWorld:
+    def __init__(self, rows, ledger=None, writes_ok=True, send_ok=True):
+        self.sheet = rows                       # what Google Sheets "holds"
+        self.ledger_rows = set(ledger or ())
+        self.writes_ok, self.send_ok = writes_ok, send_ok
+        self.sent, self.alerts, self.ledger_ok = [], [], True
+        self.write_fail_after_claim = False
+
+    def install(self):
+        w = self
+        c.mode = lambda: "live"
+        c.read_rows = lambda ws=None: copy.deepcopy(w.sheet)
+
+        def upd(rownum, values, ws=None):
+            if not w.writes_ok:
+                raise RuntimeError("sheets 503")
+            if w.write_fail_after_claim and not any(str(v).startswith("sending") for v in values.values()):
+                raise RuntimeError("sheets 503")
+            for r in w.sheet:
+                if r["_row"] == rownum:
+                    r.update(values)
+        c.update_cells = upd
+
+        def sms(to, body):
+            w.sent.append(("sms", to))
+            return (True, "SM1") if w.send_ok else (False, "timeout")
+        c.send_sms = sms
+        c.send_email = lambda to, s, t, unsub="": (w.sent.append(("email", to)) or (True, "e1"))
+        c._consent_now = lambda pid: (True, True, "07700900123", "a@b.c")
+        c._log = lambda r, flow, ch, status: (w.ledger_rows.add((str(r["Patient ID"]), flow))
+                                              if not w.write_fail_after_claim else None)
+        c.campaign_ledger = lambda: set(w.ledger_rows) if w.ledger_ok else None
+        c.recent_other_messages = lambda days=3: set()
+        c.dm = lambda *a, **k: None
+        c._alert = lambda msg: w.alerts.append(msg)
+        c._seen_this_process.clear()
+        c._sent_in_process.clear()
+        c._PROCESS_STARTED = -10 ** 9
+        return self
+
+
+NOW = datetime(2026, 11, 17, 10, 0, tzinfo=c.LONDON)
+quiet = lambda *a: None  # noqa: E731
+
+
+def mot_row():
+    return row(**{"Key": "mot:1", "Patient ID": "1", "Name": "Aoife Test", "Text OK": "Yes",
+                  "Email OK": "No", "Clinic": "Cookstown", "_row": 2})
+
+
+w = FakeWorld([mot_row()]).install()
+c.run_sends(NOW, quiet); c.run_sends(NOW, quiet); c.run_sends(NOW, quiet)
+check("normal: Text 1 sent exactly once over 3 rounds", w.sent == [("sms", "07700900123")])
+
+w = FakeWorld([mot_row()], writes_ok=False).install()
+c.run_sends(NOW, quiet)
+check("sheet can't be written: nothing sent, Martin alerted", w.sent == [] and w.alerts)
+
+w = FakeWorld([mot_row()]).install()
+w.write_fail_after_claim = True               # send goes, log + final write fail
+c.run_sends(NOW, quiet)
+w.sheet[0]["Text 1"] = ""                     # worst case: tab cell lost too
+c.run_sends(NOW, quiet)
+check("send logged nowhere + cell lost: same process still won't repeat", len(w.sent) == 1)
+
+w = FakeWorld([mot_row()], ledger={("1", "campaign_mot_text1")}).install()
+c.run_sends(NOW, quiet)
+check("Sent Log says sent but tab blank (e.g. after redeploy): blocked + tab mended",
+      w.sent == [] and w.sheet[0]["Text 1"].startswith("sent (from log)"))
+
+w = FakeWorld([mot_row()], send_ok=False).install()
+c.run_sends(NOW, quiet); c.run_sends(NOW, quiet)
+check("failed send (could be a timeout that delivered) is NOT retried",
+      len(w.sent) == 1 and w.sheet[0]["Text 1"].startswith("failed"))
+
+w = FakeWorld([mot_row()]).install()
+w.ledger_ok = False
+c.run_sends(NOW, quiet)
+check("Sent Log unreadable: nothing sent this round", w.sent == [])
+
+w = FakeWorld([mot_row()]).install()
+c._PROCESS_STARTED = c.time.monotonic()
+c.run_sends(NOW, quiet)
+check("just deployed: waits out the grace period (old + new instance overlap)", w.sent == [])
+
+many = [dict(mot_row(), **{"Key": f"mot:{i}", "Patient ID": str(i), "_row": i + 2})
+        for i in range(400)]
+w = FakeWorld(many).install()
+c._consent_now = lambda pid: (True, True, f"0770090{int(pid):04d}", "a@b.c")
+c.run_sends(NOW, quiet)
+check(f"daily text cap holds ({len(w.sent)} sent of 400 due)",
+      len(w.sent) == c.config.CAMPAIGN_MOT_TEXTS_PER_DAY)
+
+check("Text 2 still follows a recovered 'sent (from log)' Text 1",
+      c._d("sent (from log) 2026-11-17 10:00") == date(2026, 11, 17))
+check("no Text 2 after a failed Text 1", c._d("failed 2026-11-17 10:00") is None)
+check("no first text weeks later (late joiner on 23 Nov)",
+      not c.text1_due(row(**{"Text OK": "Yes"}), date(2026, 11, 23)))
+check("first text still goes Wed 18 Nov (day 2 of the send)",
+      c.text1_due(row(**{"Text OK": "Yes"}), date(2026, 11, 18)))
+check("no Email 1 weeks later", not c.email1_due(row(**{"Email OK": "Yes"}), date(2026, 11, 26)))
+
 print(f"\n{'ALL PASS' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)
