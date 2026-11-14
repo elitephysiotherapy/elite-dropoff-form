@@ -1260,6 +1260,14 @@ CAMPAIGN_ACTIVE_GROUPS = ["mot"]
 # more = gen pop (Black Friday MOT); under it = club list.
 CAMPAIGN_GENPOP_MIN_PRICE = 49
 
+# Club players — £99 winter GAA profiling (Martin 2026-11-14): 18 or over,
+# 3+ attended club appointments since 1 Nov 2025, nothing attended since
+# 1 Oct 2026, NPS passives/detractors out, text everyone except SMS opt-outs.
+# Club stays OFF (not in CAMPAIGN_ACTIVE_GROUPS) until its copy + dates are set.
+CAMPAIGN_CLUB_SESSIONS_FROM = "2025-11-01"
+CAMPAIGN_CLUB_NOT_SEEN_SINCE = "2026-10-01"
+CAMPAIGN_CLUB_MIN_SESSIONS = 3
+
 # Cliniko "Black Friday MOT" appointment type (Martin created 2026-11-14:
 # 40 min, £60, billable item "Initial Consultation", online bookable, the 8
 # physios — not Marty/Julie). Env var still overrides.

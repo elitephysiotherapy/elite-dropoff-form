@@ -196,7 +196,7 @@ def sms_allowed(r: dict) -> bool:
     'Opted out' / 'Under 18' / 'No' are never texted."""
     if r["Text OK"] == "Yes":
         return True
-    return (r["Text OK"] == "Soft" and r["Group"] == "mot"
+    return (r["Text OK"] == "Soft" and r["Group"] in ("mot", "club")
             and getattr(config, "CAMPAIGN_SMS_SOFT_OPT_IN", False))
 
 
@@ -1180,7 +1180,8 @@ def build_mot_candidates(now: datetime | None = None, log=print) -> list[dict]:
         by_p[phase2.id_from_link(a["patient"])].append(a)
     inv_by_appt, inv_by_day = invoice_index(fetch_from)
     price_src = Counter()
-    club_lo, club_hi = now - timedelta(days=183), now - timedelta(days=14)
+    club_from = datetime.fromisoformat(config.CAMPAIGN_CLUB_SESSIONS_FROM).replace(tzinfo=LONDON)
+    club_quiet_from = datetime.fromisoformat(config.CAMPAIGN_CLUB_NOT_SEEN_SINCE).replace(tzinfo=LONDON)
     picked = []
     for pid, apps in by_p.items():
         phys = [a for a in apps if PHYSIO_TYPES.search(types.get(phase2.id_from_link(a["appointment_type"]), ""))]
@@ -1202,17 +1203,31 @@ def build_mot_candidates(now: datetime | None = None, log=print) -> list[dict]:
                f"invoiced {'£49+' if not club else 'under £49'}")
         price_src[src] += 1
         is_club_type = lambda a: bool(CLUB_TYPES.search(types.get(phase2.id_from_link(a["appointment_type"]), "")))
+        def club_ok() -> bool:
+            # Club players (Martin 2026-11-14): 3+ attended CLUB appointments
+            # since 1 Nov 2025 (club appointment type, or a physio visit
+            # invoiced under £49), nothing attended since 1 Oct 2026. Age and
+            # NPS are checked further down.
+            if ls >= club_quiet_from:
+                return False
+            club_att = [a for a in att if phase2.parse_iso(a["starts_at"]) >= club_from
+                        and (is_club_type(a) or last_visit_price(a, inv_by_appt, inv_by_day, types)
+                             < config.CAMPAIGN_GENPOP_MIN_PRICE)]
+            return len(club_att) >= config.CAMPAIGN_CLUB_MIN_SESSIONS
+
         if club:
-            if len(att) < 2:
-                continue
-            if not (club_lo <= ls <= club_hi) and not (mot_from <= ls < mot_to):
+            if not club_ok():
                 continue
         else:
             # 3+ non-club physio sessions in the window.
             in_win = [a for a in att if not is_club_type(a)
                       and mot_from <= phase2.parse_iso(a["starts_at"]) < mot_to]
             if not (mot_from <= ls < mot_to) or len(in_win) < config.CAMPAIGN_MOT_MIN_SESSIONS:
-                continue
+                # Not an MOT patient, but still a club player by the club rule
+                # (last visit happened to be private) — club list, never both.
+                if not club_ok():
+                    continue
+                club = True
         m = member_by_practitioner(phase2.id_from_link(last["practitioner"]))
         picked.append(dict(pid=pid, last=ls, club=club,
                            physio=(m or {}).get("display", ""),
@@ -1232,7 +1247,7 @@ def build_mot_candidates(now: datetime | None = None, log=print) -> list[dict]:
     for c in picked:
         sc = nps.get(c["pid"])
         # MOT: promoters or no score only. Club: detractors left out.
-        if sc is not None and sc <= (8 if not c["club"] else 6):
+        if sc is not None and sc <= 8:          # passives + detractors out (both lists)
             continue
         p = next(iter(phase2.fetch_all("/patients", [("q[]", f"id:={c['pid']}")])), None)
         if not p or p.get("archived_at") or p.get("deleted_at") or p.get("deceased"):
@@ -1245,27 +1260,33 @@ def build_mot_candidates(now: datetime | None = None, log=print) -> list[dict]:
         owner = (member_by_display(c["physio"]) or {}).get("owner_consultant")
         days = (now - c["last"]).days
         # Under-18s: no marketing texts/emails; their physio rings a parent.
-        minor = False
+        minor, dob = False, None
         try:
             dob = date.fromisoformat((p.get("date_of_birth") or "")[:10])
-            minor = (date.today() - dob).days < 18 * 365
+            t = date.today()
+            minor = (t.year - dob.year - ((t.month, t.day) < (dob.month, dob.day))) < 18
         except ValueError:
             pass
+        # Club list = 18 or over only (Martin 2026-11-14); no DOB = can't confirm.
+        if c["club"] and (minor or dob is None):
+            continue
         if minor:
             p = dict(p, accepted_sms_marketing=False, accepted_email_marketing=False)
         out.append({
             "Key": f"{'club' if c['club'] else 'mot'}:{c['pid']}",
             "Group": "club" if c["club"] else "mot",
-            "Wave": (("1 (stopped <3 months)" if days <= 92 else "2 (3–6 months)") if c["club"]
+            "Wave": (("1 (last seen Jul–Sep 2026)" if c["last"] >= datetime(2026, 7, 1, tzinfo=timezone.utc)
+                      else "2 (last seen before Jul 2026)") if c["club"]
                      else ("1 (last seen Jul–Sep 2026)" if c["last"] >= datetime(2026, 7, 1, tzinfo=timezone.utc)
                            else "2 (last seen Oct 2025–Jun 2026)")),
             "Patient ID": c["pid"],
             "Name": f"{p.get('first_name', '')} {p.get('last_name', '')}".strip(),
             "Phone": mob, "Email": p.get("email") or "",
+            # Both lists: text everyone except SMS opt-outs (Martin 2026-11-14).
             "Text OK": ("Under 18" if minor else "Yes" if p.get("accepted_sms_marketing")
-                        else "Soft" if not c["club"] else "No"),
+                        else "Soft"),
             "Email OK": ("Under 18" if minor else "Yes" if p.get("accepted_email_marketing")
-                         else "Soft" if (not c["club"] and p.get("email")) else "No"),
+                         else "Soft" if p.get("email") else "No"),
             # Owners take no extra patients: their lapsed patients go to a senior.
             "Physio": "" if owner else c["physio"],
             "Practitioner ID": "" if owner else c["prac"],
