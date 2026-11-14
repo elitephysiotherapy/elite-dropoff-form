@@ -1275,7 +1275,7 @@ def build_mot_candidates(now: datetime | None = None, log=print) -> list[dict]:
         out.append({
             "Key": f"{'club' if c['club'] else 'mot'}:{c['pid']}",
             "Group": "club" if c["club"] else "mot",
-            "Wave": (("1 (last seen Jul–Sep 2026)" if c["last"] >= datetime(2026, 7, 1, tzinfo=timezone.utc)
+            "Wave": (("1 (last seen Jul–Oct 2026)" if c["last"] >= datetime(2026, 7, 1, tzinfo=timezone.utc)
                       else "2 (last seen before Jul 2026)") if c["club"]
                      else ("1 (last seen Jul–Sep 2026)" if c["last"] >= datetime(2026, 7, 1, tzinfo=timezone.utc)
                            else "2 (last seen Oct 2025–Jun 2026)")),
