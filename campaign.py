@@ -112,9 +112,12 @@ SMS_COLD_1 = ("Hi {first}, it's Elite Physio. You contacted us a while ago for h
               "free 20-min call with a physio to talk it through and see if Elite Physio is "
               "right for you. No cost, no pressure. Book: {link} or reply with a time that "
               "suits. Reply STOP to opt out")   # Option C2, Martin 2026-11-14
-SMS_COLD_2 = ("Hi {first}, just checking in from Elite Physio. If it's still bothering you, "
-              "our free 20-min physio call is a no-pressure way to get some answers. "
-              "Book: {link} or reply with a time that suits. Reply STOP to opt out")
+# Follow-up 2 weeks later to anyone who hasn't booked, replied or opted out,
+# then we leave them (Martin 2026-11-14). DRAFT — Martin to approve before 2 Dec.
+SMS_COLD_2 = ("Hi {first}, it's Elite Physio again. If that pain is still holding you "
+              "back, our free 20-min call with a physio is still here for you - no cost, "
+              "no pressure, just answers. Book: {link} or reply with a time that suits. "
+              "Reply STOP to opt out")
 EMAIL_CLUB_SUBJECT = "No more time on the sidelines, {first}"
 EMAIL_CLUB_BODY = """Hi {first},
 

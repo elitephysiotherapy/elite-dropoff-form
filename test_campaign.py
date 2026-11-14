@@ -231,8 +231,15 @@ check("no cold text 1 on Tue 17", not c.text1_due(lead(1), date(2026, 11, 17)))
 check("no cold text 1 after Fri 20", not c.text1_due(lead(1), date(2026, 11, 23)))
 check("excluded lead (out of area) never texted",
       not c.text1_due(dict(lead(1), Excluded="out of area / NHS"), date(2026, 11, 18)))
-check("cold leads get ONE text, no reminder",
+check("no cold follow-up before 2 weeks",
       not c.text2_due(dict(lead(1), **{"Text 1": "2026-11-18 09:30"}), date(2026, 11, 24)))
+check("cold follow-up Wed 2 Dec to non-responders",
+      c.text2_due(dict(lead(1), **{"Text 1": "2026-11-18 09:30"}), date(2026, 12, 2)))
+check("no cold follow-up if they replied",
+      not c.text2_due(dict(lead(1), **{"Text 1": "2026-11-18 09:30", "Replied": "2026-11-19"}), date(2026, 12, 2)))
+check("no third cold text ever",
+      not c.text2_due(dict(lead(1), **{"Text 1": "2026-11-18 09:30", "Text 2": "2026-12-02 09:00"}), date(2026, 12, 3))
+      and not c.text2_due(dict(lead(1), **{"Text 1": "2026-11-18 09:30"}), date(2026, 12, 10)))
 w = FakeWorld([lead(i) for i in range(5)]).install()
 c.run_sends(datetime(2026, 11, 18, 10, 0, tzinfo=c.LONDON), quiet)
 c.run_sends(datetime(2026, 11, 18, 10, 0, tzinfo=c.LONDON), quiet)

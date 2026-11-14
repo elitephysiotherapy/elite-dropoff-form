@@ -1254,7 +1254,7 @@ CAMPAIGN_SEND_TIMES = {"Text 1": (9, 30), "Email 1": (8, 30), "Text 2": (9, 0),
 # club / cold-lead / rebook campaigns stay off until each is worked through.
 CAMPAIGN_REPLIES_EMAIL = "sinead@elitephysiocookstown.co.uk"
 CAMPAIGN_CALL_LISTS = False
-CAMPAIGN_ACTIVE_GROUPS = ["mot", "club"]   # club switched on by Martin 2026-11-14 (first send Thu 19 Nov)
+CAMPAIGN_ACTIVE_GROUPS = ["mot", "club", "cold"]   # cold on 2026-11-14 (first send Wed 18 Nov)   # club switched on by Martin 2026-11-14 (first send Thu 19 Nov)
 
 # Gen pop vs club (Martin 2026-11-14): last physio visit invoiced at this or
 # more = gen pop (Black Friday MOT); under it = club list.
@@ -1282,9 +1282,10 @@ CAMPAIGN_CLUB_TEXT2_UNTIL = "2026-11-26"
 # reminder Tue 24 Nov 9:00 to anyone not booked. Replies → Sinéad.
 CAMPAIGN_COLD_TEXT1_FROM = "2026-11-18"
 CAMPAIGN_COLD_TEXT1_UNTIL = "2026-11-20"
-# One text only — no reminder (Martin 2026-11-14). Blank = off.
-CAMPAIGN_COLD_TEXT2_ON = ""
-CAMPAIGN_COLD_TEXT2_UNTIL = ""
+# One follow-up 2 weeks later to non-responders, then leave them; physios only
+# call leads who ASK for a call (Martin 2026-11-14).
+CAMPAIGN_COLD_TEXT2_ON = "2026-12-02"
+CAMPAIGN_COLD_TEXT2_UNTIL = "2026-12-03"
 
 # Cliniko "Black Friday MOT" appointment type (Martin created 2026-11-14:
 # 40 min, £60, billable item "Initial Consultation", online bookable, the 8
