@@ -637,12 +637,14 @@ def twilio_credit_check(texts_due: int, d: date):
                                  auth=(sid, tok), timeout=15).json().get("balance"))
     except Exception:
         return
+    # Auto-recharge is ON (Martin 2026-11-14), so a low balance is normal; only
+    # a balance under £5 means recharge isn't working (card declined etc.).
     need = texts_due * 3 * 0.0425
-    if bal < need + 10:
+    if bal < 5:
         _balance_warned["day"] = d
-        _alert(f":moneybag: Twilio credit is £{bal:.2f} but today's campaign texts need about "
-               f"£{need:.0f}. Top up at twilio.com → Billing (or turn on auto-recharge), "
-               f"otherwise texts will fail and the campaign pauses itself.")
+        _alert(f":moneybag: Twilio credit is only £{bal:.2f} and today's campaign texts need "
+               f"about £{need:.0f} — auto-recharge may not be working (card declined?). "
+               f"Check twilio.com → Billing, otherwise texts fail and the campaign pauses itself.")
 
 
 def daily_ceiling(channel: str) -> int:
