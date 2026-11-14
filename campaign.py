@@ -104,6 +104,15 @@ SMS_CLUB_2 = ("Hi {first}, it's Elite Physio. Another season of niggles and watc
               "the sideline? Go into 2027 trusting your body again. Winter GAA Profiling "
               "with a senior physio, £99 (usually £119), ends Mon 30 Nov. Book: {link} or "
               "reply with a day that suits. Reply STOP to opt out")
+# Cold Meta/Aeva leads — free 20-min call with a junior physio, booked online
+# (Martin 2026-11-14). DRAFT until Martin approves; cold is switched off.
+SMS_COLD_1 = ("Hi {first}, it's Elite Physio. You got in touch with us a while back - "
+              "is it still bothering you? Book a free 20-min call with one of our physios "
+              "to talk it through and find out if physio is right for you. No cost, no "
+              "pressure. Book: {link} or reply with a time that suits. Reply STOP to opt out")
+SMS_COLD_2 = ("Hi {first}, just checking in from Elite Physio. If it's still bothering you, "
+              "our free 20-min physio call is a no-pressure way to get some answers. "
+              "Book: {link} or reply with a time that suits. Reply STOP to opt out")
 EMAIL_CLUB_SUBJECT = "No more time on the sidelines, {first}"
 EMAIL_CLUB_BODY = """Hi {first},
 
@@ -230,6 +239,8 @@ def sms_allowed(r: dict) -> bool:
     'Opted out' / 'Under 18' / 'No' are never texted."""
     if r["Text OK"] == "Yes":
         return True
+    if r["Text OK"] == "Lead" and r["Group"] == "cold":
+        return True                       # follow-up to their own enquiry
     return (r["Text OK"] == "Soft" and r["Group"] in ("mot", "club")
             and getattr(config, "CAMPAIGN_SMS_SOFT_OPT_IN", False))
 
@@ -253,7 +264,10 @@ def text1_due(r: dict, d: date) -> bool:
     if r["Group"] == "club" and not (_cfg_date("CAMPAIGN_CLUB_TEXT1_FROM") <= d
                                      <= _cfg_date("CAMPAIGN_CLUB_TEXT1_UNTIL")):
         return False
-    return (in_window(d) and r["Group"] in ("mot", "club") and sms_allowed(r)
+    if r["Group"] == "cold" and not (_cfg_date("CAMPAIGN_COLD_TEXT1_FROM") <= d
+                                     <= _cfg_date("CAMPAIGN_COLD_TEXT1_UNTIL")):
+        return False
+    return (in_window(d) and r["Group"] in ("mot", "club", "cold") and sms_allowed(r)
             and not r["Text 1"] and not is_closed(r) and bool(r["Phone"]))
 
 
@@ -282,6 +296,11 @@ def text2_due(r: dict, d: date) -> bool:
     """MOT: the Black Friday reminder, Black Friday to Cyber Monday only.
     Club: one reminder in its own short window, to anyone not booked."""
     t1 = _d(r["Text 1"])
+    if r["Group"] == "cold":
+        return (group_active(r) and in_window(d) and t1 is not None and not r["Text 2"]
+                and not r["Replied"] and not is_closed(r) and sms_allowed(r)
+                and _cfg_date("CAMPAIGN_COLD_TEXT2_ON") <= d <= _cfg_date("CAMPAIGN_COLD_TEXT2_UNTIL")
+                and t1 < d)
     if r["Group"] == "club":
         return (group_active(r) and in_window(d) and t1 is not None and not r["Text 2"]
                 and not r["Replied"] and not is_closed(r) and sms_allowed(r)
@@ -581,7 +600,7 @@ def _consent_now(pid: str) -> tuple[bool, bool, str, str]:
 
 def _log(r: dict, flow: str, channel: str, status: str):
     try:
-        sent_log.log_send(r["Patient ID"], r["Name"], flow, channel, "campaign-2026-xmas",
+        sent_log.log_send(r["Patient ID"] or r["Key"], r["Name"], flow, channel, "campaign-2026-xmas",
                           flow, status if mode() == "live" else f"test-{status}")
     except Exception as exc:
         print(f"  WARN campaign sent-log write failed: {exc}")
@@ -695,8 +714,9 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
     # The 250/day pacing applies to FIRST texts (spreads the launch + replies
     # over two days). Reminders go in one go on their day (MOT Text 2 ≈ 410 on
     # Black Friday) — the in-memory ceiling still caps everything.
-    budget = config.CAMPAIGN_MOT_TEXTS_PER_DAY - sum(
-        1 for r in rows if _d(r["Text 1"]) == d)
+    budget = Counter({g: config.CAMPAIGN_MOT_TEXTS_PER_DAY - sum(
+        1 for r in rows if r["Group"] == g and _d(r["Text 1"]) == d)
+        for g in ("mot", "club", "cold", "rebook")})
     fails_in_a_row = Counter()
     # Omagh has no MOT/profiling slots online — send those people to Cookstown.
     link = lambda r: (config.CAMPAIGN_BOOKING_LINKS.get(r["Clinic"])
@@ -709,15 +729,15 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
     if mode() == "live":
         twilio_credit_check(sum(1 for r in rows if text1_due(r, d) or text2_due(r, d)), d)
     for r in sorted(rows, key=call_priority):
-        if r["Patient ID"] in recent:
+        if r["Patient ID"] and r["Patient ID"] in recent:
             stats["deferred_recent_message"] += 1
             continue
         jobs = []
         if text1_due(r, d):
-            jobs.append(("Text 1", "sms", SMS_MOT_1 if r["Group"] == "mot" else SMS_CLUB_1,
+            jobs.append(("Text 1", "sms", {"mot": SMS_MOT_1, "club": SMS_CLUB_1, "cold": SMS_COLD_1}[r["Group"]],
                          f"campaign_{r['Group']}_text1"))
         elif text2_due(r, d):
-            jobs.append(("Text 2", "sms", SMS_MOT_2 if r["Group"] == "mot" else SMS_CLUB_2,
+            jobs.append(("Text 2", "sms", {"mot": SMS_MOT_2, "club": SMS_CLUB_2, "cold": SMS_COLD_2}[r["Group"]],
                          f"campaign_{r['Group']}_text2"))
         elif text3_due(r, d):
             jobs.append(("Text 3", "sms", SMS_MOT_3, "campaign_mot_text3"))
@@ -729,19 +749,19 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
         jobs = [j for j in jobs if time_ok(j[0])]
         if not jobs:
             continue
-        sms_ok, email_ok, mob, email = _consent_now(r["Patient ID"]) if r["Patient ID"] else (False, False, "", "")
+        sms_ok, email_ok, mob, email = _consent_now(r["Patient ID"]) if r["Patient ID"] else (False, False, r["Phone"], r["Email"])
         for col, ch, tmpl, flow in jobs:
             if ch == "sms" and col == "Text 1" and norm_phone(mob) in texted_phones:
                 update_cells(r["_row"], {"Text OK": "No", "Notes": "texts off: shared family phone already texted · " + r["Notes"]})
                 r["Text OK"] = "No"
                 stats["shared_phone_skipped"] += 1
                 continue
-            soft = r["Text OK"] == "Soft" and sms_allowed(r)
+            soft = r["Text OK"] in ("Soft", "Lead") and sms_allowed(r)
             if ch == "sms" and norm_phone(mob) in opted_out:
                 update_cells(r["_row"], {"Text OK": "Opted out"}); r["Text OK"] = "Opted out"
                 stats["opted_out"] += 1
                 continue
-            if ch == "sms" and ((col == "Text 1" and budget <= 0) or not (sms_ok or soft) or not mob):
+            if ch == "sms" and ((col == "Text 1" and budget[r["Group"]] <= 0) or not (sms_ok or soft) or not mob):
                 if not (sms_ok or soft):
                     update_cells(r["_row"], {"Text OK": "No"}); r["Text OK"] = "No"
                     stats["consent_withdrawn"] += 1
@@ -755,7 +775,7 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
                 stats["test_capped"] += 1
                 continue
             # --- Repeat-send guards -------------------------------------
-            pid = str(r["Patient ID"])
+            pid = str(r["Patient ID"] or r["Key"])   # leads have no Patient ID
             stamp = now.strftime("%Y-%m-%d %H:%M")
             if mode() == "live" and ((pid, flow) in ledger or (pid, col) in _seen_this_process):
                 # Sent Log says it already went but the tab cell is blank —
@@ -787,7 +807,7 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
                        link=link(r), unsub=unsub_url(r["Key"]))
             if ch == "sms":
                 ok, info = send_sms(mob, tmpl.format(**ctx))
-                budget -= 1 if col == "Text 1" else 0
+                budget[r["Group"]] -= 1 if col == "Text 1" else 0
             else:
                 subj = (EMAIL_CLUB_SUBJECT if r["Group"] == "club" else EMAIL_MOT2_SUBJECT if col == "Email 2" else EMAIL_MOT_SUBJECT)
                 ok, info = send_email(email, subj.format(**ctx), tmpl.format(**ctx),

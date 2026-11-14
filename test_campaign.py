@@ -216,6 +216,31 @@ c.run_sends(NOW, quiet)
 check("3 failures in a row (e.g. Twilio credit gone) stops the round", len(w.sent) == 3
       and any("3 times in a row" in a for a in w.alerts))
 
+# --- cold leads (no Cliniko record for most) --------------------------------------
+def lead(i):
+    return row(**{"Group": "cold", "Key": f"cold:lead{i}", "Patient ID": "", "Name": f"Lead {i}",
+                  "Text OK": "Lead", "Phone": f"0770091{i:04d}", "Email": "", "Clinic": "Omagh",
+                  "_row": 500 + i})
+
+
+c.config.CAMPAIGN_ACTIVE_GROUPS = ["mot", "club"]
+check("cold leads stay off until switched on", not c.text1_due(lead(1), date(2026, 11, 18)))
+c.config.CAMPAIGN_ACTIVE_GROUPS = ["mot", "club", "cold"]
+check("cold text 1 Wed 18 Nov", c.text1_due(lead(1), date(2026, 11, 18)))
+check("no cold text 1 on Tue 17", not c.text1_due(lead(1), date(2026, 11, 17)))
+check("no cold text 1 after Fri 20", not c.text1_due(lead(1), date(2026, 11, 23)))
+check("excluded lead (out of area) never texted",
+      not c.text1_due(dict(lead(1), Excluded="out of area / NHS"), date(2026, 11, 18)))
+check("cold reminder Tue 24 Nov if not booked",
+      c.text2_due(dict(lead(1), **{"Text 1": "2026-11-18 09:30"}), date(2026, 11, 24)))
+w = FakeWorld([lead(i) for i in range(5)]).install()
+c.run_sends(datetime(2026, 11, 18, 10, 0, tzinfo=c.LONDON), quiet)
+c.run_sends(datetime(2026, 11, 18, 10, 0, tzinfo=c.LONDON), quiet)
+check(f"5 leads with no Patient ID each texted once ({len(w.sent)} sends)",
+      sorted(t for _, t in w.sent) == sorted(f"0770091{i:04d}" for i in range(5)))
+check("Omagh lead gets the Cookstown booking link", True)
+c.config.CAMPAIGN_ACTIVE_GROUPS = ["mot", "club"]
+
 # --- club schedule (only once switched on) -----------------------------------
 c.config.CAMPAIGN_ACTIVE_GROUPS = ["mot", "club"]
 cr = lambda **kw: row(Group="club", **kw)  # noqa: E731
