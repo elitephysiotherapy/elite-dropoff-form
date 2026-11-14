@@ -1254,7 +1254,7 @@ CAMPAIGN_SEND_TIMES = {"Text 1": (9, 30), "Email 1": (8, 30), "Text 2": (9, 0),
 # club / cold-lead / rebook campaigns stay off until each is worked through.
 CAMPAIGN_REPLIES_EMAIL = "sinead@elitephysiocookstown.co.uk"
 CAMPAIGN_CALL_LISTS = False
-CAMPAIGN_ACTIVE_GROUPS = ["mot"]
+CAMPAIGN_ACTIVE_GROUPS = ["mot", "club"]   # club switched on by Martin 2026-11-14 (first send Thu 19 Nov)
 
 # Gen pop vs club (Martin 2026-11-14): last physio visit invoiced at this or
 # more = gen pop (Black Friday MOT); under it = club list.
