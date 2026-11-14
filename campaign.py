@@ -77,10 +77,12 @@ GUARANTEE = ("Our promise: you'll leave knowing exactly where you stand and your
 # Friday, deadline Cyber Monday 30 Nov, Text 3 "last slots before Christmas".
 # Wording revised 2026-11-14 after Dan Martell's review (tighter SMS 1, shorter
 # SMS 2, contrarian email subject, reply hook in emails).
-SMS_MOT_1 = ("Hi {first}, it's Elite Physio. Our Black Friday MOT: a full re-check vs "
-             "where you started, a 1-page report and 3 key exercises, £60. Book by "
-             "30 Nov for a free Pilates class + a 2-for-1 to share. Leave knowing "
-             "exactly where you stand, or it's on us. Book: {link} Reply STOP to opt out")
+# SMS 1 = Martin's own wording (14 Nov), NOT Dan's tightened version.
+SMS_MOT_1 = ("Hi {first}, it's Elite Physio. We just wanted to check in with you and "
+             "offer you our Black Friday MOT: a full re-check vs where you started, a "
+             "1-page report + your 3 key exercises, £60. Book by Mon 30 Nov for a free "
+             "Pilates class + a 2-for-1 to share. You'll leave knowing exactly where you "
+             "stand, or it's on us. Book: {link} Reply STOP to opt out")
 SMS_MOT_2 = ("Hi {first}, last few days for your Elite Physio MOT - £60 re-check, free "
              "Pilates class + a 2-for-1. Ends Mon. Book: {link} Reply STOP to opt out")
 SMS_MOT_3 = ("Hi {first}, last MOT slots before we close for Christmas on 23 Dec: "
