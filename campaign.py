@@ -605,6 +605,7 @@ STARTUP_GRACE_SECONDS = 15 * 60     # Render keeps the old instance running a fe
                                     # minutes after a deploy; the new one waits.
 _sent_in_process = Counter()        # (date, channel) -> sends by THIS process
 _seen_this_process = set()          # (patient id, column) already sent here
+SEND_PACING_SECONDS = 4             # ≈45 Sheets writes/min, under the shared 60/min
 
 
 def campaign_ledger() -> set | None:
@@ -618,6 +619,30 @@ def campaign_ledger() -> set | None:
     return {(str(r[1]), r[3]) for r in rows
             if len(r) >= 4 and str(r[3]).startswith("campaign_")
             and not (len(r) > 7 and str(r[7]).startswith(("failed", "test-")))}
+
+
+_balance_warned = {}
+
+
+def twilio_credit_check(texts_due: int, d: date):
+    """Warn Martin (once a day) if Twilio credit won't cover today's texts.
+    Doesn't block: the circuit breaker stops sends if texts start failing."""
+    if not texts_due or _balance_warned.get("day") == d:
+        return
+    sid, tok = os.environ.get("TWILIO_ACCOUNT_SID", ""), os.environ.get("TWILIO_AUTH_TOKEN", "")
+    if not (sid and tok):
+        return
+    try:
+        bal = float(requests.get(f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Balance.json",
+                                 auth=(sid, tok), timeout=15).json().get("balance"))
+    except Exception:
+        return
+    need = texts_due * 3 * 0.0425
+    if bal < need + 10:
+        _balance_warned["day"] = d
+        _alert(f":moneybag: Twilio credit is £{bal:.2f} but today's campaign texts need about "
+               f"£{need:.0f}. Top up at twilio.com → Billing (or turn on auto-recharge), "
+               f"otherwise texts will fail and the campaign pauses itself.")
 
 
 def daily_ceiling(channel: str) -> int:
@@ -670,11 +695,17 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
     # Black Friday) — the in-memory ceiling still caps everything.
     budget = config.CAMPAIGN_MOT_TEXTS_PER_DAY - sum(
         1 for r in rows if _d(r["Text 1"]) == d)
-    link = lambda r: config.CAMPAIGN_BOOKING_LINKS.get(r["Clinic"]) or config.CAMPAIGN_BOOKING_LINKS["Cookstown"]
+    fails_in_a_row = Counter()
+    # Omagh has no MOT/profiling slots online — send those people to Cookstown.
+    link = lambda r: (config.CAMPAIGN_BOOKING_LINKS.get(r["Clinic"])
+                      if r["Clinic"] in ("Cookstown", "Maghera") else None) \
+        or config.CAMPAIGN_BOOKING_LINKS["Cookstown"]
     # Family phones: one campaign text per number, whoever it's for.
     texted_phones = {norm_phone(r["Phone"]) for r in rows if r["Text 1"]}
     opted_out = {norm_phone(r["Phone"]) for r in rows if r["Text OK"] == "Opted out"}
     recent = recent_other_messages()
+    if mode() == "live":
+        twilio_credit_check(sum(1 for r in rows if text1_due(r, d) or text2_due(r, d)), d)
     for r in sorted(rows, key=call_priority):
         if r["Patient ID"] in recent:
             stats["deferred_recent_message"] += 1
@@ -775,10 +806,27 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
                 if ch == "sms":
                     texted_phones.add(norm_phone(mob))
                 stats[f"{flow}"] += 1
+                fails_in_a_row[ch] = 0
             else:
                 stats["failed"] += 1
+                fails_in_a_row[ch] += 1
                 _alert(f"{ch} failed for patient {r['Patient ID']} ({flow}): `{str(info)[:150]}` "
                        f"— not retried automatically.")
+                # Circuit breaker: several failures in a row = a provider
+                # problem (e.g. Twilio credit ran out), not one bad number.
+                # Stop now rather than burn through the whole list.
+                if fails_in_a_row[ch] >= 3:
+                    _alert(f":octagonal_sign: {ch} has failed 3 times in a row — ALL campaign "
+                           f"sends stopped this round. Likely cause: "
+                           f"{'Twilio credit / account' if ch == 'sms' else 'Resend / email domain'}. "
+                           f"The 3 people marked 'failed' in the Campaign tab need clearing "
+                           f"to be sent again.")
+                    log(f"  campaign sends: {dict(stats)} — CIRCUIT BREAKER")
+                    return stats
+            # Pace the sends: each one is ~3 Google Sheets writes, and every
+            # Elite automation shares one Sheets quota (60 writes/min).
+            if mode() == "live":
+                time.sleep(SEND_PACING_SECONDS)
     log(f"  campaign sends: {dict(stats)}")
     sent = {k: v for k, v in stats.items() if k.startswith("campaign_")}
     if sent and mode() == "live":
@@ -934,13 +982,25 @@ def post_reply_card(r: dict, body: str):
     """A text reply from a campaign patient → plain Slack DM to Sinéad Rocks
     (Martin 2026-11-14): name, number, their message, Cliniko link."""
     d = today_l()
-    update_cells(r["_row"], {"Replied": d.isoformat()})
-    r["Replied"] = d.isoformat()
     link = f" · <{CLINIKO_WEB}/patients/{r['Patient ID']}|Cliniko>" if r["Patient ID"] else ""
     text = (f":speech_balloon: *{esc(r['Name'])}* replied to the {GROUP_LABEL[r['Group']]} text"
             f" · <tel:{r['Phone']}|{r['Phone']}>{link}\n>{esc(body[:1000])}")
     email = getattr(config, "CAMPAIGN_REPLIES_EMAIL", "") or physio_email(r["Physio"]) or config.CEO_SLACK_EMAIL
-    dm(email, text)
+    # The reply itself matters most: deliver it first, and if Sinéad's DM
+    # fails, get it to Martin instead — a reply must never vanish.
+    try:
+        dm(email, text)
+    except Exception as exc:
+        try:
+            dm(config.CEO_SLACK_EMAIL, f":warning: Couldn't DM this campaign reply to {email} "
+               f"(`{str(exc)[:100]}`) — please pass it on:\n{text}", force_martin=True)
+        except Exception as exc2:
+            print(f"  ERROR campaign reply lost for row {r.get('_row')}: {exc2}")
+    try:
+        update_cells(r["_row"], {"Replied": d.isoformat()})
+    except Exception as exc:
+        print(f"  WARN campaign reply not marked on the tab: {exc}")
+    r["Replied"] = d.isoformat()
 
 
 def handle_button(action_id: str, user_id: str, response_url: str, original_blocks: list,

@@ -143,6 +143,8 @@ class FakeWorld:
         c._seen_this_process.clear()
         c._sent_in_process.clear()
         c._PROCESS_STARTED = -10 ** 9
+        c.SEND_PACING_SECONDS = 0
+        c.twilio_credit_check = lambda n, d: None
         return self
 
 
@@ -206,6 +208,13 @@ check("no first text weeks later (late joiner on 23 Nov)",
 check("first text still goes Wed 18 Nov (day 2 of the send)",
       c.text1_due(row(**{"Text OK": "Yes"}), date(2026, 11, 18)))
 check("no Email 1 weeks later", not c.email1_due(row(**{"Email OK": "Yes"}), date(2026, 11, 26)))
+
+w = FakeWorld([dict(mot_row(), **{"Key": f"mot:{i}", "Patient ID": str(i), "_row": i + 2})
+               for i in range(10)], send_ok=False).install()
+c._consent_now = lambda pid: (True, True, f"0770090{int(pid):04d}", "a@b.c")
+c.run_sends(NOW, quiet)
+check("3 failures in a row (e.g. Twilio credit gone) stops the round", len(w.sent) == 3
+      and any("3 times in a row" in a for a in w.alerts))
 
 # --- club schedule (only once switched on) -----------------------------------
 c.config.CAMPAIGN_ACTIVE_GROUPS = ["mot", "club"]
