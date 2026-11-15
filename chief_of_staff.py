@@ -47,6 +47,12 @@ SLOW_MIN = {"elite-dropoff-daily": 110, "elite-ltv-monthly": 120,
             "elite-marketing-poll": 20}
 SLOW_DEFAULT = 20
 
+# When a Render cron's schedule was last changed (UTC). Add a line here
+# whenever you move a cron, or the first night will report false "skipped" runs.
+SCHEDULE_CHANGED = {n: datetime(2026, 11, 15, 10, 45, tzinfo=timezone.utc) for n in (
+    "elite-dropoff-daily", "elite-reactivations-monthly", "elite-meta-funnel",
+    "elite-reactivations-weekly", "elite-packages-weekly", "elite-cfo-weekly")}
+
 # Local (Mac) launchd jobs: (label, marker file, period, earliest London hour).
 MAC_JOBS = [
     ("TeamUp → Cliniko Pilates bot", "~/teamup-cliniko/data/last_run_date", "day", 7),
@@ -162,7 +168,11 @@ def check_render(since, now, findings):
     ok_runs = 0
     for s in sorted(crons, key=lambda s: s["name"]):
         expr = s["serviceDetails"].get("schedule", "")
-        due = cron_firings(expr, since, now - timedelta(minutes=10)) if expr else []
+        # A schedule edited recently would make the old times look "skipped":
+        # only expect firings of the CURRENT schedule since it changed. (Render's
+        # updatedAt moves on every deploy, so changes are listed by hand.)
+        changed = SCHEDULE_CHANGED.get(s["name"], since)
+        due = cron_firings(expr, max(since, changed), now - timedelta(minutes=10)) if expr else []
         evs = cron_events(s["id"], since - timedelta(hours=2))
         started, ended = {}, {}
         for e in evs:
