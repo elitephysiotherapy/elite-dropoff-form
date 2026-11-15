@@ -123,10 +123,10 @@ check("same issue -> same key on the next run", [x["key"] for x in a] == [x["key
 
 # --- schedule --------------------------------------------------------------------
 L = cc.LONDON
-check("not due 07:14", not cc.due(datetime(2026, 11, 10, 7, 14, tzinfo=L), ""))
-check("due 07:15", cc.due(datetime(2026, 11, 10, 7, 15, tzinfo=L), "2026-11-09"))
+check("not due 07:39", not cc.due(datetime(2026, 11, 10, 7, 39, tzinfo=L), ""))
+check("due 07:40", cc.due(datetime(2026, 11, 10, 7, 40, tzinfo=L), "2026-11-09"))
 check("not twice a day", not cc.due(datetime(2026, 11, 10, 9, 0, tzinfo=L), "2026-11-10"))
-check("catches up later if 07:15 missed", cc.due(datetime(2026, 11, 10, 13, 0, tzinfo=L), "2026-11-09"))
+check("catches up later if 07:40 missed", cc.due(datetime(2026, 11, 10, 13, 0, tzinfo=L), "2026-11-09"))
 
 # --- helpers -----------------------------------------------------------------------
 check("phone formats match", cc.norm_phone("+447700900123") == cc.norm_phone("07700 900123"))

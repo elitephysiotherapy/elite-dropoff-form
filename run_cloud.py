@@ -46,6 +46,9 @@ COMMANDS = {
     "reactivations_monthly": [PY, "reactivations_by_month.py", "--refresh"],
     "diary_summary": [PY, "send_diary_summary.py", "--post"],
     "pilates_flags_weekly": [PY, "send_pilates_flags_weekly.py", "--post"],
+    # Nightly Chief of Staff BACKUP: posts a Render-only health report only if
+    # the 21:10 Mac report (Claude scheduled task) didn't post tonight.
+    "chief_of_staff_backup": [PY, "chief_of_staff.py", "--backup"],
 }
 
 # Hard wall-clock limit (seconds) per job. Render only kills a hung cron run
@@ -65,7 +68,10 @@ MONTHLY_DAY1_JOBS = {"monthly_kpi", "referrers_monthly", "club_alert_monthly"}
 # Each entry: (weekdays | None, hour, minute).  weekdays is a set with Mon=0..Sun=6;
 # None means every day.  marketing runs on a fixed interval, so it has no targets.
 TARGETS = {
-    "dropoff":  [(None, 7, 0)],                                   # 07:00 daily
+    # 2026-11-15: 07:00 -> 05:15. The run takes ~70 min (max 95) and used to sit
+    # on top of the whole 07:00-08:30 morning batch (shared Sheets quota).
+    # Render cron: 15 4,5 * * *.
+    "dropoff":  [(None, 5, 15)],                                  # 05:15 daily
     "progress": [({0}, 7, 30)],                                   # Mon 07:30
     "bookings": [(None, 6, 0), (None, 9, 0), (None, 12, 0),
                  (None, 15, 0), (None, 18, 0), (None, 20, 45)],   # 6 daily polls
@@ -76,14 +82,14 @@ TARGETS = {
                  ({4}, 15, 45)],                                  # Fri 15:45
     "eod_sunday": [({6}, 7, 0)],                                  # Sun 07:00 — Martin's personal weekly wrap (DM only)
     "monthly_kpi": [(None, 9, 0)],                                # 09:00 on day 1 (see MONTHLY_DAY1_JOBS)
-    "packages_weekly":   [({0}, 8, 0)],                           # Mon 08:00 — previous week's packages
+    "packages_weekly":   [({0}, 8, 15)],                          # Mon 08:15 (cron 15 7,8 * * 1) — previous week's packages
     # 08:15 on day 1. MUST match the Render cron minute (15 7,8 1 * *): the cron was
     # staggered to :15 on 2026-08-17 (Sheets quota) but this stayed at 08:00, so
     # both firings skipped and the 1 Sep 2026 DM never sent. Fixed 2026-09-15.
     "referrers_monthly": [(None, 8, 15)],
     "club_alert_monthly": [(None, 8, 30)],                        # 08:30 on day 1 — clubs sending less work
-    "reactivations_weekly": [({0}, 8, 0)],                        # Mon 08:00 — previous week's reactivations
-    "reactivations_monthly": [(None, 7, 20)],                     # 07:20 daily — refresh monthly totals tab
+    "reactivations_weekly": [({0}, 8, 5)],                        # Mon 08:05 (cron 5 7,8 * * 1) — previous week's reactivations
+    "reactivations_monthly": [(None, 7, 0)],                      # 07:00 daily (cron 0 6,7 * * *) — refresh monthly totals tab
     # Per-physio diary DMs to Sinead Rocks + reception. Fri also sends next week.
     # Render cron: 0 7,8 * * 1,3,5 (both BST and GMT UTC hours; the other no-ops).
     "diary_summary": [({0, 2, 4}, 8, 0)],                         # Mon/Wed/Fri 08:00
@@ -96,9 +102,10 @@ TARGETS = {
     # Render cron: 0 6-21 * * 1-5 (both BST and GMT UTC hours; extras no-op).
     "meta_leads": [({0, 1, 2, 3, 4}, h, 0) for h in range(7, 22)],
     # "Meta Ads" tab on the drop-off sheet (lead -> booked -> IA -> rebook ->
-    # appts -> revenue). Daily 06:30, clear of the 07:00 drop-off run's Sheets
-    # quota. Render cron: 30 5,6 * * *.
-    "meta_funnel": [(None, 6, 30)],
+    # appts -> revenue). Daily 07:25 (moved from 06:30 on 2026-11-15, when the
+    # drop-off run moved to 05:15). Render cron: 25 6,7 * * *.
+    "meta_funnel": [(None, 7, 25)],
+    "chief_of_staff_backup": [(None, 21, 45)],                    # 21:45 daily (cron 45 20,21 * * *)
 }
 
 # Minutes after a target time during which a firing still counts as "on time".

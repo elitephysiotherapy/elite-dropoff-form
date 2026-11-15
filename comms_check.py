@@ -52,7 +52,7 @@ TAB = "Comms Check"
 HEADERS = ["Flagged At", "Rule", "Patient", "Patient ID", "Phone (last 4)",
            "What happened", "Messages", "Action Taken", "Key"]
 MARKER = "__last_run__"
-RUN_AT = (7, 15)
+RUN_AT = (7, 40)   # 2026-11-15: was 07:15; moved clear of the 07:00-07:25 batch
 LOOKBACK_DAYS = 30        # history read each run (repeats need 7d; phone->patient map needs more)
 REPORT_HOURS = 72         # only issues whose latest message is this recent
 REPEAT_DAYS = 7

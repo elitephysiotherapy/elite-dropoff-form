@@ -54,6 +54,7 @@ class Job:
     started: float = 0.0
     next_at: float = 0.0
     timeouts: int = field(default=0)   # consecutive timeouts/crashes
+    hb: dict = field(default_factory=lambda: {"ok": 0, "crash": 0, "timeout": 0})
 
 
 def build_jobs(dry: bool) -> list[Job]:
@@ -93,6 +94,19 @@ def build_jobs(dry: bool) -> list[Job]:
                        "Anyone marked 'sending …' in the Campaign tab may not "
                        "have been texted — check before clearing."))
     return jobs
+
+
+HEARTBEAT_SECS = 3600
+
+
+def heartbeat(jobs: list[Job]) -> None:
+    """One line an hour: runs finished per job since the last line. Read by
+    chief_of_staff.py as positive proof each bot is actually running."""
+    parts = []
+    for j in jobs:
+        parts.append(f"{j.name} ok={j.hb['ok']} crash={j.hb['crash']} timeout={j.hb['timeout']}")
+        j.hb = {"ok": 0, "crash": 0, "timeout": 0}
+    log("heartbeat: " + " | ".join(parts))
 
 
 def log(msg: str) -> None:
@@ -145,6 +159,7 @@ def step(jobs: list[Job], env: dict, now: float) -> None:
                     _kill(job.proc)
                     job.proc = None
                     job.timeouts += 1
+                    job.hb["timeout"] += 1
                     log(f"{job.name} timed out after {job.timeout}s — "
                         f"next run starts clean")
                     if job.timeouts in job.alert_after:
@@ -154,8 +169,10 @@ def step(jobs: list[Job], env: dict, now: float) -> None:
             job.proc = None
             if rc == 0 or rc == HANDLED_ERROR:     # handled errors alert themselves
                 job.timeouts = 0
+                job.hb["ok" if rc == 0 else "crash"] += 1
             else:                                  # crashed before its own alerting
                 job.timeouts += 1
+                job.hb["crash"] += 1
                 log(f"{job.name} crashed (exit code {rc}) — next run starts clean")
                 if job.timeouts in job.alert_after:
                     _alert(f":warning: {job.alert_text} ({job.timeouts} runs in a row "
@@ -188,6 +205,7 @@ def run(dry: bool = False, max_seconds: float | None = None, tick: float = 1.0,
         f"; first runs in {startup}s")
 
     stopping = {"flag": False}
+    next_hb = t0 + HEARTBEAT_SECS
 
     def _stop(signum, _frame):
         stopping["flag"] = True
@@ -199,6 +217,9 @@ def run(dry: bool = False, max_seconds: float | None = None, tick: float = 1.0,
         if max_seconds is not None and now - t0 >= max_seconds:
             break
         step(jobs, env, now)
+        if now >= next_hb:                         # proof of life for chief_of_staff.py
+            heartbeat(jobs)
+            next_hb = now + HEARTBEAT_SECS
         time.sleep(tick)
 
     for job in jobs:                               # shutting down: stop children

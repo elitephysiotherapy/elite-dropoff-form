@@ -246,6 +246,26 @@ def reconcile(master_rows, team):
     return changes
 
 
+def _fresh_rows(master_sh, tabs, id_col, old_index):
+    """{appointment_id: (tab, row)} re-read now for the given tabs; ids in
+    other tabs keep their old position. An id found twice is dropped (never
+    guess which row a note belongs to)."""
+    tabs = sorted(tabs)
+    letter = gspread.utils.rowcol_to_a1(1, id_col).rstrip("1")
+    resp = master_sh.values_batch_get([f"'{t}'!{letter}:{letter}" for t in tabs])
+    fresh, dup = {}, set()
+    for tab, vr in zip(tabs, resp.get("valueRanges", [])):
+        for n, r in enumerate(vr.get("values", [])[1:], start=2):
+            aid = r[0].strip() if r else ""
+            if aid:
+                if aid in fresh:
+                    dup.add(aid)
+                fresh[aid] = (tab, n)
+    out = {a: v for a, v in old_index.items() if v[0] not in tabs}
+    out.update({a: v for a, v in fresh.items() if a not in dup})
+    return out
+
+
 def sync(dry_run=False, verbose=True, relayout=False):
     """Push physio feedback to the master, then refresh the team sheet.
 
@@ -280,8 +300,18 @@ def sync(dry_run=False, verbose=True, relayout=False):
     # ---- 1. push: physio feedback -> master Q/R
     changes = reconcile(master_rows, team)
     cols = {c: p1.SHEET_COLUMNS.index(c) + 1 for c in p1.SHEET_COLUMNS}
+    # Re-locate each row immediately before writing. The 05:15 drop-off
+    # refresh (phase1_fetch) can delete duplicate rows between our read above
+    # and this write; a stale row number would put a physio's note on another
+    # patient's row. One read of the id column per affected tab, then write.
+    if changes and not dry_run:
+        index = _fresh_rows(master_sh, {index[aid][0] for aid, _, _ in changes},
+                            cols["appointment_id"], index)
     pushes = []
     for aid, key, value in changes:
+        if aid not in index:
+            print(f"  {aid}: row moved/removed since the read — retry next sync")
+            continue
         tab, row = index[aid]
         a1 = gspread.utils.rowcol_to_a1(row, cols[key])
         pushes.append({"range": f"'{tab}'!{a1}", "values": [[value]]})
