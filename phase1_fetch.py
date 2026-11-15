@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 import requests
 
 import gspread
+import net_timeouts  # noqa: F401  (hard Sheets timeouts — see module)
 from google.oauth2.service_account import Credentials
 
 import config

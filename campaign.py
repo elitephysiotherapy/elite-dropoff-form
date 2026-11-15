@@ -42,6 +42,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import gspread
+import net_timeouts  # noqa: F401  (hard Sheets timeouts — see module)
 import requests
 from google.oauth2.service_account import Credentials
 from slack_sdk import WebClient
@@ -526,6 +527,7 @@ def _test_capped(job: str) -> bool:
     if _test_sent[job] >= config.CAMPAIGN_TEST_CAP:
         return True
     _test_sent[job] += 1
+    _save_guards()
     return False
 
 
@@ -627,11 +629,47 @@ RECENT_MESSAGE_DAYS = 3
 # open. Every guard below fails CLOSED: if we can't prove a message hasn't gone,
 # it doesn't go.
 _PROCESS_STARTED = time.monotonic()
+# Since 2026-11-15 each campaign run is a fresh process started by
+# bot_worker.py, so "this process" means the WORKER: the grace period counts
+# from when the worker started (BOT_WORKER_STARTED, epoch seconds), and the
+# guards below are reloaded from / saved to bot_state between runs.
+if os.environ.get("BOT_WORKER_STARTED"):
+    try:
+        _PROCESS_STARTED = time.monotonic() - max(
+            0.0, time.time() - float(os.environ["BOT_WORKER_STARTED"]))
+    except ValueError:
+        pass
 STARTUP_GRACE_SECONDS = 15 * 60     # Render keeps the old instance running a few
                                     # minutes after a deploy; the new one waits.
 _sent_in_process = Counter()        # (date, channel) -> sends by THIS process
 _seen_this_process = set()          # (patient id, column) already sent here
 SEND_PACING_SECONDS = 4             # ≈45 Sheets writes/min, under the shared 60/min
+_GUARDS = "campaign_guards"         # bot_state file for the three guards
+
+
+def _load_guards():
+    import bot_state
+    st = bot_state.load(_GUARDS)
+    _sent_in_process.clear()
+    for k, v in st.get("sent", []):
+        try:
+            _sent_in_process[(date.fromisoformat(k[0]), k[1])] = int(v)
+        except (ValueError, TypeError, IndexError):
+            continue
+    _seen_this_process.clear()
+    _seen_this_process.update(tuple(x) for x in st.get("seen", []))
+    _test_sent.clear()
+    _test_sent.update(st.get("test_sent", {}))
+
+
+def _save_guards():
+    """Called the moment a guard changes (before the send it protects), so a
+    run killed mid-send still leaves the guard recorded for the next run."""
+    import bot_state
+    bot_state.save(_GUARDS, {
+        "sent": [[[str(k[0]), k[1]], v] for k, v in _sent_in_process.items()],
+        "seen": [list(x) for x in _seen_this_process],
+        "test_sent": dict(_test_sent)})
 
 
 def campaign_ledger() -> set | None:
@@ -810,6 +848,7 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
                 return stats
             r[col] = f"sending {stamp}"
             _seen_this_process.add((pid, col))
+            _save_guards()
             ctx = dict(first=first_name(r["Name"]), physio=r["Physio"] or "the team",
                        link=link(r), unsub=unsub_url(r["Key"]))
             if ch == "sms":
@@ -820,6 +859,7 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
                 ok, info = send_email(email, subj.format(**ctx), tmpl.format(**ctx),
                                       unsub=ctx["unsub"])
             _sent_in_process[(d, ch)] += 1
+            _save_guards()
             status = "sent" if ok else f"failed: {info}"
             _log(r, flow, ch, status)
             ledger.add((pid, flow))
@@ -879,7 +919,7 @@ _uid_cache: dict[str, str] = {}
 def slack():
     global _slack
     if _slack is None:
-        _slack = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
+        _slack = WebClient(token=os.environ["SLACK_BOT_TOKEN"], timeout=20)
     return _slack
 
 
@@ -1214,6 +1254,7 @@ def run_vouchers(now: datetime | None = None, log=print) -> dict:
             _alert(f"couldn't write to the Campaign tab (`{str(exc)[:120]}`) — vouchers paused.")
             return stats
         _seen_this_process.add((str(r["Patient ID"]), "Voucher Sent"))
+        _save_guards()
         ok, info = send_sms(mob, body)
         _log(r, "campaign_pilates_voucher", "sms", "sent" if ok else f"failed: {info}")
         try:
@@ -1464,6 +1505,10 @@ def _only_one_runner():
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
+            # Never skip silently: a lock held for good by another process
+            # (an inherited fd after a fork) is how the bots stopped 8–14 Nov.
+            print(f"campaign: lock {_LOCK_PATH} held by another process — skipped",
+                  flush=True)
             yield False
             return
         yield True
@@ -1509,8 +1554,66 @@ def run_forever(interval: int = 300):
         time.sleep(interval)
 
 
+HANDLED_ERROR = 3   # exit code: error already reported by this module's own alert
+
+
+def run_once() -> int:
+    """One run_forever wake as its own short-lived process (bot_worker.py,
+    since 2026-11-15). The once-a-day markers, the 30-min send clock and the
+    repeat-send guards are reloaded from bot_state, so behaviour matches the
+    old always-on loop."""
+    import bot_state
+    if mode() == "off":
+        return 0
+    _load_guards()
+    st = bot_state.load("campaign_schedule")
+    last: dict = {}
+    for k, v in (st.get("last") or {}).items():
+        try:
+            last[k] = date.fromisoformat(v)
+        except (ValueError, TypeError):
+            pass
+    sends_at = float(st.get("sends_at") or 0)
+
+    def mark(job, d):
+        last[job] = d
+        st["last"] = {k: v.isoformat() for k, v in last.items()}
+        bot_state.save("campaign_schedule", st)
+
+    try:
+        now = datetime.now(LONDON)
+        d = today_l(now)
+        if d <= date.fromisoformat(config.CAMPAIGN_END) + timedelta(days=7):
+            if now.weekday() == 0 and _due_today("refresh", 6, now, last):
+                run_refresh(now); mark("refresh", d)
+            if _due_today("outcomes", config.CAMPAIGN_OUTCOME_HOUR, now, last):
+                run_outcomes(now); mark("outcomes", d)
+            if _due_today("calls", config.CAMPAIGN_CALL_LIST_HOUR, now, last):
+                run_call_lists(now); mark("calls", d)
+            if (now.weekday() == config.CAMPAIGN_SCORECARD_WEEKDAY
+                    and _due_today("scorecard", config.CAMPAIGN_SCORECARD_HOUR, now, last)):
+                run_scorecard(now); mark("scorecard", d)
+            if time.time() - sends_at >= 1800:
+                # Stamp the clock BEFORE sending: a run killed mid-send must
+                # not make the next run start another round straight away.
+                st["sends_at"] = time.time()
+                bot_state.save("campaign_schedule", st)
+                run_sends(now)
+                run_vouchers(now)
+        return 0
+    except Exception as exc:
+        print(f"campaign loop error: {exc}", flush=True)
+        try:
+            _alert(f"loop error `{str(exc)[:200]}` — will retry in 5 min.")
+        except Exception:
+            pass
+        return HANDLED_ERROR
+
+
 if __name__ == "__main__":
     import sys
+    if "--once" in sys.argv:
+        sys.exit(run_once())
     from dotenv import load_dotenv
     load_dotenv(override=True)
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""

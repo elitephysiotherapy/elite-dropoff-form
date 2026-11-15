@@ -33,6 +33,7 @@ from contextlib import contextmanager
 from datetime import datetime
 
 import gspread
+import net_timeouts  # noqa: F401  (hard Sheets timeouts — see module)
 
 import config
 import phase1_fetch as p1
@@ -650,6 +651,10 @@ def _only_one_runner():
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
+            # Never skip silently: a lock held for good by another process
+            # (an inherited fd after a fork) is how the bots stopped 8–14 Nov.
+            print(f"team sheet sync: lock {_LOCK_PATH} held by another process — skipped",
+                  flush=True)
             yield False
             return
         yield True
@@ -692,7 +697,49 @@ def run_forever(interval=SYNC_EVERY):
         time.sleep(interval)
 
 
+HANDLED_ERROR = 3   # exit code: error already reported by this module's own alert
+
+
+def run_once() -> int:
+    """One sync as its own short-lived process (bot_worker.py, since
+    2026-11-15). Same work and alerts as one run_forever loop; the failure
+    count and the views-checked date persist in bot_state between runs."""
+    import bot_state
+    st = bot_state.load("team_sheet")
+    try:
+        pushed, rows = sync(verbose=False)
+        today = datetime.now().date().isoformat()
+        if st.get("views_checked") != today:   # roster changes land within a day
+            ensure_physio_views(verbose=False)
+            st["views_checked"] = today
+        if pushed:
+            print(f"team sheet: pushed {pushed} feedback cell(s), {rows} rows live",
+                  flush=True)
+        st["fails"] = 0
+        bot_state.save("team_sheet", st)
+        return 0
+    except Exception as exc:
+        fails = int(st.get("fails", 0)) + 1
+        st["fails"] = fails
+        bot_state.save("team_sheet", st)
+        print(f"team sheet sync failed ({fails}): {exc}", flush=True)
+        if fails in (2, 16):                          # ~1 h, then ~8 h
+            try:
+                import slack_notifier
+                slack_notifier._send_dm(
+                    config.CEO_SLACK_EMAIL,
+                    f":warning: Team drop-off sheet sync has failed {fails} "
+                    f"times in a row — physio feedback is *not* reaching the "
+                    f"master sheet. Last error: `{exc}`",
+                    target_label="team sheet sync failure")
+            except Exception as alert_exc:
+                print(f"  (could not raise the alert: {alert_exc})", flush=True)
+        return HANDLED_ERROR
+
+
 if __name__ == "__main__":
+    if "--once" in sys.argv:
+        sys.exit(run_once())
     if "--build" in sys.argv:
         build()
     if "--sync" in sys.argv:

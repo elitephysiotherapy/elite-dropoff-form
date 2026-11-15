@@ -39,6 +39,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import gspread
+import net_timeouts  # noqa: F401  (hard Sheets timeouts — see module)
 import requests
 from google.oauth2.service_account import Credentials
 from slack_sdk import WebClient
@@ -421,7 +422,7 @@ _slack = None
 def slack():
     global _slack
     if _slack is None:
-        _slack = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
+        _slack = WebClient(token=os.environ["SLACK_BOT_TOKEN"], timeout=20)
     return _slack
 
 
@@ -451,6 +452,10 @@ def _only_one_runner():
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
+            # Never skip silently: a lock held for good by another process
+            # (an inherited fd after a fork) is how the bots stopped 8–14 Nov.
+            print(f"comms check: lock {_LOCK_PATH} held by another process — skipped",
+                  flush=True)
             yield False
             return
         yield True
@@ -485,7 +490,44 @@ def run_forever(interval: int = 300):
         time.sleep(interval)
 
 
+HANDLED_ERROR = 3   # exit code: error already reported by this module's own alert
+
+
+def run_once_if_due() -> int:
+    """One run_forever wake as its own short-lived process (bot_worker.py,
+    since 2026-11-15): run the daily check if it's due. Failure count and the
+    alerted-today date persist in bot_state between runs."""
+    import bot_state
+    st = bot_state.load("comms_check")
+    try:
+        now_l = datetime.now(LONDON)
+        if (now_l.hour, now_l.minute) >= RUN_AT:
+            ws = check_ws(marketing_sheet())
+            if due(now_l, _last_run(ws)):
+                run_once(post=True, log=lambda m: print(m, flush=True))
+        st["fails"] = 0
+        bot_state.save("comms_check", st)
+        return 0
+    except Exception as exc:
+        fails = int(st.get("fails", 0)) + 1
+        st["fails"] = fails
+        print(f"comms check error ({fails}): {exc}", flush=True)
+        today = datetime.now(LONDON).date().isoformat()
+        if fails >= 3 and st.get("alerted") != today:
+            try:
+                slack().chat_postMessage(channel=_martin(), text=(
+                    f":warning: The daily comms check has failed {fails} times today "
+                    f"and hasn't run. Last error: {str(exc)[:300]}"))
+                st["alerted"] = today
+            except Exception:
+                pass
+        bot_state.save("comms_check", st)
+        return HANDLED_ERROR
+
+
 if __name__ == "__main__":
+    if "--once-if-due" in sys.argv:
+        sys.exit(run_once_if_due())
     if "--post" in sys.argv:
         run_once(post=True)
     else:

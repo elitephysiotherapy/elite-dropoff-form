@@ -887,70 +887,29 @@ def twilio_voice():
 
 
 # ---------------------------------------------------------------------------
-# Team drop-off sheet — two-way sync, run here rather than as its own cron.
-# This service is already always-on for Slack and Twilio, so a background
-# thread costs nothing and needs no new Render resource. team_sheet holds a
-# lock so only one gunicorn worker syncs at a time.
+# Bot modules used by web routes (Slack buttons, SMS replies, unsubscribe).
+# Imported up front, on the main thread, so no request thread ever imports a
+# module half-way (that handed the speed-to-lead button handler a half-loaded
+# sheets_retry on 2026-11-08).
 # ---------------------------------------------------------------------------
-# Import on the main thread BEFORE any background thread starts, so no two
-# threads ever import the same module at once (that handed the speed-to-lead
-# button handler a half-loaded sheets_retry on 2026-11-08).
 import team_sheet  # noqa: E402
 import speed_to_lead  # noqa: E402
 import comms_check  # noqa: E402
 import campaign  # noqa: E402
 
-if os.environ.get("TEAM_SHEET_SYNC", "1") == "1":
-    def _start_team_sheet_sync():
-        team_sheet.run_forever()
-
-    threading.Thread(target=_start_team_sheet_sync, daemon=True,
-                     name="team-sheet-sync").start()
-    print("team sheet sync thread started")
+# 2026-11-15: the bots (speed-to-lead, team-sheet sync, comms check, campaign)
+# NO LONGER run inside the web server — not even as a fallback. They used to be
+# threads here; gunicorn imports this module in its MASTER process and then
+# forks the worker, and the forked worker inherited the threads' open lock
+# files (/tmp/*.lock). flock is per open file, so the idle worker held all four
+# locks forever and every bot tick silently skipped — Sun 8 Nov to Sat 14 Nov,
+# with the web routes still answering. They now run in their own Render
+# Background Worker (bot_worker.py): each run a fresh process, hard time limit.
+# The imports above stay: the web routes (Slack buttons, unsubscribe) use them.
+print("bot threads are not run in the web server (see bot_worker.py)")
 
 
 if __name__ == "__main__":
     # Local dev runner
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
-
-
-# ---------------------------------------------------------------------------
-# Speed-to-lead responder — texts each new Meta lead within ~2 min and chases
-# reception to call (speed_to_lead.py). Same always-on pattern as the team
-# sheet sync; a file lock keeps it to one gunicorn worker.
-# ---------------------------------------------------------------------------
-import config as _config  # noqa: E402
-
-if _config.STL_ENABLED:
-    def _start_speed_to_lead():
-        speed_to_lead.run_forever()
-
-    threading.Thread(target=_start_speed_to_lead, daemon=True,
-                     name="speed-to-lead").start()
-    print(f"speed-to-lead thread started (live={_config.STL_LIVE})")
-
-
-# ---------------------------------------------------------------------------
-# Daily patient-comms check (comms_check.py) — 07:15 London: opt-out breaches,
-# exact repeats, Cliniko + bots clashes → "Comms Check" tab + DM to Martin.
-# ---------------------------------------------------------------------------
-if os.environ.get("COMMS_CHECK_ENABLED", "1") == "1":
-    def _start_comms_check():
-        comms_check.run_forever()
-
-    threading.Thread(target=_start_comms_check, daemon=True,
-                     name="comms-check").start()
-    print("comms check thread started")
-
-
-# ---------------------------------------------------------------------------
-# Pre-Christmas campaign (campaign.py) — texts/emails, physio call lists,
-# outcomes, vouchers. CAMPAIGN_MODE off / test / live on Render.
-# ---------------------------------------------------------------------------
-if _config.CAMPAIGN_MODE != "off":
-    def _start_campaign():
-        campaign.run_forever()
-
-    threading.Thread(target=_start_campaign, daemon=True, name="campaign").start()
-    print(f"campaign thread started (mode={_config.CAMPAIGN_MODE})")

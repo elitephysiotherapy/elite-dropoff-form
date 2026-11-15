@@ -9,6 +9,7 @@ import json
 import os
 
 import gspread
+import net_timeouts  # noqa: F401  (hard Sheets timeouts)
 from google.oauth2.service_account import Credentials
 
 import config

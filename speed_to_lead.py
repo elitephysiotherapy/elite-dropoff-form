@@ -52,6 +52,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import gspread
+import net_timeouts  # noqa: F401  (hard Sheets timeouts — see module)
 import requests
 from google.oauth2.service_account import Credentials
 from slack_sdk import WebClient
@@ -383,7 +384,7 @@ _uid_cache: dict[str, str] = {}
 def slack():
     global _slack
     if _slack is None:
-        _slack = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
+        _slack = WebClient(token=os.environ["SLACK_BOT_TOKEN"], timeout=20)
     return _slack
 
 
@@ -904,6 +905,10 @@ def _only_one_runner():
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
+            # Never skip silently: a lock held for good by another process
+            # (an inherited fd after a fork) is how the bots stopped 8–14 Nov.
+            print(f"speed-to-lead: lock {_LOCK_PATH} held by another process — skipped",
+                  flush=True)
             yield False
             return
         yield True
@@ -938,9 +943,42 @@ def run_forever(interval: int | None = None):
         time.sleep(interval)
 
 
+HANDLED_ERROR = 3   # exit code: error already reported by this module's own alert
+
+
+def run_once(dry_run: bool = False) -> int:
+    """One tick as its own short-lived process (bot_worker.py, since
+    2026-11-15). Same alerting as run_forever, with the consecutive-failure
+    count kept in bot_state between runs. Returns the process exit code."""
+    import bot_state
+    try:
+        stats = tick(dry_run=dry_run, log=lambda m: print(m, flush=True))
+        if any(stats.values()):
+            print(f"speed-to-lead: {stats}", flush=True)
+        if not dry_run:
+            bot_state.record_result("speed_to_lead", True)
+        return 0
+    except Exception as exc:
+        fails = 0 if dry_run else bot_state.record_result("speed_to_lead", False)
+        print(f"speed-to-lead tick failed ({fails}): {exc}", flush=True)
+        if fails in (5, 60):                           # ~5 min, then ~1 h
+            try:
+                slack_notifier._send_dm(
+                    config.CEO_SLACK_EMAIL,
+                    f":warning: Speed-to-lead has failed {fails} times in a row "
+                    f"— new Meta leads are *not* being texted or posted. "
+                    f"Last error: `{exc}`",
+                    target_label="speed-to-lead failure")
+            except Exception as alert_exc:
+                print(f"  (could not raise the alert: {alert_exc})", flush=True)
+        return HANDLED_ERROR
+
+
 if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+    if "--once" in sys.argv:
+        sys.exit(run_once(dry_run="--dry" in sys.argv))
     if "--tick" in sys.argv:
         print(tick())
     else:

@@ -26,6 +26,7 @@ import socket
 import time
 
 import gspread
+import net_timeouts  # noqa: F401  (hard Sheets timeouts — see module)
 import requests
 
 # 2, 4, 8, 16, 32, 60, 60 → up to ~3 min of waiting across 7 attempts. A Sheets

@@ -28,7 +28,7 @@ _email_to_userid = {}
 def _get_client():
     global _client
     if _client is None:
-        _client = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
+        _client = WebClient(token=os.environ["SLACK_BOT_TOKEN"], timeout=20)
     return _client
 
 
