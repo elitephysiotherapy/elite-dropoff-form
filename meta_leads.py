@@ -1,5 +1,11 @@
 """Copy Meta (Facebook/Instagram) ad leads into the bookings sheet's Leads tab.
 
+SINCE 16 NOV 2026 leads are read DIRECT from Meta's lead forms (read_api_leads,
+META_LEADS_TOKEN) — every form on the Page, so new campaigns/forms need no setup.
+Each lead is also saved to the "Meta Leads (raw)" tab on the bookings sheet,
+because Meta deletes leads after 90 days. The Online Leads sheet described below
+is only a cross-check/fallback until config.META_LEADS_SHEET_CROSSCHECK_UNTIL.
+
 Meta's lead forms land in the "Online Leads" Google Sheet (one tab per clinic:
 "Maghera Leads", "Omagh Leads"). Reception used to retype each one into the
 New Patient Bookings sheet's Leads tab by hand. This runs hourly 07:00–21:00
@@ -33,7 +39,11 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -96,7 +106,7 @@ def _source_status(cells):
     return ""
 
 
-def read_source_leads(gc):
+def read_sheet_leads(gc):
     """Every real lead on the Online Leads sheet, oldest first."""
     sh = gc.open_by_key(config.META_LEADS_SPREADSHEET_ID)
     ranges = [f"'{t}'" for t in SOURCE_TABS]
@@ -157,12 +167,217 @@ def _start_date():
     return datetime.strptime(config.META_LEADS_START_DATE, "%Y-%m-%d").date()
 
 
+# --------------------------------------------------------------------------
+# Direct from Meta (since 16 Nov 2026)
+# --------------------------------------------------------------------------
+
+GRAPH = "https://graph.facebook.com/v23.0"
+_CLINICS = ("Cookstown", "Maghera", "Omagh")
+_STD_FIELDS = {"full_name", "first_name", "last_name", "phone_number", "email",
+               "city", "post_code", "zip_code", "date_of_birth"}
+_forms_cache = {"at": 0.0, "forms": []}
+
+
+def _graph(path, token, params=None):
+    q = dict(params or {}, access_token=token)
+    url = f"{GRAPH}/{path}?" + urllib.parse.urlencode(q)
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error", {}).get("message")
+        except ValueError:
+            msg = str(e)
+        raise RuntimeError(f"Meta API {path.split('?')[0]}: {msg}") from None
+
+
+def _lead_forms(token):
+    """Every lead form on the Page (cached 30 min). Listing forms needs a Page
+    token, which the system-user token hands out via me/accounts."""
+    if _forms_cache["forms"] and time.time() - _forms_cache["at"] < 1800:
+        return _forms_cache["forms"]
+    pages = _graph("me/accounts", token, {"fields": "id,access_token"}).get("data", [])
+    page = next((p for p in pages if p["id"] == config.META_PAGE_ID), None)
+    if not page:
+        raise RuntimeError("Meta API: token has no access to the Elite Physiotherapy Page")
+    forms, after = [], None
+    while True:
+        q = {"fields": "id,name,status", "limit": 100}
+        if after:
+            q["after"] = after
+        r = _graph(f"{config.META_PAGE_ID}/leadgen_forms", page["access_token"], q)
+        forms += r.get("data", [])
+        after = r.get("paging", {}).get("cursors", {}).get("after") if r.get("paging", {}).get("next") else None
+        if not after:
+            break
+    _forms_cache.update(at=time.time(), forms=forms)
+    return forms
+
+
+def _clinic_for(campaign, form_id, form_name):
+    for text in (campaign,):
+        for c in _CLINICS:
+            if c.lower() in (text or "").lower():
+                return c
+    if form_id in config.META_FORM_CLINIC:
+        return config.META_FORM_CLINIC[form_id]
+    for c in _CLINICS:
+        if c.lower() in (form_name or "").lower():
+            return c
+    print(f"  WARN lead form {form_id} ({form_name}) / campaign '{campaign}' has no "
+          f"clinic — using {config.META_LEADS_DEFAULT_CLINIC}. Put the clinic name in "
+          f"the campaign name, or add the form to config.META_FORM_CLINIC.")
+    return config.META_LEADS_DEFAULT_CLINIC
+
+
+def read_api_leads(since=None):
+    """Every lead on every lead form on the Page since `since` (a date; default
+    META_LEADS_START_DATE), oldest first — same shape as read_sheet_leads."""
+    token = os.environ.get("META_LEADS_TOKEN")
+    if not token:
+        raise RuntimeError("META_LEADS_TOKEN not set")
+    since = since or _start_date()
+    ts = int(datetime.combine(since, datetime.min.time(), LONDON).timestamp())
+    fields = ("id,created_time,ad_id,ad_name,adset_name,campaign_id,campaign_name,"
+              "form_id,is_organic,platform,field_data")
+    leads = []
+    for form in _lead_forms(token):
+        after = None
+        while True:
+            q = {"fields": fields, "limit": 500,
+                 "filtering": json.dumps([{"field": "time_created",
+                                           "operator": "GREATER_THAN", "value": ts}])}
+            if after:
+                q["after"] = after
+            r = _graph(f"{form['id']}/leads", token, q)
+            for d in r.get("data", []):
+                fd = {f["name"]: (f.get("values") or [""])[0] for f in d.get("field_data", [])}
+                name = (fd.get("full_name") or " ".join(
+                    x for x in (fd.get("first_name"), fd.get("last_name")) if x)).strip()
+                if not name or "<test lead" in name.lower() or "dummy data" in name.lower():
+                    continue
+                issue = next((v for k, v in fd.items() if k not in _STD_FIELDS), "")
+                campaign = d.get("campaign_name", "")
+                leads.append({
+                    "key": f"l:{d['id']}", "tab": f"form {form['id']}",
+                    "clinic": _clinic_for(campaign, form["id"], form.get("name")),
+                    "dt": datetime.fromisoformat(d["created_time"].replace("+0000", "+00:00")).astimezone(LONDON),
+                    "name": name, "phone": fd.get("phone_number", ""),
+                    "issue": issue, "notes": "", "status": "",
+                    "platform": {"fb": "Facebook", "ig": "Instagram"}.get(
+                        (d.get("platform") or "").lower(), ""),
+                    "ad_id": d.get("ad_id", ""), "campaign_id": d.get("campaign_id", ""),
+                    "ad": " — ".join(x for x in (campaign, d.get("ad_name", "")) if x)
+                          or ("Organic (Page form)" if d.get("is_organic") else ""),
+                })
+            nxt = r.get("paging", {})
+            after = nxt.get("cursors", {}).get("after") if nxt.get("next") else None
+            if not after:
+                break
+    leads.sort(key=lambda l: l["dt"])
+    return leads
+
+
+ARCHIVE_TAB = "Meta Leads (raw)"
+ARCHIVE_COLS = ["Meta Lead ID", "Created", "Clinic", "Name", "Phone", "Issue",
+                "Platform", "Campaign / Ad", "Ad ID", "Campaign ID", "Form ID"]
+
+
+def read_archive(sh):
+    """Every lead ever pulled from Meta (Meta deletes them after 90 days)."""
+    try:
+        ws = sh.worksheet(ARCHIVE_TAB)
+    except gspread.WorksheetNotFound:
+        return []
+    out = []
+    for r in ws.get_all_records(expected_headers=ARCHIVE_COLS):
+        try:
+            dt = datetime.fromisoformat(str(r["Created"]))
+        except ValueError:
+            dt = None
+        out.append({"key": str(r["Meta Lead ID"]), "tab": "archive", "clinic": r["Clinic"],
+                    "dt": dt, "name": r["Name"], "phone": str(r["Phone"]),
+                    "issue": r["Issue"], "notes": "", "status": "",
+                    "platform": r["Platform"], "ad_id": str(r["Ad ID"]),
+                    "campaign_id": str(r["Campaign ID"]), "ad": r["Campaign / Ad"]})
+    return out
+
+
+def archive_leads(sh, leads, retry=None):
+    """Append any Meta-API lead not yet on the archive tab."""
+    retry = retry or _retry
+    try:
+        ws = sh.worksheet(ARCHIVE_TAB)
+    except gspread.WorksheetNotFound:
+        ws = retry(lambda: sh.add_worksheet(ARCHIVE_TAB, rows=1000, cols=len(ARCHIVE_COLS)),
+                   "add archive tab")
+        retry(lambda: ws.update([ARCHIVE_COLS], "A1"), "archive header")
+    have = set(retry(lambda: ws.col_values(1), "read archive ids"))
+    new = [[l["key"], l["dt"].isoformat(), l["clinic"], l["name"], l["phone"], l["issue"],
+            l["platform"], l["ad"], l["ad_id"], l["campaign_id"], l["tab"].replace("form ", "")]
+           for l in leads if l["tab"].startswith("form ") and l["key"] not in have]
+    if new:
+        retry(lambda: ws.append_rows(new, value_input_option="RAW", table_range="A1"),
+              "append archive")
+    print(f"  archive: {len(new)} new lead(s) saved to '{ARCHIVE_TAB}'")
+    return len(new)
+
+
+def _crosscheck_active():
+    return date.today() <= datetime.strptime(
+        config.META_LEADS_SHEET_CROSSCHECK_UNTIL, "%Y-%m-%d").date()
+
+
+def read_source_leads(gc=None, since=None, archive_sh=None):
+    """All Meta leads, oldest first. Direct from Meta, plus (when archive_sh is
+    given) the archive tab for leads Meta has already deleted (90-day limit).
+    During the cross-check window the Online Leads sheet is merged in too
+    (hand-typed rows, anything the API missed, booked/declined statuses) and
+    used as a fallback if Meta fails."""
+    try:
+        leads = read_api_leads(since)
+        if archive_sh is not None:
+            have = {l["key"] for l in leads}
+            leads += [a for a in _retry(lambda: read_archive(archive_sh), "read archive")
+                      if a["key"] not in have]
+    except Exception as e:
+        if not _crosscheck_active() or gc is None:
+            raise
+        print(f"  WARN Meta API failed ({e}) — falling back to the Online Leads sheet")
+        return read_sheet_leads(gc)
+    if not _crosscheck_active() or gc is None:
+        return leads
+    try:
+        sheet = read_sheet_leads(gc)
+    except Exception as e:  # cross-check only — never block on Julie's sheet
+        print(f"  WARN Online Leads cross-check skipped ({e})")
+        return leads
+    by_key = {l["key"]: l for l in leads}
+    extra = []
+    for s in sheet:
+        a = by_key.get(s["key"])
+        if a:
+            a["status"] = a["status"] or s["status"]
+            a["notes"] = a["notes"] or s["notes"]
+        elif s["key"].startswith("l:") and s["dt"] and s["dt"].date() >= (since or _start_date()):
+            print(f"  WARN on Online Leads sheet but NOT from Meta API: {s['key']} {s['name']}")
+            extra.append(s)
+        elif not s["key"].startswith("l:"):
+            extra.append(s)   # hand-typed row on the sheet
+    out = leads + extra
+    out.sort(key=lambda l: l["dt"] or datetime.max.replace(tzinfo=LONDON))
+    return out
+
+
 def sync_meta_leads(sh, write=False, gc=None, retry=None):
     """Append new Meta leads to sh's Leads tab. Returns the list of leads added
     (or that would be added, in a dry run)."""
     retry = retry or _retry
     gc = gc or gspread.authorize(_credentials())
-    source = retry(lambda: read_source_leads(gc), "read Online Leads")
+    source = read_source_leads(gc, archive_sh=sh)
+    if write:
+        archive_leads(sh, source, retry)
 
     ws = retry(lambda: sh.worksheet(LEADS_TAB), "open Leads tab")
     vals = retry(lambda: ws.get_all_values(), "read Leads tab")

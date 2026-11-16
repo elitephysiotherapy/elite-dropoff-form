@@ -827,6 +827,22 @@ BOOKINGS_SPREADSHEET_ID = "1zoFhXPGzDnrCVTgTYs-YRm8EUzx91LL5Q_8L5Bd7_iU"
 META_LEADS_SPREADSHEET_ID = "11DAA0DAfkqWi4c7YOEuNMpmrvHUYeG3YhMv0iaRcBk8"
 META_LEADS_START_DATE = "2026-09-11"
 
+# Since 16 Nov 2026 leads come DIRECT from Meta's lead forms (META_LEADS_TOKEN,
+# EliteReporting system user: leads_retrieval + pages_manage_ads). Every form on
+# the Page is read, so new forms (Laura's campaigns) are picked up automatically.
+# Until the cross-check date the Online Leads sheet is ALSO read: hand-typed rows
+# and anything the API missed are merged in, and if the API is down we fall back
+# to the sheet. After that date the sheet is ignored.
+META_PAGE_ID = "142110192527159"
+META_LEADS_SHEET_CROSSCHECK_UNTIL = "2026-11-24"
+# Clinic for a lead: a clinic name in the campaign name wins, then this form map,
+# then a clinic name in the form name, else META_LEADS_DEFAULT_CLINIC (+ WARN).
+META_FORM_CLINIC = {
+    "1017989714598994": "Maghera",   # 11 Sep form: Maghera campaign + GAA Player
+    "1764769824832265": "Omagh",     # 22 Sep form: Omagh offer
+}
+META_LEADS_DEFAULT_CLINIC = "Cookstown"
+
 # Hand-confirmed Meta lead -> Cliniko patient links, for leads the phone/name
 # matching can't make (meta_funnel.py). Meta Lead ID -> Cliniko patient id.
 META_LEAD_PATIENT_LINKS = {

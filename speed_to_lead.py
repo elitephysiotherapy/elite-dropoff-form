@@ -316,7 +316,10 @@ def append_row(ws, values: dict[str, str]) -> int:
 # Sources
 # ---------------------------------------------------------------------------
 def read_leads():
-    return _retry(lambda: meta_leads.read_source_leads(_gspread()), "read Online Leads")
+    # Direct from Meta; only the last few days matter here (older leads are
+    # past STL_MAX_AGE_HOURS and never texted).
+    since = (datetime.now(LONDON) - timedelta(days=3)).date()
+    return _retry(lambda: meta_leads.read_source_leads(_gspread(), since=since), "read Meta leads")
 
 
 _CLOSED_STATUSES = {"booked", "declined", "lost", "not appropriate"}

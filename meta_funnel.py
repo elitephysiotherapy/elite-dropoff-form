@@ -92,7 +92,7 @@ def load_meta_leads(gc):
             "tab_status": str(r.get("Status") or "").strip().lower(),
             "meta_id": str(r.get("Meta Lead ID") or "").strip(),
         })
-    ids = {l["key"]: l for l in meta_leads.read_source_leads(gc)}
+    ids = {l["key"]: l for l in meta_leads.read_source_leads(gc, archive_sh=sh)}
     for l in leads:
         src = ids.get(l["meta_id"], {})
         l["ad_id"], l["campaign_id"] = src.get("ad_id", ""), src.get("campaign_id", "")

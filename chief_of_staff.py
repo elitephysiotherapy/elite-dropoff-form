@@ -361,7 +361,8 @@ def check_outcomes(now, findings):
     except Exception as exc:
         findings["watch"].append(f"Couldn't read the Speed to Lead tab: {exc}")
 
-    # Every Meta lead reached the Online Leads sheet (the 14 Nov gap).
+    # Every lead Meta counted was readable from the lead forms (direct feed since
+    # 16 Nov 2026; before that, the Online Leads sheet — the 14 Nov gap).
     try:
         tok = os.environ.get("META_ACCESS_TOKEN")
         if tok:
@@ -384,11 +385,11 @@ def check_outcomes(now, findings):
             if meta.get(y, 0) > sheet.get(y, 0):
                 findings["problems"].append(
                     f"*Meta leads*: Meta counts {meta[y]} lead(s) yesterday but only {sheet.get(y, 0)} "
-                    f"reached the Online Leads sheet — check Meta Leads Center; the missing one(s) "
-                    f"won't be texted.")
+                    f"came through the lead feed — check Meta Leads Center and that META_LEADS_TOKEN "
+                    f"still works; the missing one(s) won't be texted.")
             findings["counts"]["meta_leads_yesterday"] = meta.get(y, 0)
     except Exception as exc:
-        findings["watch"].append(f"Couldn't compare Meta leads with the sheet: {exc}")
+        findings["watch"].append(f"Couldn't compare Meta leads with the lead feed: {exc}")
 
 
 # --------------------------------------------------------------------------- Mac
