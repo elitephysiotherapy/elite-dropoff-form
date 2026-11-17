@@ -15,7 +15,8 @@ _RESEND_URL = "https://api.resend.com/emails"
 
 
 def send_email(*, to, subject, html=None, text=None,
-               from_name=None, from_email=None, reply_to=None, headers=None):
+               from_name=None, from_email=None, reply_to=None, headers=None,
+               safe_mode=None):
     """Send one email. Returns (ok: bool, info: str).
 
     `from_name`/`from_email` default to the clinic sender; pass config.EMAIL_SINEAD
@@ -31,7 +32,9 @@ def send_email(*, to, subject, html=None, text=None,
     from_email = from_email or config.EMAIL_FROM_ADDRESS
     reply_to = reply_to or from_email
 
-    if config.MARKETING_SAFE_MODE:
+    # safe_mode overrides config.MARKETING_SAFE_MODE (campaign.py has its own
+    # test switch). None = use the global setting.
+    if (config.MARKETING_SAFE_MODE if safe_mode is None else safe_mode):
         subject = f"[TEST → {to}] {subject}"
         to = config.MARKETING_TEST_EMAIL
 

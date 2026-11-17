@@ -531,23 +531,44 @@ def _test_capped(job: str) -> bool:
     return False
 
 
+def live_message_problem(to: str, text: str) -> str:
+    """Last check before a LIVE send. On 17 Nov 2026 the shared MARKETING_SAFE_MODE
+    default (true on Render) rerouted all 245 Black Friday texts to Martin with a
+    "[TEST → …]" prefix. A live campaign message must never carry a test tag or
+    go to the test phone/inbox. Returns the problem, or "" if it's fine."""
+    if "TEST" in text[:40]:
+        return "message carries a TEST tag"
+    if to and (norm_phone(to) == norm_phone(config.MARKETING_TEST_PHONE)
+               or to.strip().lower() == config.MARKETING_TEST_EMAIL.lower()):
+        return "addressed to Martin's test phone/email"
+    return ""
+
+
 def send_sms(to: str, body: str) -> tuple[bool, str]:
     if mode() == "test":
         body = f"[CAMPAIGN TEST → {norm_phone(to)[-4:]}] {body}"
         to = config.MARKETING_TEST_PHONE
-    return twilio_client.send_sms(to=to, body=body, sender=config.SMS_SENDER_NUMBER)
+    elif (problem := live_message_problem(to, body)):
+        return False, f"blocked: {problem}"
+    # safe_mode=False: the campaign's own CAMPAIGN_MODE is the only switch.
+    # The shared MARKETING_SAFE_MODE defaults ON for services that don't set it.
+    return twilio_client.send_sms(to=to, body=body, sender=config.SMS_SENDER_NUMBER,
+                                  safe_mode=False)
 
 
 def send_email(to: str, subject: str, text: str, unsub: str = "") -> tuple[bool, str]:
     if mode() == "test":
         subject = f"[CAMPAIGN TEST] {subject}"
         to = config.MARKETING_TEST_EMAIL
+    elif (problem := live_message_problem(to, subject)):
+        return False, f"blocked: {problem}"
     from marketing.templates import _to_html
     headers = ({"List-Unsubscribe": f"<{unsub}>",
                 "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"} if unsub else None)
     # Email replies go to Sinéad Rocks (Martin 2026-11-14), same as text replies.
     return resend_client.send_email(to=to, subject=subject, text=text, html=_to_html(text),
-                                    headers=headers, reply_to=config.EMAIL_SINEAD[1])
+                                    headers=headers, reply_to=config.EMAIL_SINEAD[1],
+                                    safe_mode=False)
 
 
 # ---- One-click unsubscribe (link in every campaign email) ------------------
@@ -737,6 +758,18 @@ def recent_other_messages(days: int = RECENT_MESSAGE_DAYS) -> set[str]:
     return out
 
 
+_preflight_warned = {}
+
+
+def live_env_missing() -> list[str]:
+    """Settings a LIVE send needs on whichever Render service runs it. Checked
+    every round, because the 15 Nov move to the elite-bots worker silently
+    dropped some of them (17 Nov reroute; email key missing)."""
+    need = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "SLACK_SIGNING_SECRET",
+            "RESEND_API_KEY", "SERVICE_ACCOUNT_JSON", "CLINIKO_API_KEY"]
+    return [k for k in need if not os.environ.get(k, "").strip()]
+
+
 def run_sends(now: datetime | None = None, log=print) -> dict:
     """Job 1: due texts and emails, paced, consent re-checked."""
     now = now or datetime.now(LONDON)
@@ -751,6 +784,15 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
     if mode() == "live" and time.monotonic() - _PROCESS_STARTED < STARTUP_GRACE_SECONDS:
         log("  campaign sends: waiting out the post-deploy grace period")
         return stats
+    if mode() == "live":
+        missing = live_env_missing()
+        if missing:
+            if _preflight_warned.get("day") != d:
+                _preflight_warned["day"] = d
+                _alert(f":octagonal_sign: campaign is LIVE but this server is missing "
+                       f"{', '.join(missing)} — nothing sent. Add them on Render.")
+            log(f"  campaign sends: missing env {missing} — sending nothing")
+            return stats
     ledger = campaign_ledger()
     if ledger is None:
         log("  campaign sends: Sent Log unreadable — sending nothing this round")

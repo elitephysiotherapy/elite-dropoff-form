@@ -34,12 +34,15 @@ def normalise_uk_phone(phone):
     return p
 
 
-def send_sms(*, to, body, sender=None):
+def send_sms(*, to, body, sender=None, safe_mode=None):
     """Send one SMS. Returns (ok: bool, info: str).
 
     `sender` overrides the From. Pass config.SMS_SENDER_NUMBER for campaigns
     where patients need to be able to reply; leave it None and the branded
     one-way "ElitePhysio" ID is used, which cannot receive replies.
+
+    `safe_mode` overrides config.MARKETING_SAFE_MODE for callers that have
+    their own test switch (campaign.py). None = use the global setting.
     """
     sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
     token = os.environ.get("TWILIO_AUTH_TOKEN", "")
@@ -50,7 +53,7 @@ def send_sms(*, to, body, sender=None):
     if not dest:
         return False, "no destination phone number"
 
-    if config.MARKETING_SAFE_MODE:
+    if (config.MARKETING_SAFE_MODE if safe_mode is None else safe_mode):
         body = f"[TEST → {dest}] {body}"
         dest = config.MARKETING_TEST_PHONE
 

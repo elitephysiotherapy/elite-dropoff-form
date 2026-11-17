@@ -8,7 +8,12 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import os  # noqa: E402
+for _k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "SLACK_SIGNING_SECRET",
+           "RESEND_API_KEY", "SERVICE_ACCOUNT_JSON", "CLINIKO_API_KEY"):
+    os.environ.setdefault(_k, "test")   # live preflight needs them present
 import campaign as c  # noqa: E402
+_REAL_SEND_SMS = c.send_sms
 
 failures = 0
 D = date(2026, 11, 18)
@@ -271,5 +276,28 @@ for name, tmpl in (("Club 1", c.SMS_CLUB_1), ("Club 2", c.SMS_CLUB_2)):
           all(ord(ch) < 128 or ch == "£" for ch in body))
 check("club email has unsubscribe", "{unsub}" in c.EMAIL_CLUB_BODY)
 
+
+# --- 17 Nov 2026 regression: shared safe mode must not reroute LIVE texts ----
+from unittest import mock  # noqa: E402
+_posted = []
+class _R:  # noqa: E302
+    status_code = 201
+    def json(self): return {"sid": "SMx"}
+def _fake_post(url, data=None, json=None, **kw):  # noqa: E302
+    _posted.append(data or json); return _R()
+_old_mode, _old_safe = c.config.CAMPAIGN_MODE, c.config.MARKETING_SAFE_MODE
+c.config.CAMPAIGN_MODE, c.config.MARKETING_SAFE_MODE = "live", True   # = Render on 17 Nov
+with mock.patch("marketing.twilio_client.requests.post", _fake_post):
+    ok_, _ = _REAL_SEND_SMS("07700900123", "Hi Pat, it's Elite Physio.")
+check("LIVE text goes to the patient even with MARKETING_SAFE_MODE on",
+      ok_ and _posted and _posted[-1]["To"] == "+447700900123")
+check("LIVE text has no TEST tag", _posted and "TEST" not in _posted[-1]["Body"])
+check("LIVE text to Martin's test phone is blocked",
+      not _REAL_SEND_SMS(c.config.MARKETING_TEST_PHONE, "Hi")[0])
+check("LIVE text carrying a TEST tag is blocked",
+      not _REAL_SEND_SMS("07700900123", "[TEST → x] Hi")[0])
+with mock.patch.dict(os.environ, {"RESEND_API_KEY": ""}):
+    check("LIVE preflight flags a missing email key", "RESEND_API_KEY" in c.live_env_missing())
+c.config.CAMPAIGN_MODE, c.config.MARKETING_SAFE_MODE = _old_mode, _old_safe
 print(f"\n{'ALL PASS' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)
