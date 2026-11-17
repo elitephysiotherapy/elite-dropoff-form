@@ -164,7 +164,7 @@ def mot_row():
 
 w = FakeWorld([mot_row()]).install()
 c.run_sends(NOW, quiet); c.run_sends(NOW, quiet); c.run_sends(NOW, quiet)
-check("normal: Text 1 sent exactly once over 3 rounds", w.sent == [("sms", "07700900123")])
+check("normal: Text 1 sent exactly once over 3 rounds", w.sent == [("sms", "+447700900123")])
 
 w = FakeWorld([mot_row()], writes_ok=False).install()
 c.run_sends(NOW, quiet)
@@ -249,7 +249,7 @@ w = FakeWorld([lead(i) for i in range(5)]).install()
 c.run_sends(datetime(2026, 11, 18, 10, 0, tzinfo=c.LONDON), quiet)
 c.run_sends(datetime(2026, 11, 18, 10, 0, tzinfo=c.LONDON), quiet)
 check(f"5 leads with no Patient ID each texted once ({len(w.sent)} sends)",
-      sorted(t for _, t in w.sent) == sorted(f"0770091{i:04d}" for i in range(5)))
+      sorted(t for _, t in w.sent) == sorted(f"+44770091{i:04d}" for i in range(5)))
 check("Omagh lead gets the Cookstown booking link", True)
 c.config.CAMPAIGN_ACTIVE_GROUPS = ["mot", "club"]
 
@@ -299,5 +299,15 @@ check("LIVE text carrying a TEST tag is blocked",
 with mock.patch.dict(os.environ, {"RESEND_API_KEY": ""}):
     check("LIVE preflight flags a missing email key", "RESEND_API_KEY" in c.live_env_missing())
 c.config.CAMPAIGN_MODE, c.config.MARKETING_SAFE_MODE = _old_mode, _old_safe
+
+# --- phone formats (18 Nov rehearsal) ----------------------------------------
+check("UK mobile with 0", c.textable_mobile("07741 123456") == "+447741123456")
+check("UK mobile missing 0", c.textable_mobile("7741123456") == "+447741123456")
+check("UK mobile +44", c.textable_mobile("+44 7741 123456") == "+447741123456")
+check("Irish mobile no +", c.textable_mobile("353861234567") == "+353861234567")
+check("Irish mobile +353", c.textable_mobile("+353 86 123 4567") == "+353861234567")
+check("NI landline refused", c.textable_mobile("028 8676 1234") == "")
+check("short mobile refused", c.textable_mobile("+44784254424") == "")
+check("junk refused", c.textable_mobile("17851234567") == "")
 print(f"\n{'ALL PASS' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)

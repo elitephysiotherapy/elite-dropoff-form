@@ -213,6 +213,22 @@ def norm_phone(raw: str) -> str:
     return digits[-9:] if len(digits) >= 9 else ""
 
 
+def textable_mobile(raw: str) -> str:
+    """E.164 UK or Irish MOBILE, or "" if the number can't take a text.
+    Fixes the two common typing slips seen in lead forms (17 Nov rehearsal):
+    a UK mobile without its leading 0 (7741…) and an Irish one without the +
+    (3538…). Landlines are refused: they can't take texts (some networks read
+    them out as a voice call) and a run of failures trips the circuit breaker."""
+    d = "".join(ch for ch in (raw or "") if ch.isdigit())
+    if re.fullmatch(r"7\d{9}", d):
+        d = "44" + d
+    if re.fullmatch(r"(0044|44)7\d{9}|07\d{9}", d):
+        return "+447" + d[-9:]
+    if re.fullmatch(r"(00)?3538\d{8}", d):
+        return "+353" + d[-9:]
+    return ""
+
+
 def _d(s: str) -> date | None:
     """Date in a cell — also reads 'sending …' / 'sent (from log) …' stamps.
     A 'failed …' cell has no usable date (nothing was confirmed sent)."""
@@ -619,7 +635,16 @@ def phase2_put_patient(pid: str, body: dict):
 
 def _consent_now(pid: str) -> tuple[bool, bool, str, str]:
     """Fresh (sms_ok, email_ok, mobile, email) from Cliniko just before a send."""
-    p = next(iter(phase2.fetch_all("/patients", [("q[]", f"id:={pid}")])), None)
+    for attempt in range(4):
+        try:
+            p = next(iter(phase2.fetch_all("/patients", [("q[]", f"id:={pid}")])), None)
+            break
+        except RuntimeError as exc:
+            # Cliniko's per-minute limit is shared with every other bot; a 429
+            # used to abort the whole send round. Back off and try again.
+            if "HTTP 429" not in str(exc) or attempt == 3:
+                raise
+            time.sleep(15 * (attempt + 1))
     if not p or p.get("archived_at") or p.get("deleted_at"):
         return False, False, "", ""
     mob = next((x.get("number") for x in p.get("patient_phone_numbers") or []
@@ -767,7 +792,9 @@ def live_env_missing() -> list[str]:
     dropped some of them (17 Nov reroute; email key missing)."""
     need = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "SLACK_SIGNING_SECRET",
             "RESEND_API_KEY", "SERVICE_ACCOUNT_JSON", "CLINIKO_API_KEY"]
-    return [k for k in need if not os.environ.get(k, "").strip()]
+    sa_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "service_account.json")
+    return [k for k in need if not os.environ.get(k, "").strip()
+            and not (k == "SERVICE_ACCOUNT_JSON" and os.path.exists(sa_file))]
 
 
 def run_sends(now: datetime | None = None, log=print) -> dict:
@@ -844,6 +871,15 @@ def run_sends(now: datetime | None = None, log=print) -> dict:
                 stats["shared_phone_skipped"] += 1
                 continue
             soft = r["Text OK"] in ("Soft", "Lead") and sms_allowed(r)
+            if ch == "sms" and mob:
+                fixed = textable_mobile(mob)
+                if not fixed:
+                    update_cells(r["_row"], {"Text OK": "No",
+                                             "Notes": "texts off: not a mobile number (landline/typo) · " + r["Notes"]})
+                    r["Text OK"] = "No"
+                    stats["not_a_mobile"] += 1
+                    continue
+                mob = fixed
             if ch == "sms" and norm_phone(mob) in opted_out:
                 update_cells(r["_row"], {"Text OK": "Opted out"}); r["Text OK"] = "Opted out"
                 stats["opted_out"] += 1
