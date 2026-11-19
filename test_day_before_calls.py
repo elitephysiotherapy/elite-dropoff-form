@@ -1,7 +1,7 @@
-"""Day-before IA call list (Martin, 20 Nov 2026).
+"""Day-before IA call list (Martin, 19 Nov 2026).
 
 Run: ./venv/bin/python test_day_before_calls.py
-No network: nothing here calls Cliniko, Sheets or Slack.
+No network: nothing here calls Cliniko, Sheets or Slack.\n(The worker is imported only to check its job list.)
 """
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -105,17 +105,48 @@ check("empty day -> short 'no calls needed' message",
       "No calls needed" in dbc.build_message(tgt, []))
 check("meta-check failure is mentioned", "couldn't check Meta leads" in dbc.build_message(tgt, rows, meta_ok=False))
 
-# ---- wiring ----
-import run_cloud  # noqa: E402
-check("run_cloud has the job", "day_before_calls" in run_cloud.COMMANDS)
-mon9 = datetime(2026, 11, 23, 9, 3, tzinfo=run_cloud.LONDON)
-sat9 = datetime(2026, 11, 21, 9, 3, tzinfo=run_cloud.LONDON)
-check("job fires Mon-Fri 09:00 London, not at weekends or other hours",
-      run_cloud.should_run("day_before_calls", mon9)
-      and not run_cloud.should_run("day_before_calls", sat9)
-      and not run_cloud.should_run("day_before_calls", mon9.replace(hour=10)))
+# ---- scheduled run (bot_worker): once per working day, 09:00-10:59 London ----
+import tempfile  # noqa: E402
+import bot_state  # noqa: E402
+import slack_notifier  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
+LON = ZoneInfo("Europe/London")
+bot_state.STATE_DIR = tempfile.mkdtemp()
+sent_to = []
+slack_notifier._send_dm = lambda email, text, **k: (sent_to.append((email, text)) or True)
+built = []
+dbc.build_list = lambda target: (built.append(target) or ([rows[0]], True))
+
+at = lambda y, m, d, h, mi=0: datetime(y, m, d, h, mi, tzinfo=LON)
+check("before 09:00 -> nothing", dbc.run_once_if_due(at(2026, 11, 23, 8, 55)) == 0 and not sent_to)
+check("after the window (11:00) -> nothing", dbc.run_once_if_due(at(2026, 11, 23, 11, 0)) == 0 and not sent_to)
+check("Saturday -> nothing", dbc.run_once_if_due(at(2026, 11, 21, 9, 5)) == 0 and not sent_to)
+check("closed day -> nothing", dbc.run_once_if_due(at(2026, 12, 25, 9, 5)) == 0 and not sent_to)
+check("Friday 09:05 posts Monday's list to reception",
+      dbc.run_once_if_due(at(2026, 11, 20, 9, 5)) == 0 and len(sent_to) == 1
+      and sent_to[0][0] == "reception@elitephysiocookstown.co.uk"
+      and "Monday 23 November" in sent_to[0][1] and built == [date(2026, 11, 23)])
+check("a second run the same morning does NOT post again",
+      dbc.run_once_if_due(at(2026, 11, 20, 9, 10)) == 0 and len(sent_to) == 1)
+check("next working day posts again",
+      dbc.run_once_if_due(at(2026, 11, 23, 9, 5)) == 0 and len(sent_to) == 2
+      and "Tuesday 24 November" in sent_to[1][1])
+slack_notifier._send_dm = lambda email, text, **k: False
+check("Slack failure -> exit 1 and NOT marked done (worker retries)",
+      dbc.run_once_if_due(at(2026, 11, 24, 9, 5)) == 1
+      and bot_state.load("day_before_calls").get("posted") == "2026-11-23")
+slack_notifier._send_dm = lambda email, text, **k: (sent_to.append((email, text)) or True)
+check("retry after the failure then posts", dbc.run_once_if_due(at(2026, 11, 24, 9, 10)) == 0
+      and bot_state.load("day_before_calls").get("posted") == "2026-11-24")
 check("reception gets it via the config list",
       config.DAY_BEFORE_CALLS_SLACK_EMAILS == ["reception@elitephysiocookstown.co.uk"])
+
+import bot_worker  # noqa: E402
+jobs = {j.name: j for j in bot_worker.build_jobs(dry=False)}
+check("bot_worker runs the job every 5 min with the once-if-due flag",
+      "day_before_calls" in jobs and jobs["day_before_calls"].args == ["send_day_before_calls.py", "--once-if-due"]
+      and jobs["day_before_calls"].every == 300)
 
 print("\nALL PASS" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

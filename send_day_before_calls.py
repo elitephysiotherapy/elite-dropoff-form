@@ -1,6 +1,6 @@
 """Day-before IA call list → Slack DM to reception at 09:00 (Mon–Fri).
 
-Martin, 20 Nov 2026. We used to ask patients to reply YES/NO the day before; that
+Martin, 19 Nov 2026. We used to ask patients to reply YES/NO the day before; that
 gave them a way out and cancellations went UP. What worked was a PERSON ringing the
 day before to check everything was fine and fix any obstacle. So: no reply text —
 reception gets this list and makes the calls.
@@ -24,7 +24,9 @@ Which appointments: config.FORM_CHASE_TYPE_IDS (the first-consultation types:
 Modes:
   python send_day_before_calls.py --counts          counts only, NO names (safe to paste)
   python send_day_before_calls.py --dm-ceo          real list as a DM to Martin only (preview)
-  python send_day_before_calls.py --post            send to reception (the cron)
+  python send_day_before_calls.py --post            send to reception now
+  python send_day_before_calls.py --once-if-due     what bot_worker.py runs every 5 min:
+                                                    posts once per working day, 09:00-10:59
   add --date YYYY-MM-DD to build the list for a specific day (default: next working day)
 """
 
@@ -249,15 +251,59 @@ def build_message(target, rows, meta_ok=True):
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- scheduled run
+
+POST_FROM_HOUR = 9          # London: first run that may post
+POST_UNTIL_HOUR = 11        # …and the last (retries every 5 min until then)
+
+
+def run_once_if_due(now=None):
+    """Called every few minutes by bot_worker.py. Posts the list ONCE per
+    working day, in the 09:00-10:59 London window, then remembers the date in
+    bot_state. Returns the process exit code (0 ok / nothing due, 1 = failed, so
+    the worker counts it and retries a few minutes later).
+
+    Why a worker job and not a Render cron: the Render account is on the Hobby
+    plan, capped at 25 services, and all 25 are in use. (The state file resets
+    on a redeploy, so a deploy inside the 09:00-10:59 window could post a second
+    DM; harmless, and rare.)"""
+    import bot_state
+    import slack_notifier
+
+    now = now or datetime.now(LONDON)
+    today = now.date()
+    if not is_working_day(today) or not (POST_FROM_HOUR <= now.hour < POST_UNTIL_HOUR):
+        return 0
+    st = bot_state.load("day_before_calls")
+    if st.get("posted") == today.isoformat():
+        return 0
+    target = next_working_day(today)
+    rows, meta_ok = build_list(target)
+    msg = build_message(target, rows, meta_ok)
+    sent = [slack_notifier._send_dm(e, msg, target_label=f"day-before IA calls → {e}")
+            for e in config.DAY_BEFORE_CALLS_SLACK_EMAILS]
+    if not all(sent):
+        print(f"day-before calls: Slack send FAILED for {target} — will retry")
+        return 1
+    st["posted"] = today.isoformat()
+    bot_state.save("day_before_calls", st)
+    print(f"day-before calls: posted {len(rows)} call(s) for {target}")
+    return 0
+
+
 # ---------------------------------------------------------------- main
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--post", action="store_true", help="DM reception (the cron)")
+    ap.add_argument("--post", action="store_true", help="DM reception now")
+    ap.add_argument("--once-if-due", action="store_true",
+                    help="what bot_worker.py runs: post once per working day, 09:00-10:59")
     ap.add_argument("--dm-ceo", action="store_true", help="DM Martin only (preview)")
     ap.add_argument("--counts", action="store_true", help="print counts only, no names")
     ap.add_argument("--date", help="build the list for this date (YYYY-MM-DD)")
     args = ap.parse_args()
+    if args.once_if_due:
+        raise SystemExit(run_once_if_due())
 
     today = datetime.now(LONDON).date()
     if args.date:

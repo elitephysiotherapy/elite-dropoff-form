@@ -564,7 +564,7 @@ RECEPTION_LIST_SLACK_EMAILS = [
 
 # Day-before IA call list (send_day_before_calls.py): 09:00 Mon-Fri, the NEXT working
 # day's higher-risk IAs (Meta lead / brand new / previous poor attender) for whoever
-# is on the front desk to ring. Martin 2026-11-20.
+# is on the front desk to ring. Martin 2026-11-19.
 DAY_BEFORE_CALLS_SLACK_EMAILS = [
     "reception@elitephysiocookstown.co.uk",   # Reception Slack profile
 ]
@@ -819,7 +819,7 @@ PRE_ASSESSMENT_FORM_TEMPLATE_ID = "1952156875390719760"
 # consultation — the only ones the form chase / welcome form paragraph cover.
 # NOT profiling (Off Season / Golf have their OWN forms, and are testing days, not
 # treatment), NOT ultrasound / injection / club consultation. (The Omagh 50% IA
-# offer ended and was removed 20 Nov 2026, so it is no longer listed.)
+# offer ended and was removed 19 Nov 2026, so it is no longer listed.)
 FORM_CHASE_TYPE_IDS = {
     "382563815654429852",    # 2. Initial Appointment
     "392015278608749674",    # 3. Club Initial Assessment

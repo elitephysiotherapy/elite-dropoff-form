@@ -82,6 +82,15 @@ def build_jobs(dry: bool) -> list[Job]:
             every=300, timeout=600, first_delay=40,
             alert_after=(3,),
             alert_text="The daily comms check keeps timing out and hasn't run."))
+    if os.environ.get("DAY_BEFORE_CALLS_ENABLED", "1") == "1":
+        # 09:00 Mon-Fri DM to reception: tomorrow's higher-risk IAs to ring.
+        # Runs every 5 min; the script itself posts once per day in 09:00-10:59.
+        jobs.append(Job(
+            "day_before_calls", ["send_day_before_calls.py", "--once-if-due"],
+            every=300, timeout=300, first_delay=50,
+            alert_after=(3,),
+            alert_text="The 9am day-before IA call list keeps failing — reception "
+                       "has *not* been sent today's list."))
     if os.environ.get("CAMPAIGN_MODE", "off").strip().lower() != "off":
         # A full send round paces at 4 s/send (~410 texts on the busiest day
         # ≈ 30 min). The limit leaves room; a killed round is safe because
