@@ -562,6 +562,13 @@ RECEPTION_LIST_SLACK_EMAILS = [
     "sinead@elitephysiocookstown.co.uk",
 ]
 
+# Day-before IA call list (send_day_before_calls.py): 09:00 Mon-Fri, the NEXT working
+# day's higher-risk IAs (Meta lead / brand new / previous poor attender) for whoever
+# is on the front desk to ring. Martin 2026-11-20.
+DAY_BEFORE_CALLS_SLACK_EMAILS = [
+    "reception@elitephysiocookstown.co.uk",   # Reception Slack profile
+]
+
 # Diary summary (send_diary_summary.py): per-physio IAs / classes / total
 # appointments, 08:00 Mon, Wed and Fri (Fri adds next week's diary).
 # Sinead and reception can't see Cliniko's practitioner reports on their logins.
@@ -803,6 +810,23 @@ BOOKING_LINK = "https://linktr.ee/ElitePhysiotherapy"
 EXERCISE_LIBRARY_LINK = "https://patient.thegotoclinichub.com/index.php"
 PRE_ASSESSMENT_FORM_LINK = ""   # Not needed — Cliniko auto-attaches the pre-assessment
                                 # form to new-patient appointment confirmation emails.
+# Cliniko "Pre-Assessment Form" patient-form template. Each booking gets its OWN
+# form with its own patient-facing link (…/f/?token) that EXPIRES 7 days after it
+# is created; marketing/forms.py finds the pending one so the welcome email and
+# the form-chase texts can link straight to it.
+PRE_ASSESSMENT_FORM_TEMPLATE_ID = "1952156875390719760"
+# Appointment types whose form is the Pre-Assessment Form AND that are a first
+# consultation — the only ones the form chase / welcome form paragraph cover.
+# NOT profiling (Off Season / Golf have their OWN forms, and are testing days, not
+# treatment), NOT ultrasound / injection / club consultation. (The Omagh 50% IA
+# offer ended and was removed 20 Nov 2026, so it is no longer listed.)
+FORM_CHASE_TYPE_IDS = {
+    "382563815654429852",    # 2. Initial Appointment
+    "392015278608749674",    # 3. Club Initial Assessment
+    "945551547020874765",    # 7. ACL Initial Assessment
+    "1521627460095973060",   # 2. Sports & MSK Clinical Consultation
+    "1558530673046721630",   # 5. Private Health Insurance Initial Assessment
+}
 
 # Maps Cliniko business (location) ID → clinic key in CLINICS above.
 CLINIKO_BUSINESS_TO_CLINIC = {

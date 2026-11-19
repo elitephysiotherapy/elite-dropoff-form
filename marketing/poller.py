@@ -18,8 +18,9 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 import config
-from marketing import (cliniko, common, followups, nps, reactivation, lifecycle,
-                       results, sent_log, templates, send, tally_url)
+from marketing import (cliniko, common, followups, nps, preforms, reactivation,
+                       lifecycle, results, sent_log, templates, send, tally_url,
+                       url_shortener)
 
 LOOKBACK_DAYS = 5
 LIFECYCLE_HOUR = getattr(config, "MARKETING_LIFECYCLE_HOUR", 9)
@@ -92,6 +93,7 @@ def run_once():
     touches = []
     touches += nps.collect(started, responders)
     touches += nps.collect_welcome()
+    touches += preforms.collect()
     touches += reactivation.collect(started, cancelled)
     if local.hour == LIFECYCLE_HOUR and local.minute < 10:
         print("Daily lifecycle window — collecting 30/90/180-day + birthday touches")
@@ -141,6 +143,11 @@ def run_once():
         ctx["first_name"] = patient.get("first_name") or "there"
         if t.trigger_type:
             ctx["survey_link"] = _survey_link(t, patient, ctx)
+        if ctx.get("_form_url"):
+            # Per-patient Cliniko form link, shortened so the text stays short.
+            # make_short_url falls back to the long URL if the shortener is down.
+            ctx["form_link"] = url_shortener.make_short_url(
+                ctx["_form_url"], label="form_chase")
 
         ok, info = _deliver(t, ctx, dest)
 

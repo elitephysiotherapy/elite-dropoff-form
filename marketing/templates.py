@@ -18,6 +18,17 @@ import config
 # SMS templates  (one 160-char segment target; sender is one-way "ElitePhysio")
 # ===========================================================================
 
+# Paragraph the welcome email adds while the patient's form is still undone
+# (nps.collect_welcome fills {form_block}; empty once done/expired/missing).
+FORM_BLOCK = (
+    "One quick thing before you come in: please take 5 minutes to fill in your "
+    "pre-assessment form: {form_url}\n"
+    "Your physiotherapist reads your answers before you arrive. It helps them "
+    "get to the root cause of your problem faster, so more of your appointment "
+    "is spent on hands-on treatment and rehab, not questions.\n\n"
+)
+
+
 SMS = {
     "booking_confirmation": (
         "Hi {first_name}, you're booked at Elite Physio {clinic_name}: "
@@ -29,6 +40,19 @@ SMS = {
         "Hi {first_name}, before your appointment on {appointment_date} please "
         "take 5 mins to complete your pre-assessment form so we can help you "
         "faster: {form_link}"
+    ),
+    # Form chase (marketing/preforms.py) — only while the form is still undone.
+    # First person from the treating physio (Martin's call, 19 Nov 2026). The
+    # sender ID is one-way, so patients cannot reply to these.
+    "form_chase_1": (
+        "Hi {first_name}, it's {practitioner_name} from Elite Physio. I read your "
+        "form before you arrive, so more of our time together is spent on "
+        "treatment rather than questions. Can you complete it here: {form_link}"
+    ),
+    "form_chase_2": (
+        "Hi {first_name}, {practitioner_name} here. Looking forward to seeing you "
+        "tomorrow at {appointment_time}. If you can fill in your form tonight "
+        "(5 mins), I can read it first: {form_link}"
     ),
     "appointment_reminder": (
         "Hi {first_name}, a reminder of your appointment at Elite Physio "
@@ -190,7 +214,7 @@ Here is what you should expect from our team:
 
 As life is so manic these days, it's important to take a moment and just breathe. So we've enclosed some key tips for you to get started on your recovery before you visit the clinic. For tips on non-pharmaceutical immediate pain and stress relief click here: https://canva.link/bwk24xk93lqkooj and for exercises to help you start to get your body moving pain free again please click here: https://canva.link/91gpchk5r5fohu6
 
-If you need any further help before your first appointment just give our reception team a call on 02886440995
+{form_block}If you need any further help before your first appointment just give our reception team a call on 02886440995
 
 Warm Regards,
 The Elite Physiotherapy Team""",

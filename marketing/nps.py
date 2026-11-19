@@ -9,7 +9,9 @@ collect(appts, responder_ids) -> list[Touch]   (touches that are due now)
 
 from datetime import timedelta
 
-from marketing import cliniko, common, sent_log
+import config
+
+from marketing import forms, cliniko, common, sent_log, templates
 from marketing.common import Touch
 
 # Timing (hours after the appointment start).
@@ -68,6 +70,9 @@ def collect_welcome():
     out = []
     end = common.now_utc()
     start = end - timedelta(days=WELCOME_LOOKBACK_DAYS)
+    # The patient's own form link, if their form is still to do (None if the
+    # lookup failed -> the email just goes without the form paragraph).
+    pending_forms = forms.by_appointment()
     for appt in cliniko.appointments_created_between(start, end):
         if cliniko.is_cancelled(appt) or cliniko.is_class(appt):
             continue
@@ -79,8 +84,13 @@ def collect_welcome():
         pid = cliniko.patient_id_of(appt)
         if not pid or not cliniko.is_new_patient(pid, appt):
             continue
+        ctx = common.appt_ctx(appt)
+        url = forms.pending_url(pending_forms, appt["id"], end)
+        in_scope = cliniko.appt_type_id(appt) in config.FORM_CHASE_TYPE_IDS
+        ctx["form_block"] = (templates.FORM_BLOCK.format(form_url=url)
+                             if url and in_scope else "")
         out.append(Touch("welcome", pid, "email", "welcome", str(appt["id"]),
-                          common.appt_ctx(appt), trigger_type="welcome"))
+                          ctx, trigger_type="welcome"))
     return out
 
 
