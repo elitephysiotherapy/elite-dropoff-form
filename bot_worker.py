@@ -108,6 +108,13 @@ def build_jobs(dry: bool) -> list[Job]:
             alert_after=(3,),
             alert_text="The 10am reactivation call cards keep timing out — "
                        "reception has *not* had today's list."))
+    if os.environ.get("NOT_NOW_ENABLED", "1") == "1":
+        # 09:30 weekdays: DM Sinéad Rocks leads who said "not now" 30 days ago.
+        jobs.append(Job(
+            "not_now_reminders", ["not_now_reminders.py", "--once-if-due"],
+            every=300, timeout=180, first_delay=90,
+            alert_after=(3,),
+            alert_text="The day-30 \"not now\" reminders keep timing out."))
     if os.environ.get("CAMPAIGN_MODE", "off").strip().lower() != "off":
         # A full send round paces at 4 s/send (~410 texts on the busiest day
         # ≈ 30 min). The limit leaves room; a killed round is safe because

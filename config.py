@@ -1248,7 +1248,14 @@ REACT_REVIEW_TIME = (8, 30)                   # Monday review prompt
 REACT_POST_WINDOW = ((8, 30), (19, 0))        # assignments / scheduled cards post in here
 REACT_SINEAD_ROCKS_USER_ID = "U02MFKP3HBN"
 REACT_MARTY_USER_ID = "U07KDQ6UCBD"
-TRICKY_PATIENT_URL = "https://app.thegotoclinichub.com/tools/the-difficult-patient-problem-solver.php"
+# Day-30 "not now" reminders (Martin 2026-11-21): leads on the Leads tab who
+# said "not now / not yet / think about it" -> DM Sinéad Rocks 30 days later.
+NOT_NOW_ENABLED = os.environ.get("NOT_NOW_ENABLED", "1") == "1"
+NOT_NOW_DAYS = 30
+NOT_NOW_MAX_AGE_DAYS = 120         # older "not now"s aren't chased
+NOT_NOW_DM_TIME = (9, 30)          # weekdays
+NOT_NOW_SLACK_USER_ID = os.environ.get("NOT_NOW_SLACK_USER_ID", "U02MFKP3HBN")  # Sinéad Rocks
+TRICKY_PATIENT_URL ="https://app.thegotoclinichub.com/tools/the-difficult-patient-problem-solver.php"
 
 # Texts are never sent 21:00–08:00 (held until 08:00 London).
 STL_QUIET_START = (21, 0)
