@@ -158,6 +158,30 @@ def selftest():
     return ok
 
 
+BACKUP_TIMEOUT_SECS = 600
+
+
+def piggyback_chief_of_staff_backup(now):
+    """Run the Chief of Staff --backup if `now` is its London target (21:45).
+    Never raises and never affects the caller's exit code."""
+    try:
+        if not should_run("chief_of_staff_backup", now):
+            return
+        import os
+        print("[run_cloud] chief_of_staff_backup (piggyback on bookings cron): running", flush=True)
+        env = dict(os.environ, PYTHONUNBUFFERED="1")
+        proc = subprocess.Popen(COMMANDS["chief_of_staff_backup"], env=env)
+        try:
+            rc = proc.wait(timeout=BACKUP_TIMEOUT_SECS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            rc = 124
+        print(f"[run_cloud] chief_of_staff_backup: finished with exit code {rc}", flush=True)
+    except Exception as e:  # noqa: BLE001 - must never break the bookings poll
+        print(f"[run_cloud] chief_of_staff_backup: piggyback error {e!r} (ignored)", flush=True)
+
+
 def main():
     if len(sys.argv) < 2:
         print(f"usage: run_cloud.py <{'|'.join(COMMANDS)}|selftest>")
@@ -170,6 +194,12 @@ def main():
         sys.exit(2)
     now = datetime.now(LONDON)
     stamp = now.strftime("%Y-%m-%d %H:%M %Z")
+
+    # Chief of Staff backup rides on the bookings cron (Render Hobby plan is
+    # capped at 25 services). Runs FIRST and fully isolated: it can never raise
+    # or change this job's exit code, and a bookings failure can't stop it.
+    if job == "bookings":
+        piggyback_chief_of_staff_backup(now)
 
     if not should_run(job, now):
         print(f"[run_cloud] {job}: {stamp} is not a scheduled London run time — skipping (no-op).")

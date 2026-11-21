@@ -52,6 +52,8 @@ SLOW_DEFAULT = 20
 SCHEDULE_CHANGED = {n: datetime(2026, 11, 15, 10, 45, tzinfo=timezone.utc) for n in (
     "elite-dropoff-daily", "elite-reactivations-monthly", "elite-meta-funnel",
     "elite-reactivations-weekly", "elite-packages-weekly", "elite-cfo-weekly")}
+# Bookings poll gained a 21:45 UTC firing (carries the Chief of Staff backup).
+SCHEDULE_CHANGED["elite-bookings-poll"] = datetime(2026, 11, 21, 18, 0, tzinfo=timezone.utc)
 
 # Local (Mac) launchd jobs: (label, marker file, period, earliest London hour).
 MAC_JOBS = [
