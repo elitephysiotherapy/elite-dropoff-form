@@ -1204,16 +1204,17 @@ STL_DUE_LIST_TIMES = {        # weekday -> London times the due list is posted
     3: [(12, 30), (17, 30)], 4: [(12, 30)],
 }
 STL_DUE_LIST_GRACE_MIN = 45   # a list missed by more than this (restart) is skipped
-# Own go-live switch: false = the due lists go to Martin's DM only.
-STL_DUE_LIST_LIVE = os.environ.get("STL_DUE_LIST_LIVE", "false").strip().lower() == "true"
+# Own switch: false = the due lists go to Martin's DM only. Live in #leads
+# from 2026-11-21 (Martin: not in his DMs).
+STL_DUE_LIST_LIVE = os.environ.get("STL_DUE_LIST_LIVE", "true").strip().lower() == "true"
 
 # Save-call alert (Martin 2026-11-21): a first visit (FORM_CHASE_TYPE_IDS) that
 # is cancelled or marked did-not-arrive is posted in #leads straight away so the
 # front desk rings within the hour (playbook Script 3). Skipped if the patient
 # already has another future booking. Runs in bot_worker.py every 5 min.
 SAVE_CALL_ENABLED = os.environ.get("SAVE_CALL_ENABLED", "1") == "1"
-# false = alerts go to Martin's DM only (canary before reception sees them).
-SAVE_CALL_LIVE = os.environ.get("SAVE_CALL_LIVE", "false").strip().lower() == "true"
+# false = alerts go to Martin's DM only. Live in #leads from 2026-11-21.
+SAVE_CALL_LIVE = os.environ.get("SAVE_CALL_LIVE", "true").strip().lower() == "true"
 SAVE_CALL_STATE_TAB = "Save Calls"            # on the bookings sheet
 SAVE_CALL_START_AT = os.environ.get("SAVE_CALL_START_AT", "2026-11-21T18:00:00+00:00")
 SAVE_CALL_LOOKBACK_HOURS = 24
