@@ -1191,6 +1191,33 @@ FINAL_TEXT_VIDEO_LINK = os.environ.get("FINAL_TEXT_VIDEO_LINK", "").strip()
 FINAL_TEXT_DISCOVERY_LINK = os.environ.get(
     "FINAL_TEXT_DISCOVERY_LINK", "https://elitephysiocookstown.co.uk/contact/").strip()
 
+# Call attempts (Martin 2026-11-21): every "No answer" tap on a #leads card is
+# counted and timed, and a "due a call now" list goes to #leads at set times.
+# A lead stays on the list until someone speaks to them, it is booked/declined,
+# it has had STL_MAX_ATTEMPTS taps, or it is older than STL_CHASE_DAYS (the
+# final text takes over then).
+STL_MAX_ATTEMPTS = 6
+STL_CHASE_DAYS = 4
+STL_RETRY_GAP_HOURS = 3       # next call at least this long after the last try
+STL_DUE_LIST_TIMES = {        # weekday -> London times the due list is posted
+    0: [(12, 30), (17, 30)], 1: [(12, 30), (17, 30)], 2: [(12, 30), (17, 30)],
+    3: [(12, 30), (17, 30)], 4: [(12, 30)],
+}
+STL_DUE_LIST_GRACE_MIN = 45   # a list missed by more than this (restart) is skipped
+# Own go-live switch: false = the due lists go to Martin's DM only.
+STL_DUE_LIST_LIVE = os.environ.get("STL_DUE_LIST_LIVE", "false").strip().lower() == "true"
+
+# Save-call alert (Martin 2026-11-21): a first visit (FORM_CHASE_TYPE_IDS) that
+# is cancelled or marked did-not-arrive is posted in #leads straight away so the
+# front desk rings within the hour (playbook Script 3). Skipped if the patient
+# already has another future booking. Runs in bot_worker.py every 5 min.
+SAVE_CALL_ENABLED = os.environ.get("SAVE_CALL_ENABLED", "1") == "1"
+# false = alerts go to Martin's DM only (canary before reception sees them).
+SAVE_CALL_LIVE = os.environ.get("SAVE_CALL_LIVE", "false").strip().lower() == "true"
+SAVE_CALL_STATE_TAB = "Save Calls"            # on the bookings sheet
+SAVE_CALL_START_AT = os.environ.get("SAVE_CALL_START_AT", "2026-11-21T18:00:00+00:00")
+SAVE_CALL_LOOKBACK_HOURS = 24
+
 # Texts are never sent 21:00–08:00 (held until 08:00 London).
 STL_QUIET_START = (21, 0)
 STL_QUIET_END = (8, 0)

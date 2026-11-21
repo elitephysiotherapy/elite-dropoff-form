@@ -91,6 +91,14 @@ def build_jobs(dry: bool) -> list[Job]:
             alert_after=(3,),
             alert_text="The 9am day-before IA call list keeps failing — reception "
                        "has *not* been sent today's list."))
+    if os.environ.get("SAVE_CALL_ENABLED", "1") == "1":
+        # Cancelled / no-show first visits -> #leads straight away (Script 3).
+        jobs.append(Job(
+            "save_calls", ["save_call_alert.py", "--once"],
+            every=300, timeout=240, first_delay=70,
+            alert_after=(3,),
+            alert_text="The save-call alert keeps timing out — cancelled first "
+                       "visits are *not* being flagged to the desk."))
     if os.environ.get("CAMPAIGN_MODE", "off").strip().lower() != "off":
         # A full send round paces at 4 s/send (~410 texts on the busiest day
         # ≈ 30 min). The limit leaves room; a killed round is safe because

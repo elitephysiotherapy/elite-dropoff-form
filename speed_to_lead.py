@@ -205,8 +205,107 @@ HEADERS = ["Lead Key", "Seen At", "Lead Created", "Name", "Phone", "Clinic",
            "Slack Channel", "Slack TS", "Pings", "Called At", "Called By",
            "Outcome", "Mins to Call", "Closed", "Assigned",
            # 2026-11-21: final text for leads we never reached (see below).
-           "Final Text Status", "Final Text At", "Replied At"]
+           "Final Text Status", "Final Text At", "Replied At",
+           # 2026-11-21: every Called / No answer tap counted and timed.
+           "Attempts", "Attempt Log", "Last Attempt At"]
 COL = {h: i for i, h in enumerate(HEADERS)}
+
+
+# ---------------------------------------------------------------------------
+# Call attempts (Martin 2026-11-21)
+#   The bot can't see the desk phone, so an attempt = a tap on the lead's
+#   card. Each tap is counted, timed and logged; the next call is due
+#   STL_RETRY_GAP_HOURS later (inside desk hours), and at the times in
+#   STL_DUE_LIST_TIMES #leads gets one list of everyone due a call now.
+# ---------------------------------------------------------------------------
+DUE_LIST_KEY = "__duelist__"   # state row holding when the last list went
+
+
+def attempts_of(s: dict) -> int:
+    """Taps so far. Rows from before 2026-11-21 have an Outcome but no count."""
+    raw = str(s.get("Attempts") or "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return 1 if s.get("Outcome") else 0
+
+
+def last_attempt_at(s: dict) -> datetime | None:
+    return _parse(s.get("Last Attempt At", "")) or _parse(s.get("Called At", ""))
+
+
+def next_call_due(s: dict) -> datetime | None:
+    """When this lead should next be rung, or None if we've stopped chasing
+    (spoken to, closed, out of attempts, or past STL_CHASE_DAYS)."""
+    if s.get("Outcome") == "called":
+        return None
+    if s.get("Closed") not in ("", None, "expired"):
+        return None
+    if str(s.get("Text Status", "")).startswith("repeat"):
+        return None
+    n = attempts_of(s)
+    if n >= config.STL_MAX_ATTEMPTS:
+        return None
+    created = _parse(s.get("Lead Created", ""))
+    clock = _parse(s.get("Clock Start", "")) or created
+    if not created or not clock:
+        return None
+    last = last_attempt_at(s)
+    t = clock if (n == 0 or not last) else last + timedelta(hours=config.STL_RETRY_GAP_HOURS)
+    t = t if desk_open_at(t) else clock_start(t)
+    if t - created > timedelta(days=config.STL_CHASE_DAYS):
+        return None
+    return t
+
+
+def due_for_call(s: dict, at: datetime) -> bool:
+    due = next_call_due(s)
+    return bool(due) and due <= at
+
+
+def due_line(s: dict, link: str | None = None) -> str:
+    """One line of the due-a-call list (pure; `link` = card permalink)."""
+    name = f"<{link}|{esc(s['Name'])}>" if link else esc(s["Name"])
+    n = attempts_of(s)
+    last = last_attempt_at(s)
+    tried = (f"last tried {last.strftime('%a %H:%M')}" if n and last
+             else "not called yet")
+    area = f" · {s['Body Area']}" if s.get("Body Area") else ""
+    return (f"• {name} · {s['Clinic']}{area} · <tel:{s['Phone']}|{s['Phone']}> · "
+            f"call {n + 1} of {config.STL_MAX_ATTEMPTS} · {tried}")
+
+
+def build_due_list(rows: list[dict], at: datetime, links: dict | None = None) -> str | None:
+    """The 12:30 / 17:30 message, or None if nobody is due."""
+    links = links or {}
+    due = [s for s in rows if not s["Lead Key"].startswith(("__", "test:"))
+           and s.get("Closed") != "test" and due_for_call(s, at)]
+    if not due:
+        return None
+    due.sort(key=lambda s: s.get("Lead Created", ""))
+    n = len(due)
+    head = (f":telephone_receiver: *{n} lead{'s' if n != 1 else ''} due a call now* "
+            f"({at.strftime('%H:%M')})")
+    foot = ("_Tap *Called* or *No answer* on each card after you ring, so the next "
+            "call is timed for a different part of the day._")
+    return "\n".join([head] + [due_line(s, links.get(s["Lead Key"])) for s in due]
+                     + [foot])
+
+
+def list_slot_due(now: datetime, last_sent: datetime | None) -> datetime | None:
+    """The list time to post now, or None. A slot counts once, and only within
+    STL_DUE_LIST_GRACE_MIN of its time (a restart never posts a stale list)."""
+    t = now.astimezone(LONDON)
+    if t.date() in config.CLINIC_CLOSED_DAYS:
+        return None
+    for hm in sorted(config.STL_DUE_LIST_TIMES.get(t.weekday(), []), reverse=True):
+        slot = _at(t, hm)
+        if slot <= t:
+            if t - slot > timedelta(minutes=config.STL_DUE_LIST_GRACE_MIN):
+                return None
+            if last_sent and last_sent >= slot:
+                return None
+            return slot
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -787,6 +886,13 @@ def tick(now: datetime | None = None, dry_run: bool = False, log=print) -> dict:
     except Exception as exc:       # never let this step break the rest
         log(f"  final texts skipped: {exc}")
 
+    # 3c. "Due a call now" list at 12:30 / 17:30 (Fri 12:30).
+    try:
+        if maybe_post_due_list(ws, state, now, log):
+            stats["due_list"] = 1
+    except Exception as exc:       # never let this step break the rest
+        log(f"  due list skipped: {exc}")
+
     # 4. End-of-day report to Martin's DM, once per desk day after closing.
     if maybe_send_report(ws, state, now, log):
         stats["report"] = 1
@@ -890,6 +996,56 @@ def send_final_texts(ws, state: dict, now: datetime, log=print) -> int:
     return sent
 
 
+def maybe_post_due_list(ws, state: dict, now: datetime, log=print) -> bool:
+    marker = state.get(DUE_LIST_KEY)
+    slot = list_slot_due(now, _parse(marker["Seen At"]) if marker else None)
+    if not slot:
+        return False
+    rows = [s for k, s in state.items() if not k.startswith("__") and s.get("_row")]
+    cands = [s for s in rows if due_for_call(s, now)]
+    if cands:
+        # Leads booked/declined on the Leads tab, or booked in Cliniko, are done.
+        statuses = leads_tab_statuses()
+        try:
+            since = min(_parse(s["Lead Created"]) for s in cands)
+            booked = cliniko_booked_phones(since, now)
+        except Exception as exc:          # list still goes; just can't drop these
+            log(f"  due list: Cliniko check failed ({exc})")
+            booked = set()
+        for s in cands:
+            p = norm_phone(s["Phone"])
+            st = statuses.get(s["Lead Key"]) or statuses.get(f"phone:{p}") or ""
+            if st in _CLOSED_STATUSES or (p and p in booked):
+                st = st if st in _CLOSED_STATUSES else "booked"
+                update_cells(ws, s["_row"], {"Closed": st})
+                s["Closed"] = st
+    links = {}
+    for s in rows:
+        if s.get("Slack TS") and due_for_call(s, now):
+            try:
+                links[s["Lead Key"]] = slack().chat_getPermalink(
+                    channel=s["Slack Channel"], message_ts=s["Slack TS"])["permalink"]
+            except Exception:
+                pass
+    text = build_due_list(rows, now, links)
+    if text:
+        live = config.STL_LIVE and config.STL_DUE_LIST_LIVE
+        if live:
+            channel = post_channel()
+            text = text.replace("* (", f"* {reception_mention()} (", 1)
+        else:
+            channel = _uid(config.CEO_SLACK_EMAIL)
+            text = "_[SAFE MODE — would post in #leads]_\n" + text
+        slack().chat_postMessage(channel=channel, text=text, unfurl_links=False)
+        log(f"  due list posted ({text.count(chr(10) + '•')} lead(s))")
+    if marker:
+        update_cells(ws, marker["_row"], {"Seen At": _iso(now)})
+    else:
+        append_row(ws, {"Lead Key": DUE_LIST_KEY, "Seen At": _iso(now),
+                        "Name": "(due-a-call list marker)", "Closed": "meta"})
+    return True
+
+
 REPORT_KEY = "__report__"   # state row holding when the last report went
 
 
@@ -918,7 +1074,9 @@ def build_report(rows: list[dict], since: datetime, now: datetime) -> str:
         if r.get("Outcome") == "called":
             return f"called {r['Mins to Call']} min after desk clock started"
         if r.get("Outcome") == "no answer":
-            return f"no answer ({r['Mins to Call']} min) - not yet reached"
+            n = attempts_of(r)
+            return (f"no answer × {n} (first try {r['Mins to Call']} min) - not yet reached"
+                    + (" - *out of attempts*" if n >= config.STL_MAX_ATTEMPTS else ""))
         if r.get("Closed") in _CLOSED_STATUSES:
             return f"marked {r['Closed']} on the sheet"
         if r.get("Closed") == "repeat":
@@ -1016,6 +1174,55 @@ def _thread_note(s: dict, text: str):
 # ---------------------------------------------------------------------------
 # Slack button + inbound reply (called from server.py)
 # ---------------------------------------------------------------------------
+DOUBLE_TAP_SECONDS = 60   # same tap again within this = one attempt, not two
+
+
+def record_attempt(s: dict, outcome: str, user_id: str, now: datetime,
+                   clock: datetime) -> tuple[dict, dict]:
+    """(cells to write, row as it will be). Pure — unit-tested."""
+    n = attempts_of(s)
+    last = last_attempt_at(s)
+    double = (last is not None and s.get("Outcome") == outcome
+              and (now - last).total_seconds() < DOUBLE_TAP_SECONDS)
+    log = s.get("Attempt Log") or ""
+    if not double:
+        n += 1
+        entry = f"{now.strftime('%a %d %b %H:%M')} {outcome} ({user_id})"
+        log = f"{log}; {entry}" if log else entry
+    cells = {"Outcome": outcome, "Called By": f"<@{user_id}>",
+             "Attempts": str(n), "Attempt Log": log, "Last Attempt At": _iso(now)}
+    if not s.get("Called At"):
+        cells["Called At"] = _iso(now)
+        cells["Mins to Call"] = str(max(0, int((now - clock).total_seconds() // 60)))
+    return cells, {**s, **cells}
+
+
+def attempt_note(s: dict, outcome: str, user_id: str, now: datetime,
+                 created: datetime) -> str:
+    """The line under the card after a tap (pure)."""
+    n = attempts_of(s)
+    since = fmt_mins(now - created)
+    if outcome == "called":
+        return (f"✅ *Called* by <@{user_id}> at {now.strftime('%H:%M')} "
+                f"({since} after the enquiry, attempt {n}).")
+    times = [e.split(" no answer")[0].split(" called")[0][4:]   # "21 Nov 19:50"
+             for e in (s.get("Attempt Log") or "").split("; ") if e]
+    hist = " · ".join(t[-5:] if t[:6] == now.strftime("%d %b") else t for t in times[-6:])
+    text = (f"📵 *No answer* — attempt {n} of {config.STL_MAX_ATTEMPTS} by <@{user_id}> "
+            f"at {now.strftime('%H:%M')} ({since} after the enquiry)."
+            + (f"\nTried: {hist}" if n > 1 and hist else ""))
+    due = next_call_due(s)
+    if n >= config.STL_MAX_ATTEMPTS:
+        text += "\nThat's the last call. The final text takes over; tap *Called* if they ring back."
+    elif due:
+        when = (f"after {due.strftime('%H:%M')} today" if due.date() == now.date()
+                else due.strftime("%a from %H:%M"))
+        text += f"\nNext call due {when}, a different time of day. Tap *Called* when you get through."
+    else:
+        text += "\nTap *Called* if you get through."
+    return text
+
+
 def handle_button(action_id: str, user_id: str, response_url: str,
                   original_blocks: list, fallback_text: str):
     try:
@@ -1046,25 +1253,20 @@ def _handle_button(action_id: str, user_id: str, response_url: str,
     clock = _parse(s["Clock Start"]) or now
     created = _parse(s["Lead Created"]) or now
     outcome = "called" if kind == "stl_called" else "no answer"
-    cells = {"Outcome": outcome, "Called By": f"<@{user_id}>"}
-    if not s.get("Called At"):
-        cells["Called At"] = _iso(now)
-        cells["Mins to Call"] = str(max(0, int((now - clock).total_seconds() // 60)))
+    cells, s2 = record_attempt(s, outcome, user_id, now, clock)
     update_cells(ws, s["_row"], cells)
-    since = fmt_mins(now - created)
-    label = ("✅ *Called*" if outcome == "called" else "📵 *No answer*")
-    note = {"type": "context", "elements": [{"type": "mrkdwn", "text":
-            f"{label} by <@{user_id}> at {now.strftime('%H:%M')} "
-            f"({since} after the enquiry)"
-            + (" — tap *Called* when you get through." if outcome == "no answer" else "")}]}
     blocks = [b for b in original_blocks
               if not str(b.get("block_id", "")).startswith(
                   ("stl_actions|", "stl_done|", "stl_warn"))]
-    note["block_id"] = f"stl_done|{key}"
-    blocks.append(note)
+    blocks.append({"type": "context", "block_id": f"stl_done|{key}", "elements": [
+        {"type": "mrkdwn", "text": attempt_note(s2, outcome, user_id, now, created)}]})
     if outcome == "no answer":
-        blocks.append({"type": "actions", "block_id": f"stl_actions|{key}", "elements": [
-            actions_block(key)["elements"][0]]})
+        # Both buttons stay: the next try may be another no answer.
+        els = actions_block(key)["elements"]
+        if attempts_of(s2) >= config.STL_MAX_ATTEMPTS:
+            els = els[:1]                # only "Called" (if they ring back)
+        blocks.append({"type": "actions", "block_id": f"stl_actions|{key}",
+                       "elements": els})
     requests.post(response_url, json={"replace_original": True, "text": fallback_text,
                                       "blocks": blocks}, timeout=10)
 

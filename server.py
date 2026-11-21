@@ -474,6 +474,19 @@ def slack_interactive():
                 print(f"speed-to-lead button error for {action_id}: {exc}")
         threading.Thread(target=_stl_click, daemon=True).start()
         return make_response("", 200)
+    if action_id.startswith("save|"):
+        # Save-call alert buttons: Rebooked / Declined / No answer (save_call_alert.py).
+        def _save_click():
+            try:
+                save_call_alert.handle_button(
+                    action_id, payload.get("user", {}).get("id", ""),
+                    payload.get("response_url"),
+                    payload.get("message", {}).get("blocks", []),
+                    payload.get("message", {}).get("text", "Save call"))
+            except Exception as exc:
+                print(f"save-call button error for {action_id}: {exc}")
+        threading.Thread(target=_save_click, daemon=True).start()
+        return make_response("", 200)
     if action_id.startswith("cmp|"):
         # Pre-Christmas campaign call-list / reply-card buttons (campaign.py).
         def _cmp_click():
@@ -896,6 +909,7 @@ import team_sheet  # noqa: E402
 import speed_to_lead  # noqa: E402
 import comms_check  # noqa: E402
 import campaign  # noqa: E402
+import save_call_alert  # noqa: E402
 
 # 2026-11-15: the bots (speed-to-lead, team-sheet sync, comms check, campaign)
 # NO LONGER run inside the web server — not even as a fallback. They used to be
