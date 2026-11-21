@@ -1219,6 +1219,25 @@ SAVE_CALL_STATE_TAB = "Save Calls"            # on the bookings sheet
 SAVE_CALL_START_AT = os.environ.get("SAVE_CALL_START_AT", "2026-11-21T18:00:00+00:00")
 SAVE_CALL_LOOKBACK_HOURS = 24
 
+# Reactivation call cards (Martin 2026-11-21): drop-offs on the W/C tabs that
+# reception should ring become cards in #reactivationcalls with Rebooked / No
+# answer / Call back next week / Not interested buttons. Every tap writes the
+# Reactivation Status + a dated line in Reception Reactivation Notes, so the
+# sheet stays the master. Playbook cadence: call, again ~1 day later, again
+# ~12 days after the first, then let it go. Posted once a day (REACT_LIST_TIME).
+REACT_ENABLED = os.environ.get("REACT_ENABLED", "1") == "1"
+REACT_CHANNEL = os.environ.get("REACT_CHANNEL", "C0CKW5QK9GS")   # #reactivationcalls
+REACT_DROPOFF_SHEET_ID = "1RC7QkHGAa8dH5ShmwbFyswdrmMOo6HTgkcKZEvqoZbI"
+REACT_STATE_TAB = "Reactivation Calls"        # on the drop-off sheet
+REACT_START_DATE = date(2026, 11, 16)         # W/C tabs from this week onward
+REACT_LOOKBACK_DAYS = 42                      # ignore drop-offs older than this
+REACT_LIST_TIME = (10, 0)                     # Mon–Fri, after the 9am IA list
+REACT_LIST_GRACE_MIN = 120
+REACT_MAX_ATTEMPTS = 3
+REACT_RETRY_GAPS_DAYS = (1, 11)               # call 2 = +1 day; call 3 = +11 more
+REACT_CALLBACK_DAYS = 7
+REACT_UNCLASSIFIED_WAIT_DAYS = 2              # give the physio time to classify
+
 # Texts are never sent 21:00–08:00 (held until 08:00 London).
 STL_QUIET_START = (21, 0)
 STL_QUIET_END = (8, 0)

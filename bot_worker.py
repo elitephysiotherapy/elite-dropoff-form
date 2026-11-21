@@ -99,6 +99,15 @@ def build_jobs(dry: bool) -> list[Job]:
             alert_after=(3,),
             alert_text="The save-call alert keeps timing out — cancelled first "
                        "visits are *not* being flagged to the desk."))
+    if os.environ.get("REACT_ENABLED", "1") == "1":
+        # 10:00 Mon–Fri reactivation call cards in #reactivationcalls.
+        # Runs every 5 min; the script posts once per working day 10:00–11:59.
+        jobs.append(Job(
+            "reactivation_calls", ["reactivation_calls.py", "--once-if-due"],
+            every=300, timeout=290, first_delay=80,
+            alert_after=(3,),
+            alert_text="The 10am reactivation call cards keep timing out — "
+                       "reception has *not* had today's list."))
     if os.environ.get("CAMPAIGN_MODE", "off").strip().lower() != "off":
         # A full send round paces at 4 s/send (~410 texts on the busiest day
         # ≈ 30 min). The limit leaves room; a killed round is safe because
