@@ -101,5 +101,19 @@ check("not before 10", not rc.list_due_now(dt("2026-11-23 09:55"), None))
 check("not twice", not rc.list_due_now(dt("2026-11-23 10:30"), dt("2026-11-23 10:02")))
 check("not at weekend", not rc.list_due_now(dt("2026-11-28 10:02"), None))
 
+# #reactivation win post
+check("win = name + physio mention", rc.win_text(row(), "<@U1>") == "Sarah Quinn <@U1>")
+check("IA cancelled -> 'Name IA'",
+      rc.win_text(row(**{"Drop-off Type": "iacna"}), "<@U1>") == "Sarah Quinn IA")
+check("IA no-show -> 'Name IA'",
+      rc.win_text(row(**{"Drop-off Type": "iadna"}), "<@U1>") == "Sarah Quinn IA")
+check("IA attended, didn't rebook -> physio (they were seen)",
+      rc.win_text(row(**{"Drop-off Type": "iadnr"}), "<@U1>") == "Sarah Quinn <@U1>")
+check("unknown physio -> plain name", rc.physio_mention("Nobody Here") == "Nobody Here")
+n_ok = rc.tap_note("rebooked", {"Attempts": "1"}, "U1", datetime(2026, 11, 23, 10, 30), True)
+n_bad = rc.tap_note("rebooked", {"Attempts": "1"}, "U1", datetime(2026, 11, 23, 10, 30), False)
+check("card says win was posted", "Posted in #reactivation" in n_ok)
+check("card asks for manual post if bot can't", "please post the win" in n_bad)
+
 print(f"\n{'ALL PASS' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)

@@ -39,6 +39,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import unicodedata
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -180,12 +181,16 @@ def apply_tap(choice: str, st: dict, today: date, who: str) -> tuple[dict, str, 
     return cells, "contact_attempted", f"{stamp} {who}: no answer (call {n})"
 
 
-def tap_note(choice: str, cells: dict, user_id: str, now: datetime) -> str:
+def tap_note(choice: str, cells: dict, user_id: str, now: datetime,
+             win_posted: bool | None = None) -> str:
     t = now.strftime("%H:%M")
     n = cells["Attempts"]
     if choice == "rebooked":
-        return (f"✅ *Rebooked* by <@{user_id}> at {t}. Post the win in #reactivation "
-                "as usual; the sheet confirms it from Cliniko tomorrow morning.")
+        win = (" Posted in #reactivation for you." if win_posted else
+               " Couldn't post in #reactivation, so please post the win there."
+               if win_posted is False else "")
+        return (f"✅ *Rebooked* by <@{user_id}> at {t}.{win} The sheet confirms it "
+                "from Cliniko tomorrow morning.")
     if choice == "notinterested":
         return (f"✋ *Not interested* — <@{user_id}> at {t}. Marked *leave*. Please add "
                 "their real reason in Reception Reactivation Notes (not \"Other\").")
@@ -226,6 +231,58 @@ def card_text(row: dict, phone: str, n_next: int) -> str:
                 "where they wanted to be, why it's worth coming back, what we'd do, then "
                 "book a time before you hang up.")
     return "\n".join(bits)
+
+
+IA_DROP_TYPES = {"iacna", "iadna"}   # never attended this episode -> "IA"
+
+
+def win_text(row: dict, physio_mention: str) -> str:
+    """The #reactivation post, in the team's own format: "Name @physio", or
+    "Name IA" for a first visit that was cancelled / missed (no physio seen)."""
+    name = str(row.get("Patient Name") or "?").strip()
+    if str(row.get("Drop-off Type") or "").strip().lower() in IA_DROP_TYPES:
+        return f"{name} IA"
+    return f"{name} {physio_mention}".strip()
+
+
+def _plain(name) -> str:
+    """Lower-case, accents and odd apostrophes removed: Sinéad = Sinead."""
+    t = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode()
+    return re.sub(r"\s+", " ", t.replace("'", "").lower()).strip()
+
+
+def physio_mention(physio: str) -> str:
+    """Slack mention for the physio named on the drop-off row (plain name if
+    they can't be found)."""
+    p = str(physio or "").strip()
+    if not p:
+        return ""
+    low = _plain(p)
+    for m in config.TEAM:
+        names = [m.get("display", "")] + list(m.get("full_names") or [])
+        if any(low == _plain(n) for n in names if n):
+            email = m.get("slack_email") or m.get("clinic_email") or ""
+            if email:
+                try:
+                    return f"<@{stl._uid(email)}>"
+                except Exception:
+                    pass
+            break
+    return p
+
+
+def post_win(row: dict) -> bool:
+    """Post the win in #reactivation. False if it couldn't (bot not invited)."""
+    if not config.REACT_WINS_CHANNEL:
+        return False
+    try:
+        stl.slack().chat_postMessage(channel=config.REACT_WINS_CHANNEL,
+                                     text=win_text(row, physio_mention(row.get("Physio"))),
+                                     unfurl_links=False)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"  react: #reactivation post failed: {exc}", flush=True)
+        return False
 
 
 def actions_block(appt_id: str) -> dict:
@@ -540,12 +597,16 @@ def handle_button(action_id: str, user_id: str, response_url: str,
             raise RuntimeError(f"drop-off row for {aid} not found")
         write_sheet(w, n, head, current, status, note)
         update_state(ws, st["_row"], cells)
+        win_posted = None
+        if choice == "rebooked" and st.get("Outcome") != "rebooked":   # once only
+            win_posted = post_win(current)
         blocks = [b for b in original_blocks
                   if not str(b.get("block_id", "")).startswith(
                       ("react_actions|", "react_done|", "react_warn"))]
         blocks.append({"type": "context", "block_id": f"react_done|{aid}",
                        "elements": [{"type": "mrkdwn",
-                                     "text": tap_note(choice, cells, user_id, now)}]})
+                                     "text": tap_note(choice, cells, user_id, now,
+                                                      win_posted)}]})
         if cells.get("Outcome") in ("no answer", "call back"):
             blocks.append(actions_block(aid))
         requests.post(response_url, json={"replace_original": True,

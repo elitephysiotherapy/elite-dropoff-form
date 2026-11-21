@@ -1227,6 +1227,9 @@ SAVE_CALL_LOOKBACK_HOURS = 24
 # ~12 days after the first, then let it go. Posted once a day (REACT_LIST_TIME).
 REACT_ENABLED = os.environ.get("REACT_ENABLED", "1") == "1"
 REACT_CHANNEL = os.environ.get("REACT_CHANNEL", "C0CKW5QK9GS")   # #reactivationcalls
+# Rebooked tap -> "Name @physio" (or "Name IA") posted in #reactivation, the
+# team's wins log. The bot must be a member (private channel: Martin invites it).
+REACT_WINS_CHANNEL = os.environ.get("REACT_WINS_CHANNEL", "G01KP3F5J3F")
 REACT_DROPOFF_SHEET_ID = "1RC7QkHGAa8dH5ShmwbFyswdrmMOo6HTgkcKZEvqoZbI"
 REACT_STATE_TAB = "Reactivation Calls"        # on the drop-off sheet
 REACT_START_DATE = date(2026, 11, 16)         # W/C tabs from this week onward
