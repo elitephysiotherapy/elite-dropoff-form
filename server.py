@@ -64,7 +64,7 @@ COL_FALLBACK = {
     "Clinical / Non-Clinical": 12,   # L
     "Next Step (Physio)": 13,        # M
     "Reactivation Status": 14,       # N
-    "appointment_id": 19,            # S
+    "appointment_id": 20,            # T (Next Action Step added at Q 2026-11-21)
 }
 
 # ---------------- Lazy-init clients ----------------

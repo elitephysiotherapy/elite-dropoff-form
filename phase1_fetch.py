@@ -71,12 +71,19 @@ SHEET_COLUMNS = [
     "reactivation_status",     # N
     "reactivation_notes",      # O
     "martys_comments",         # P
-    "physio_action",           # Q — dropdown, written from the team sheet
-    "physio_reactivation_notes",  # R — was "Actioned" (reception's log, merged
+    "next_action_step",        # Q — dropdown, set at the Monday review (Martin
+                               #     2026-11-21); drives reactivation_calls.py
+    "physio_action",           # R — dropdown, written from the team sheet
+    "physio_reactivation_notes",  # S — was "Actioned" (reception's log, merged
                                #     into reception_reactivation_notes 2026-09-20)
-    "appointment_id",          # S (hidden)
-    "pulled_at",               # T (hidden)
+    "appointment_id",          # T (hidden)
+    "pulled_at",               # U (hidden)
 ]
+
+# Options for the Next Action Step dropdown (Martin 2026-11-21).
+NEXT_ACTION_OPTIONS = ["Reception to call", "Sinead Rocks to call", "Marty to call",
+                       "Physio to call", "Physio To Complete Tricky Patient Form",
+                       "Leave", "Rebooked"]
 HIDDEN_COLUMNS = ("appointment_id", "pulled_at")
 
 HEADER_LABELS = {
@@ -96,6 +103,7 @@ HEADER_LABELS = {
     "reactivation_status": "Reactivation Status",
     "reactivation_notes": "Reception Reactivation Notes",
     "martys_comments": "Marty's Comments",
+    "next_action_step": "Next Action Step",
     "physio_action": "Physio Action",
     "physio_reactivation_notes": "Physio Reactivation Notes",
     "appointment_id": "appointment_id",
@@ -807,6 +815,7 @@ def collect_dropoffs(date_override=None, lookback_days=None, skip_appointment_id
             "reactivation_status": "pending",
             "reactivation_notes": "",
             "martys_comments": "",
+            "next_action_step": "",
             "physio_action": "",
             "physio_reactivation_notes": "",
             "appointment_id": str(a.get("id")),
@@ -995,11 +1004,13 @@ def _dedup_same_lapse(rows, history_cache, sheet_ids_by_patient=None):
 
 
 _HUMAN_COLS = ("clinical_non_clinical", "next_step_physio", "reactivation_status",
+               "next_action_step",
                "reactivation_notes", "martys_comments", "physio_action",
                "physio_reactivation_notes")
 # Which of the above merge as dropdowns (keep a value) vs free text (join).
 # reactivation_status is neither — it takes the most advanced value.
-_DROPDOWN_COLS = ("clinical_non_clinical", "next_step_physio", "physio_action")
+_DROPDOWN_COLS = ("clinical_non_clinical", "next_step_physio", "physio_action",
+                  "next_action_step")
 _FREETEXT_COLS = ("reactivation_notes", "martys_comments", "physio_reactivation_notes")
 _STATUS_RANK = {"reactivated": 5, "rebooked": 4, "leave": 3, "contact_attempted": 2,
                 "pending": 1, "": 0}
@@ -1074,14 +1085,21 @@ def remove_old_layout_rows(dry_run=False):
     sh = open_spreadsheet()
     tabs = [w for w in sh.worksheets() if w.title.startswith("W/C ")]
     resp = sheets_retry.gs_retry(
-        lambda: sh.values_batch_get([f"'{w.title}'!A:T" for w in tabs]),
+        lambda: sh.values_batch_get([f"'{w.title}'!A:{LAST_COL}" for w in tabs]),
         "old-layout scan")
     col = {c: SHEET_COLUMNS.index(c) for c in SHEET_COLUMNS}
     human = [col[c] for c in ("clinical_non_clinical", "next_step_physio",
-                              "reactivation_notes", "martys_comments", "physio_action")]
+                              "reactivation_notes", "martys_comments", "next_action_step",
+                              "physio_action")]
     reqs, removed, held = [], [], []
+    want = [HEADER_LABELS[c] for c in SHEET_COLUMNS]
     for ws, vr in zip(tabs, resp.get("valueRanges", [])):
         rows = vr.get("values", [])
+        if not rows or [h.strip() for h in rows[0]][:len(want)] != want:
+            # Not on the current layout yet: the position test below would
+            # read good rows as old ones. ensure_wc_layout() fixes the tab first.
+            print(f"  old-layout scan: '{ws.title}' header not current — skipped")
+            continue
         doomed = []
         for n, r in enumerate(rows[1:], start=2):
             if not is_old_layout_row(r):
@@ -1299,7 +1317,79 @@ def _sheets_credentials():
 
 def open_spreadsheet():
     gc = gspread.authorize(_sheets_credentials())
-    return gc.open_by_key(SPREADSHEET_ID)
+    sh = gc.open_by_key(SPREADSHEET_ID)
+    ensure_wc_layout(sh)
+    return sh
+
+
+LAST_COL = chr(ord("A") + len(SHEET_COLUMNS) - 1)   # "U" since 2026-11-21
+
+
+def _next_action_validation(sheet_id, col_idx, end_row=1000):
+    return {"setDataValidation": {
+        "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": end_row,
+                  "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1},
+        "rule": {"condition": {"type": "ONE_OF_LIST",
+                               "values": [{"userEnteredValue": v} for v in NEXT_ACTION_OPTIONS]},
+                 "showCustomUi": True, "strict": False}}}
+
+
+def ensure_wc_layout(sh, only=None, dry_run=False):
+    """Bring every W/C tab up to the current SHEET_COLUMNS layout.
+
+    2026-11-21: "Next Action Step" was added straight after Marty's Comments.
+    A tab whose header has Marty's Comments followed directly by Physio Action
+    gets one column inserted there (everything to the right — Physio Action,
+    Physio Reactivation Notes, the hidden id/pulled_at — moves right with its
+    data), the header written and the dropdown added. Every code path that
+    writes by position opens the sheet through open_spreadsheet() (team_sheet
+    calls this too), so no tab is ever written in the old positions.
+    Idempotent; returns the tabs changed. `only` = tab titles (tests)."""
+    import sheets_retry
+    tabs = [w for w in sh.worksheets()
+            if (w.title in only if only else w.title.startswith("W/C "))]
+    if not tabs:
+        return []
+    resp = sheets_retry.gs_retry(
+        lambda: sh.values_batch_get([f"'{w.title}'!1:1" for w in tabs]), "layout check")
+    label_m, label_q = HEADER_LABELS["martys_comments"], HEADER_LABELS["physio_action"]
+    label_n = HEADER_LABELS["next_action_step"]
+    jobs, changed, failed = [], [], []
+    for w, vr in zip(tabs, resp.get("valueRanges", [])):
+        head = [h.strip() for h in (vr.get("values") or [[]])[0]]
+        if label_n in head or label_m not in head:
+            continue
+        i = head.index(label_m) + 1
+        if i >= len(head) or head[i] != label_q:
+            print(f"  layout: '{w.title}' has an unexpected header — not touched")
+            continue
+        jobs.append((w, i))
+    for w, i in jobs:
+        if dry_run:
+            changed.append(w.title)
+            continue
+        # One tab at a time: a protected tab must not block the others.
+        try:
+            sheets_retry.gs_retry(lambda: sh.batch_update({"requests": [
+                {"insertDimension": {"range": {"sheetId": w.id, "dimension": "COLUMNS",
+                                               "startIndex": i, "endIndex": i + 1},
+                                     "inheritFromBefore": True}},
+                _next_action_validation(w.id, i, max(w.row_count, 200))]}),
+                f"insert column {w.title}")
+            sheets_retry.gs_retry(lambda: sh.values_batch_update({
+                "valueInputOption": "RAW",
+                "data": [{"range": f"'{w.title}'!{chr(ord('A') + i)}1",
+                          "values": [[label_n]]}]}), f"header {w.title}")
+            changed.append(w.title)
+        except Exception as exc:  # noqa: BLE001
+            failed.append(w.title)
+            print(f"  layout: FAILED to add the column to '{w.title}': {exc}")
+    if changed and not dry_run:
+        print(f"  layout: added 'Next Action Step' to {len(changed)} W/C tab(s)")
+    if failed:
+        print(f"  layout: {len(failed)} tab(s) still on the old layout — they are "
+              f"skipped by every positional write until fixed: {failed}")
+    return changed
 
 
 def get_or_create_tab(sh, tab_name):
@@ -1797,6 +1887,8 @@ def apply_dropoff_tab_formatting(ws):
             }
         }
     })
+    requests.append(_next_action_validation(
+        sheet_id, SHEET_COLUMNS.index("next_action_step"), 500))
     sh.batch_update({"requests": requests})
 
 
@@ -3645,8 +3737,18 @@ def write_to_sheet(rows):
               f"falling back to per-tab check only")
         global_ids = set()
 
+    want_header = [HEADER_LABELS[c] for c in SHEET_COLUMNS]
     for tab_name, tab_rows in by_tab.items():
         ws, created = get_or_create_tab(sh, tab_name)
+        if not created:
+            head = [h.strip() for h in ws.row_values(1)]
+            if head[:len(want_header)] != want_header:
+                # Never append by position to a tab on another layout (the
+                # 2026-11-21 column insert failed here?). Rows stay unwritten
+                # and are picked up again on the next run once it's fixed.
+                print(f"  !! '{tab_name}' is not on the current column layout — "
+                      f"{len(tab_rows)} row(s) NOT written", flush=True)
+                continue
         existing_ids = set(ws.col_values(appt_id_col_index)) if not created else set()
         existing_ids |= global_ids
         new_rows = [r for r in tab_rows if r["appointment_id"] not in existing_ids]

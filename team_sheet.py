@@ -114,11 +114,12 @@ def read_master(gc):
     first, and index maps appointment_id -> (tab title, 1-based row) so a
     push knows which cell to write."""
     sh = gc.open_by_key(p1.SPREADSHEET_ID)
+    p1.ensure_wc_layout(sh)       # never read/write a tab on the old layout
     tabs = sorted([w for w in sh.worksheets() if w.title.startswith("W/C ")],
                   key=lambda w: _tab_date(w.title), reverse=True)[:WEEKS]
     if not tabs:
         raise RuntimeError("no W/C tabs on the master sheet")
-    resp = sh.values_batch_get([f"'{w.title}'!A:T" for w in tabs])
+    resp = sh.values_batch_get([f"'{w.title}'!A:{p1.LAST_COL}" for w in tabs])
     rows, index, skipped = [], {}, []
     for ws, vr in zip(tabs, resp.get("valueRanges", [])):
         vals = vr.get("values", [])

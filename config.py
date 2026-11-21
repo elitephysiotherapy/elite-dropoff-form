@@ -1236,10 +1236,19 @@ REACT_START_DATE = date(2026, 11, 16)         # W/C tabs from this week onward
 REACT_LOOKBACK_DAYS = 42                      # ignore drop-offs older than this
 REACT_LIST_TIME = (10, 0)                     # Mon–Fri, after the 9am IA list
 REACT_LIST_GRACE_MIN = 120
-REACT_MAX_ATTEMPTS = 3
-REACT_RETRY_GAPS_DAYS = (1, 11)               # call 2 = +1 day; call 3 = +11 more
+# Flow (Martin 2026-11-21): drop-off week = reception, 2 calls (next day retry).
+# Monday review (Sinead Rocks + Marty) sets "Next Action Step" on the W/C tab;
+# that owner gets a card straight away (2 calls). A dated note in Reception
+# Reactivation Notes / Marty's Comments ("contact Tue evening", "w/b 30th Nov")
+# brings the card back on that day.
+REACT_MAX_ATTEMPTS = 2                        # per owner
+REACT_RETRY_GAPS_DAYS = (1,)                  # call 2 = next working day
 REACT_CALLBACK_DAYS = 7
-REACT_UNCLASSIFIED_WAIT_DAYS = 2              # give the physio time to classify
+REACT_REVIEW_TIME = (8, 30)                   # Monday review prompt
+REACT_POST_WINDOW = ((8, 30), (19, 0))        # assignments / scheduled cards post in here
+REACT_SINEAD_ROCKS_USER_ID = "U02MFKP3HBN"
+REACT_MARTY_USER_ID = "U07KDQ6UCBD"
+TRICKY_PATIENT_URL = "https://app.thegotoclinichub.com/tools/the-difficult-patient-problem-solver.php"
 
 # Texts are never sent 21:00–08:00 (held until 08:00 London).
 STL_QUIET_START = (21, 0)
