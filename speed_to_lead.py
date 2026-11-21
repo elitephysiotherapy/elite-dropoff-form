@@ -22,6 +22,9 @@ Flow (scope agreed with Martin 2026-11-08)
      the Online Leads sheet or the Leads tab mark booked/declined stop being
      chased; so does anything older than STL_GIVE_UP_DAYS.
   5. A lead's text reply (server.py /twilio/inbound) lands in their thread.
+  6. FINAL TEXT (2026-11-21): one last text (intro video + free discovery call
+     link) if still no booking FINAL_TEXT_AFTER_DAYS after the lead hit the
+     sheet. See "Final text" below and config.FINAL_TEXT_*.
 
 State lives on the "Speed to Lead" tab of the New Patient Bookings sheet —
 one row per lead, so every text is sent at most once even across restarts
@@ -63,6 +66,11 @@ import meta_leads
 import sheets_retry
 import campaign
 from marketing import twilio_client
+
+try:   # needs the Cliniko API key just to import; tests/dry runs may lack it
+    from marketing import cliniko as cliniko_api
+except Exception:  # noqa: BLE001
+    cliniko_api = None
 
 # Everything this module needs is imported HERE, at import time, never inside
 # a function: functions below run in background threads, and two threads
@@ -195,8 +203,98 @@ def fmt_mins(delta: timedelta) -> str:
 HEADERS = ["Lead Key", "Seen At", "Lead Created", "Name", "Phone", "Clinic",
            "Body Area", "Text Status", "Text Due", "Texted At", "Clock Start",
            "Slack Channel", "Slack TS", "Pings", "Called At", "Called By",
-           "Outcome", "Mins to Call", "Closed", "Assigned"]
+           "Outcome", "Mins to Call", "Closed", "Assigned",
+           # 2026-11-21: final text for leads we never reached (see below).
+           "Final Text Status", "Final Text At", "Replied At"]
 COL = {h: i for i, h in enumerate(HEADERS)}
+
+
+# ---------------------------------------------------------------------------
+# Final text (agreed with Martin 2026-11-21)
+#   1 speed-to-lead text -> calls at varied times (playbook) -> if still no
+#   booking FINAL_TEXT_AFTER_DAYS after the lead reached the sheet, ONE last
+#   text with the intro video + the free discovery call link. Never anyone who
+#   booked, was spoken to, replied, said no, or opted out.
+# ---------------------------------------------------------------------------
+_NO_CONTACT_EXACT = {"stop", "stopall", "unsubscribe", "cancel", "end", "quit",
+                     "optout", "opt out", "opt-out", "no", "no thanks",
+                     "no thank you", "not interested", "wrong number"}
+_NO_CONTACT_PHRASES = ("not interested", "leave me alone", "do not contact",
+                       "dont contact", "don't contact", "stop texting",
+                       "stop messaging", "stop sending", "remove me",
+                       "take me off", "no more text", "no more messages",
+                       "unsubscribe", "opt out", "opt-out", "wrong number")
+# Closed values that mean "do not contact again".
+_NO_CONTACT_CLOSED = {"opted out", "replied no"}
+# The only Closed values that still allow the final text ("expired" = the
+# 3-day reminder window ended with nobody marking the lead).
+_FINAL_OK_CLOSED = {"", "expired"}
+
+
+def wants_no_contact(body: str) -> bool:
+    """True if an inbound reply is a stop / no-thanks. Deliberately broad:
+    one wrongly-silenced lead costs far less than one unwanted text."""
+    t = re.sub(r"[^a-z' \-]", "", (body or "").lower().replace("’", "'")).strip()
+    t = re.sub(r"\s+", " ", t)
+    return t in _NO_CONTACT_EXACT or any(p in t for p in _NO_CONTACT_PHRASES)
+
+
+def final_window_open(t: datetime) -> bool:
+    """Final texts go out Mon–Fri 09:00–20:00 London, never on closure days."""
+    t = t.astimezone(LONDON)
+    if t.weekday() > 4 or t.date() in config.CLINIC_CLOSED_DAYS:
+        return False
+    (h0, m0), (h1, m1) = config.FINAL_TEXT_WINDOW
+    return _at(t, (h0, m0)) <= t < _at(t, (h1, m1))
+
+
+def compose_final_text(*, name: str, video: str, discovery: str) -> str:
+    fn = first_name(name)
+    hello = f"Hi {fn}" if fn else "Hi there"
+    return (f"{hello}, it's Elite Physio. Sorry we keep missing each other, "
+            f"no pressure at all. Here's a short video of who you'd see and "
+            f"what to expect: {video} If you'd rather start with a 20 min "
+            f"free chat with a physio (phone or video), book it here "
+            f"and choose 'Free Discovery Call': {discovery} Or just reply "
+            f"and we'll ring when suits. Reply STOP to opt out.")
+
+
+def final_text_decision(s: dict, *, now: datetime, lead_status: str,
+                        booked_phones: set, suppressed_phones: set,
+                        live: bool) -> tuple[str, str]:
+    """('send'|'wait'|'skip', reason) for one state row. Pure — unit-tested."""
+    fs = (s.get("Final Text Status") or "")
+    if fs and not fs.startswith("test sent"):
+        return "skip", "already handled"
+    text_ok = ("sent",) if live else ("sent", "sent (safe mode)")
+    if (s.get("Text Status") or "") not in text_ok:
+        return "skip", "first text not sent"
+    if (s.get("Closed") or "") not in _FINAL_OK_CLOSED:
+        return "skip", f"closed: {s.get('Closed')}"
+    if (s.get("Outcome") or "").lower() == "called":
+        return "skip", "spoken to"
+    if s.get("Replied At"):
+        return "skip", "replied"
+    if (lead_status or "") in _CLOSED_STATUSES:
+        return "skip", f"marked {lead_status} on the sheet"
+    p = norm_phone(s.get("Phone", ""))
+    if not p:
+        return "skip", "no usable phone"
+    if p in suppressed_phones:
+        return "skip", "opted out / said no"
+    if p in booked_phones:
+        return "skip", "booked in Cliniko"
+    created = _parse(s.get("Lead Created", ""))
+    if not created:
+        return "skip", "no lead date"
+    if created < datetime.fromisoformat(config.FINAL_TEXT_START_AT).astimezone(LONDON):
+        return "skip", "before final-text start"
+    age = now - created
+    if age < timedelta(days=config.FINAL_TEXT_AFTER_DAYS):
+        return "wait", "not due yet"
+    if age > timedelta(days=config.FINAL_TEXT_MAX_AGE_DAYS):
+        return "skip", "too old - not sent"
+    return "send", "due"
 
 
 def _col_letter(i: int) -> str:
@@ -261,12 +359,14 @@ def _open_state_ws():
         ws = _retry(lambda: sh.worksheet(config.STL_STATE_TAB), "open state tab")
         # 2026-11-14: "Assigned" column added (Meta leads routed to physios).
         head = _retry(lambda: ws.row_values(1), "read state headers")
-        if head[:len(HEADERS) - 1] == HEADERS[:-1] and len(head) < len(HEADERS):
+        # Older tab = a prefix of HEADERS: widen it and add only the new
+        # headers (Assigned 2026-11-14; Final Text columns 2026-11-21).
+        if head and len(head) < len(HEADERS) and head == HEADERS[:len(head)]:
             if ws.col_count < len(HEADERS):
                 _retry(lambda: ws.add_cols(len(HEADERS) - ws.col_count), "widen state tab")
-            _retry(lambda: ws.update(values=[["Assigned"]],
-                                     range_name=f"{_col_letter(len(HEADERS) - 1)}1"),
-                   "add Assigned header")
+            _retry(lambda: ws.update(values=[HEADERS[len(head):]],
+                                     range_name=f"{_col_letter(len(head))}1"),
+                   "add new state headers")
         return ws
     except Exception as exc:  # gspread.WorksheetNotFound
         if type(exc).__name__ != "WorksheetNotFound":
@@ -354,11 +454,13 @@ def leads_tab_statuses() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # Outbound: SMS + Slack
 # ---------------------------------------------------------------------------
-def send_text(phone: str, body: str) -> tuple[bool, str]:
+def send_text(phone: str, body: str, live: bool | None = None) -> tuple[bool, str]:
     dest = twilio_client.normalise_uk_phone(phone)
     if not dest:
         return False, "no usable phone number"
-    if not config.STL_LIVE:
+    if live is None:
+        live = config.STL_LIVE
+    if not live:
         body = f"[TEST → {dest}] {body}"
         dest = config.MARKETING_TEST_PHONE
     # Straight to Twilio rather than twilio_client.send_sms: that helper also
@@ -679,11 +781,113 @@ def tick(now: datetime | None = None, dry_run: bool = False, log=print) -> dict:
         except Exception as exc:
             log(f"  reminder post failed: {exc}")
 
+    # 3b. Final text to leads we never reached (Mon–Fri 09:00–20:00 only).
+    try:
+        stats["final_texted"] = send_final_texts(ws, state, now, log)
+    except Exception as exc:       # never let this step break the rest
+        log(f"  final texts skipped: {exc}")
+
     # 4. End-of-day report to Martin's DM, once per desk day after closing.
     if maybe_send_report(ws, state, now, log):
         stats["report"] = 1
 
     return stats
+
+
+def cliniko_booked_phones(since: datetime, now: datetime) -> set:
+    """Last-10-digit phones of patients who BOOKED any live appointment since
+    `since` (most Meta leads never become Cliniko patients, so the Leads tab
+    status alone can't be trusted). Raises if Cliniko can't be read — the
+    caller then sends nothing this tick rather than risk texting a patient."""
+    if cliniko_api is None:
+        raise RuntimeError("Cliniko client unavailable")
+    utc = ZoneInfo("UTC")
+    appts = cliniko_api.appointments_created_between(
+        since.astimezone(utc) - timedelta(days=1), now.astimezone(utc))
+    ids = set()
+    for a in appts:
+        if not cliniko_api.is_cancelled(a):
+            pid = cliniko_api.patient_id_of(a)
+            if pid:
+                ids.add(pid)
+    phones = set()
+    for pid in ids:
+        pat = cliniko_api.get_patient(pid)
+        if pat is None:
+            raise RuntimeError(f"could not read Cliniko patient {pid}")
+        p = norm_phone(pat.get("mobile", ""))
+        if p:
+            phones.add(p)
+    return phones
+
+
+def send_final_texts(ws, state: dict, now: datetime, log=print) -> int:
+    """The one last text. Safe mode (STL_LIVE or FINAL_TEXT_LIVE false) texts
+    only Martin, at most FINAL_TEXT_TEST_CAP times, and never marks a lead as
+    really sent."""
+    if not config.FINAL_TEXT_ENABLED or not final_window_open(now):
+        return 0
+    live = config.STL_LIVE and config.FINAL_TEXT_LIVE   # its own switch
+    video, discovery = config.FINAL_TEXT_VIDEO_LINK, config.FINAL_TEXT_DISCOVERY_LINK
+    rows = [s for k, s in state.items() if not k.startswith("__") and s.get("_row")]
+    suppressed = {norm_phone(s["Phone"]) for s in rows
+                  if (s.get("Closed") in _NO_CONTACT_CLOSED
+                      or (s.get("Final Text Status") or "").startswith("opted out"))}
+    suppressed.discard("")
+    statuses = None
+    cands = []
+    for s in rows:
+        if not live and (s.get("Final Text Status") or "").startswith("test sent"):
+            continue                    # already test-texted to Martin once
+        # First pass without Cliniko/Leads-tab data just to find candidates.
+        verdict, _ = final_text_decision(s, now=now, lead_status="", booked_phones=set(),
+                                         suppressed_phones=suppressed, live=live)
+        if verdict == "send":
+            cands.append(s)
+    if not cands:
+        return 0
+    if not video or not discovery:
+        log(f"  final text: {len(cands)} lead(s) due but video/discovery link "
+            f"not set - holding")
+        return 0
+    if not live:
+        used = sum(1 for s in rows if (s.get("Final Text Status") or "").startswith("test sent"))
+        if used >= config.FINAL_TEXT_TEST_CAP:
+            return 0
+    statuses = leads_tab_statuses()
+    since = min(_parse(s["Lead Created"]) for s in cands)
+    booked = cliniko_booked_phones(since, now)      # raises -> nothing sent
+    sent = 0
+    for s in cands:
+        if not live and sum(1 for r in rows if (r.get("Final Text Status") or "")
+                            .startswith("test sent")) >= config.FINAL_TEXT_TEST_CAP:
+            break
+        st = (statuses.get(s["Lead Key"]) or statuses.get(f"phone:{norm_phone(s['Phone'])}") or "")
+        verdict, reason = final_text_decision(
+            s, now=now, lead_status=st, booked_phones=booked,
+            suppressed_phones=suppressed, live=live)
+        if verdict != "send":
+            if reason not in ("not due yet",) and live:
+                update_cells(ws, s["_row"], {"Final Text Status": f"skipped: {reason}"})
+                s["Final Text Status"] = f"skipped: {reason}"
+            continue
+        body = compose_final_text(name=s["Name"], video=video, discovery=discovery)
+        ok, info = send_text(s["Phone"], body, live=live)
+        if ok:
+            status = "sent" if live else "test sent (safe mode)"
+        elif "21610" in info:                       # Twilio: number opted out
+            status = "opted out (Twilio)"
+        else:
+            status = f"FAILED: {info}"
+        update_cells(ws, s["_row"], {"Final Text Status": status,
+                                     "Final Text At": _iso(now) if ok else ""})
+        s["Final Text Status"] = status
+        if ok:
+            sent += 1
+            if live:
+                _thread_note(s, f":white_check_mark: Final text sent {now.strftime('%H:%M')} "
+                                f"(video + free discovery call link):\n>{body}")
+    return sent
 
 
 REPORT_KEY = "__report__"   # state row holding when the last report went
@@ -878,7 +1082,8 @@ def find_lead_by_phone(phone: str) -> dict | None:
         for s in read_state(state_ws()).values():
             if s.get("Text Status") in ("sent",) and s.get("Slack TS"):
                 seen = _parse(s["Seen At"])
-                if seen and datetime.now(LONDON) - seen <= timedelta(days=30):
+                if seen and datetime.now(LONDON) - seen <= timedelta(
+                        days=config.STL_REPLY_LOOKBACK_DAYS):
                     rows[norm_phone(s["Phone"])] = s
         _phone_index.update(at=time.monotonic(), rows=rows)
     return _phone_index["rows"].get(p)
@@ -892,6 +1097,15 @@ def post_reply(s: dict, body: str, optout: bool = False):
     else:
         text = f":speech_balloon: *{esc(s['Name'])}* replied: {who}\n>{esc(body)}"
     _thread_note(s, text)
+    # Any reply stops the final text; a stop / no-thanks closes the lead for
+    # good (the suppression list is simply these Closed values, by phone).
+    try:
+        cells = {"Replied At": _iso(datetime.now(LONDON))}
+        if optout or wants_no_contact(body):
+            cells["Closed"] = "opted out" if optout else "replied no"
+        update_cells(state_ws(), s["_row"], cells)
+    except Exception as exc:
+        print(f"  stl could not record reply for {s.get('Name')}: {exc}", flush=True)
 
 
 # ---------------------------------------------------------------------------

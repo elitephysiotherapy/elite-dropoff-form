@@ -1168,6 +1168,28 @@ STL_POLL_SECONDS = 60
 STL_FIRST_PING_MIN = 15
 STL_GIVE_UP_DAYS = 3          # stop chasing an un-actioned lead after this
 STL_REPEAT_DAYS = 30          # same phone again within this = no second text
+STL_REPLY_LOOKBACK_DAYS = 60  # replies from texted leads route to their thread
+
+# Final text (Martin 2026-11-21): one last text with the intro video + free
+# discovery call link, if there is still no booking N days after the lead hit
+# the sheet. Runs inside the speed-to-lead tick, so it follows STL_LIVE: safe
+# mode texts ONLY Martin (max FINAL_TEXT_TEST_CAP) and never marks a real lead.
+# Holds (sends nothing) until BOTH links are set — on Render, no deploy needed.
+# Separate go-live switch (STL_LIVE is already ON in production for the first
+# text): false = safe mode, texts only Martin (max FINAL_TEXT_TEST_CAP).
+FINAL_TEXT_LIVE = os.environ.get("FINAL_TEXT_LIVE", "false").strip().lower() == "true"
+FINAL_TEXT_ENABLED = os.environ.get("FINAL_TEXT_ENABLED", "1") == "1"
+FINAL_TEXT_AFTER_DAYS = 4
+FINAL_TEXT_MAX_AGE_DAYS = 7   # never text a backlog (older leads just skipped)
+FINAL_TEXT_START_AT = os.environ.get("FINAL_TEXT_START_AT", "2026-11-21T00:00:00+00:00")
+FINAL_TEXT_WINDOW = ((9, 0), (20, 0))   # Mon–Fri only, never closure days
+FINAL_TEXT_TEST_CAP = 3
+FINAL_TEXT_VIDEO_LINK = os.environ.get("FINAL_TEXT_VIDEO_LINK", "").strip()
+# Martin 2026-11-21: the website contact page (its "Book at ..." buttons open
+# Cliniko's service list, where the patient picks "Free Discovery Call" — the
+# text tells them to). Cliniko ignores appointment type in links.
+FINAL_TEXT_DISCOVERY_LINK = os.environ.get(
+    "FINAL_TEXT_DISCOVERY_LINK", "https://elitephysiocookstown.co.uk/contact/").strip()
 
 # Texts are never sent 21:00–08:00 (held until 08:00 London).
 STL_QUIET_START = (21, 0)
