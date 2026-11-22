@@ -18,7 +18,8 @@ Two answer styles exist in the templates (seen Nov 2026):
 A note counts only if Yes is selected AND Not Yet is not. Both ticked = ambiguous,
 not counted (reported as a count so it can be fixed in Cliniko).
 
-A patient with several Yes notes in the week appears once (latest note).
+A patient with several Yes notes in the week appears once (latest note), and a
+patient who already had a Yes note before the window is never posted again.
 
 Modes:
   python send_discharge_wins_weekly.py          preview — COUNTS ONLY, no names printed
@@ -96,11 +97,25 @@ def discharge_answer(note):
     return None
 
 
+def previously_celebrated(pid, start_local):
+    """True if this patient already has a Yes note from BEFORE this week's window,
+    i.e. they were celebrated in an earlier post. Stateless (Render has no disk):
+    asks Cliniko for the patient's notes, so it also covers the first run after
+    the question was introduced."""
+    cutoff = start_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for n in phase2.fetch_all(f"/patients/{pid}/treatment_notes", []):
+        if n.get("deleted_at") or n.get("archived_at"):
+            continue
+        if (n.get("created_at") or "") < cutoff and discharge_answer(n) == "yes":
+            return True
+    return False
+
+
 def scan(start_local, end_local):
     """(rows, stats): one row per successfully discharged patient in the window."""
     s = start_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     e = end_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    by_patient, stats = {}, {"notes": 0, "answered": 0, "ambiguous": 0}
+    by_patient, stats = {}, {"notes": 0, "answered": 0, "ambiguous": 0, "repeat": 0}
     for note in phase2.fetch_all("/treatment_notes", [
             ("q[]", f"created_at:>={s}"), ("q[]", f"created_at:<{e}")]):
         if note.get("deleted_at") or note.get("archived_at"):
@@ -122,6 +137,10 @@ def scan(start_local, end_local):
             continue
         by_patient[pid] = {"patient": patient_name(note),
                            "physio": note.get("author_name", "?"), "date": when}
+    for pid in list(by_patient):
+        if previously_celebrated(pid, start_local):
+            del by_patient[pid]
+            stats["repeat"] += 1
     rows = sorted(by_patient.values(), key=lambda r: (r["date"], r["patient"]))
     return rows, stats
 
@@ -138,8 +157,6 @@ def build_text(rows, start_local, end_local):
         physio = config.PRACTITIONER_DISPLAY_NAME.get(r["physio"], r["physio"])
         date = datetime.strptime(r["date"], "%Y-%m-%d").strftime("%a %d %b")
         lines.append(f"• *{r['patient']}*  _(discharged by {physio}, {date})_")
-    lines += ["", "_Counted only where the note says *Patient Successfully Discharged? → Yes*. "
-                  "Clinicians-only channel: please don't share names outside it._"]
     return "\n".join(lines)
 
 
@@ -169,7 +186,8 @@ def main():
     rows, stats = scan(start, end)
     print(f"{len(rows)} successful discharge(s); {stats['notes']} notes scanned, "
           f"{stats['answered']} with the question answered, "
-          f"{stats['ambiguous']} ambiguous (both ticked).")
+          f"{stats['ambiguous']} ambiguous (both ticked), "
+          f"{stats['repeat']} skipped as already celebrated.")
     text = build_text(rows, start, end)
     if "--post" in sys.argv:
         ok = post_to_channel(text)
