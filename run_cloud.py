@@ -46,6 +46,7 @@ COMMANDS = {
     "reactivations_monthly": [PY, "reactivations_by_month.py", "--refresh"],
     "diary_summary": [PY, "send_diary_summary.py", "--post"],
     "pilates_flags_weekly": [PY, "send_pilates_flags_weekly.py", "--post"],
+    "discharge_wins_weekly": [PY, "send_discharge_wins_weekly.py", "--post"],
     # Nightly Chief of Staff BACKUP: posts a Render-only health report only if
     # the 21:10 Mac report (Claude scheduled task) didn't post tonight.
     "chief_of_staff_backup": [PY, "chief_of_staff.py", "--backup"],
@@ -96,6 +97,10 @@ TARGETS = {
     # Patients the physios flagged "suitable for Pilates" / "Profiling" in last
     # week's notes → DMs to Kerry / Sinéad Rocks. Render cron: 0 7,8 * * 5.
     "pilates_flags_weekly": [({4}, 8, 0)],                        # Fri 08:00
+    # Successful discharges (note answer "Patient Successfully Discharged? = Yes")
+    # -> private clinicians-only #wins, Fri 09:00 before team CPD; window is
+    # Fri 09:00 -> Fri 09:00. Render cron: 0 8,9 * * 5. Needs DISCHARGE_WINS_CHANNEL_ID.
+    "discharge_wins_weekly": [({4}, 9, 0)],                       # Fri 09:00
     # Copy new Meta ad leads into the bookings Leads tab — hourly 07:00–21:00
     # Mon–Fri (Martin 2026-10-14). The ONLY writer of Meta leads (taken out of
     # the bookings poll so two jobs can't append the same lead at once).
