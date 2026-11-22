@@ -99,7 +99,8 @@ TARGETS = {
     "pilates_flags_weekly": [({4}, 8, 0)],                        # Fri 08:00
     # Successful discharges (note answer "Patient Successfully Discharged? = Yes")
     # -> private clinicians-only #wins, Fri 09:00 before team CPD; window is
-    # Fri 09:00 -> Fri 09:00. Render cron: 0 8,9 * * 5. Needs DISCHARGE_WINS_CHANNEL_ID.
+    # Fri 09:00 -> Fri 09:00. Runs as a PIGGYBACK on the elite-pilates-flags cron, whose schedule is
+    # 0 7,8,9 * * 5 (Pilates 08:00 + this 09:00, both BST/GMT). Needs DISCHARGE_WINS_CHANNEL_ID.
     "discharge_wins_weekly": [({4}, 9, 0)],                       # Fri 09:00
     # Copy new Meta ad leads into the bookings Leads tab — hourly 07:00–21:00
     # Mon–Fri (Martin 2026-10-14). The ONLY writer of Meta leads (taken out of
@@ -187,6 +188,38 @@ def piggyback_chief_of_staff_backup(now):
         print(f"[run_cloud] chief_of_staff_backup: piggyback error {e!r} (ignored)", flush=True)
 
 
+def piggyback_discharge_wins(now):
+    """Run the weekly discharge-wins post if `now` is its London target (Fri 09:00).
+    Rides on the Pilates-flags Friday cron because the Render Hobby plan is capped
+    at 25 services. Isolated like the Chief of Staff backup: never raises and never
+    changes the caller's exit code, but a failure DMs the CEO so it can't go quiet."""
+    try:
+        if not should_run("discharge_wins_weekly", now):
+            return
+        import os
+        print("[run_cloud] discharge_wins_weekly (piggyback on pilates-flags cron): running",
+              flush=True)
+        env = dict(os.environ, PYTHONUNBUFFERED="1")
+        proc = subprocess.Popen(COMMANDS["discharge_wins_weekly"], env=env)
+        try:
+            rc = proc.wait(timeout=BACKUP_TIMEOUT_SECS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            rc = 124
+        print(f"[run_cloud] discharge_wins_weekly: finished with exit code {rc}", flush=True)
+        if rc != 0:
+            import config
+            import slack_notifier
+            slack_notifier._send_dm(
+                config.CEO_SLACK_EMAIL,
+                f"⚠️ The weekly #wins discharge post failed (exit {rc}). Check the "
+                "elite-pilates-flags logs on Render; nothing was posted.",
+                target_label="Discharge wins failure alert")
+    except Exception as e:  # noqa: BLE001 - must never break the Pilates flags run
+        print(f"[run_cloud] discharge_wins_weekly: piggyback error {e!r} (ignored)", flush=True)
+
+
 def main():
     if len(sys.argv) < 2:
         print(f"usage: run_cloud.py <{'|'.join(COMMANDS)}|selftest>")
@@ -205,6 +238,9 @@ def main():
     # or change this job's exit code, and a bookings failure can't stop it.
     if job == "bookings":
         piggyback_chief_of_staff_backup(now)
+    # Discharge wins rides on the Friday Pilates-flags cron (same reason).
+    if job == "pilates_flags_weekly":
+        piggyback_discharge_wins(now)
 
     if not should_run(job, now):
         print(f"[run_cloud] {job}: {stamp} is not a scheduled London run time — skipping (no-op).")
