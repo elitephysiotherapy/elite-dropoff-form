@@ -68,7 +68,9 @@ HEADERS = ["Appt ID", "Tab", "Patient ID", "Posted At", "Slack Channel", "Slack 
            "Attempts", "Last Attempt At", "Next Due", "Outcome", "Attempt Log",
            # 2026-11-21 review flow + dated notes:
            "Owner", "Notes Seen", "Scheduled For", "Scheduled Note", "Sched Posted",
-           "Note Flag"]
+           "Note Flag",
+           # 2026-11-23: dated notes already on the sheet hold a card (once per note).
+           "Holds Checked"]
 COL = {h: i for i, h in enumerate(HEADERS)}
 LIST_KEY, REVIEW_KEY, BASELINE_KEY = "__list__", "__review__", "__baseline__"
 
@@ -138,8 +140,10 @@ _MON_RE = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*"
 _DAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 _DAY_RE = (r"\b(mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun)"
            r"(?:day|sday|nesday|rsday|urday)?\b")
-_INTENT = re.compile(r"\b(call|ring|rang|contact|phone|try|follow|f/u|chase|text|back|"
-                     r"again|reach|speak|book)\w*", re.I)
+_INTENT = re.compile(r"\b(call|ring|rang|contact|phone|try|follow|f/u|f/up|fu|chase|text|"
+                     r"back|again|reach|speak|book|check|catch|touch base|in touch)\w*", re.I)
+# "19/11 - ...", "18/11/26 - ..." at the start of a note = when it was written.
+_LEAD_DATE = re.compile(r"^\s*(\d{1,2})[/.](\d{1,2})(?:[/.](\d{2,4}))?\s*[-\u2013:,.]?\s*")
 _TIMEISH = re.compile(_DAY_RE + r"|\b" + _MON_RE + r"\b|\bweeks?\b|\bmonth\b|\bafter\b|"
                       r"\bwhen\b|\bchristmas\b|\bxmas\b|\bnew year\b|\bholiday\b|\bhols\b|"
                       r"\d{1,2}[/.]\d{1,2}", re.I)
@@ -184,7 +188,22 @@ def parse_note_date(text: str, base: date) -> date | None:
     t = re.sub(r"\s+", " ", t.lower())
     if _BOT_LINE.match(t):
         return None
+    m0 = _LEAD_DATE.match(t)
+    if m0:                                       # the note's own date = its "today"
+        y = m0.group(3)
+        yy = (2000 + int(y) if y and len(y) == 2 else int(y)) if y else None
+        written = (_mk(yy, int(m0.group(2)), int(m0.group(1))) if yy
+                   else _with_year(int(m0.group(2)), int(m0.group(1)), base))
+        if written and written <= base:
+            base = written
+        t = t[m0.end():]
     found = None
+    # 0. "away / off for a week" plans a call on its own
+    m = re.search(r"\b(?:away|off|holiday|hols|abroad)\b[^.|]{0,30}?\bfor (a|one|1|two|2|three|3)"
+                  r" weeks?\b", t)
+    if m:
+        n = {"a": 1, "one": 1, "1": 1, "two": 2, "2": 2, "three": 3, "3": 3}[m.group(1)]
+        return base + timedelta(days=7 * n)
     # 1. week beginning/commencing: "w/b 30th nov", "wc 30/11", "week of 30 Nov"
     m = re.search(r"\b(?:w/?b|w/?c|week (?:beginning|commencing|starting|of))\s*(?:the\s*)?"
                   r"(\d{1,2})(?:st|nd|rd|th)?(?:\s*(?:of\s*)?" + _MON_RE + r"|[/.](\d{1,2}))", t)
@@ -220,10 +239,27 @@ def parse_note_date(text: str, base: date) -> date | None:
         return base
     if re.search(r"\btomorrow\b", t):
         return base + timedelta(days=1)
+    if re.search(r"\bend of next week\b", t):
+        return monday_of(base) + timedelta(days=11)
+    if re.search(r"\b(start|beginning) of next week\b", t):
+        return monday_of(base) + timedelta(days=7)
     if re.search(r"\bnext week\b", t):
         return monday_of(base) + timedelta(days=7)
-    if re.search(r"\bend of (the )?week\b", t):
-        return monday_of(base) + timedelta(days=4)
+    if re.search(r"\bend of (the |this )?week\b", t):
+        return max(monday_of(base) + timedelta(days=4), base)
+    if re.search(r"\blater (in |this )?(the )?week\b", t):
+        return (monday_of(base) + timedelta(days=3) if base.weekday() < 3
+                else monday_of(base) + timedelta(days=4) if base.weekday() == 3
+                else monday_of(base) + timedelta(days=7))
+    if re.search(r"\bend of (the |this )?month\b", t):
+        nxt = (base.replace(day=28) + timedelta(days=4)).replace(day=1)
+        d = nxt - timedelta(days=1)
+        while not working(d):
+            d -= timedelta(days=1)
+        return d
+    if re.search(r"\bnext month\b", t):
+        nxt = (base.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return next_working_day_on_or_after(nxt)
     m = re.search(r"\b(?:in\s+)?(\d+|a|one|two|three|four|couple)(?: of)?\s+(day|week)s?\b", t)
     if m:
         n = int(m.group(1)) if m.group(1).isdigit() else _NUM_WORDS[m.group(1)]
@@ -286,6 +322,11 @@ def _retry_due(st: dict | None, n: int, floor: date) -> date | None:
     return next_working_day_on_or_after(max(add_working_days(last, gap), floor))
 
 
+def _untapped_today(st: dict, n: int, today: date) -> bool:
+    """A card already out today that nobody has tapped yet: not a retry."""
+    return bool(st.get("Slack TS")) and n == 0 and _day(st.get("Posted At")) == today
+
+
 def decide(row: dict, st: dict | None, today: date) -> dict | None:
     """What's owed on this row today: {"owner", "due", "kind", "new_card"} or None.
     kind: week | assigned | retry | scheduled | tricky."""
@@ -312,6 +353,8 @@ def decide(row: dict, st: dict | None, today: date) -> dict | None:
             return {"owner": na, "due": today, "kind": "assigned", "new_card": True}
         if st.get("Outcome") in DONE_OUTCOMES:
             return None
+        if _untapped_today(st, int(st.get("Attempts") or 0), today):
+            return None
         due = _retry_due(st, int(st.get("Attempts") or 0), today)
         return ({"owner": na, "due": due, "kind": "retry", "new_card": False}
                 if due and due <= today else None)
@@ -326,6 +369,8 @@ def decide(row: dict, st: dict | None, today: date) -> dict | None:
     if not land:
         return None
     n = attempts_of(row, st)
+    if _untapped_today(st, n, today):
+        return None
     due = _retry_due(st, n, next_working_day_on_or_after(land))
     if not due or due > today:
         return None
@@ -730,6 +775,56 @@ def scan_notes(rows, state, ws, today, baseline: bool, dry_run: bool, log) -> in
     return n_sched
 
 
+def note_hold(segs: list[str], today: date) -> tuple[date | None, str]:
+    """Earliest future call date in these note lines (pure)."""
+    best, note = None, ""
+    for seg in segs:
+        d = parse_note_date(seg, today)
+        if d and d > today:
+            d = next_working_day_on_or_after(d)
+            if best is None or d < best:
+                best, note = d, seg
+    return best, note
+
+
+def apply_holds(rows, state, ws, today, dry_run: bool, log) -> int:
+    """Dated notes already on the sheet (from before the cards, or the Monday
+    review's comments) hold the card until that day. Each note line is read
+    once (its date is fixed relative to the day it was first seen, or to the
+    date written at its start). An open card gets a thread note saying so."""
+    held = 0
+    for row in rows:
+        aid = str(row.get("appointment_id") or "").strip()
+        if not aid or not row_open(row):
+            continue
+        segs = note_segments(row.get("Reception Reactivation Notes"), row.get("Marty's Comments"))
+        st = state.get(aid) or {}
+        checked = set(filter(None, str(st.get("Holds Checked") or "").split(",")))
+        new = [x for x in segs if seg_hash(x) not in checked]
+        if not new:
+            continue
+        vals = {"Holds Checked": ",".join(sorted(checked | {seg_hash(x) for x in new})),
+                "Tab": row["_tab"]}
+        d, note = note_hold(new, today)
+        cur = _day(st.get("Scheduled For")) if not st.get("Sched Posted") else None
+        if d and (cur is None or cur <= today or d < cur):
+            vals.update({"Scheduled For": d.isoformat(), "Scheduled Note": note[:200],
+                         "Sched Posted": ""})
+            held += 1
+            if st.get("Slack TS") and st.get("Outcome") not in DONE_OUTCOMES and not dry_run:
+                try:
+                    stl.slack().chat_postMessage(
+                        channel=st["Slack Channel"], thread_ts=st["Slack TS"], unfurl_links=False,
+                        text=(f":pause_button: *On hold* — the notes say “{esc(note)[:160]}”. "
+                              f"No need to ring yet: this comes back as a new card on "
+                              f"*{d.strftime('%a %d %b')}*."))
+                except Exception as exc:  # noqa: BLE001
+                    log(f"  react {aid}: hold note failed ({exc})")
+        if not dry_run:
+            put_state(ws, state, aid, vals)
+    return held
+
+
 def _post_card(row, st, kind, owner, now, ws, state, log) -> bool:
     """Post one card (or the tricky-form DM). Returns True if posted."""
     slack = stl.slack()
@@ -829,6 +924,7 @@ def run(now: datetime | None = None, dry_run: bool = False, force_list: bool = F
     stats["scheduled"] = scan_notes(rows, state, ws, today, baseline, dry_run, log)
     if baseline and not dry_run:
         put_state(ws, state, BASELINE_KEY, {"Posted At": _iso(now), "Outcome": "meta"})
+    stats["held"] = apply_holds(rows, state, ws, today, dry_run, log)
 
     # 2. Monday review prompt.
     rv = state.get(REVIEW_KEY)
@@ -904,8 +1000,10 @@ def _post_retry_list(retries, ws, state, now):
                 name = f"<{link}|{esc(row.get('Patient Name') or '?')}>"
             except Exception:
                 name = esc(row.get("Patient Name") or "?")
+            n = attempts_of(row, st)
             why = ("call back booked" if st.get("Outcome") == "call back" else
-                   f"call {attempts_of(row, st) + 1} of {config.REACT_MAX_ATTEMPTS}")
+                   "not called yet" if n == 0 else
+                   f"call {n + 1} of {config.REACT_MAX_ATTEMPTS}")
             lines.append(f"• {name} · {esc(row.get('Physio') or '')} · {why}")
     slack.chat_postMessage(channel=config.REACT_CHANNEL, text="\n".join(lines),
                            unfurl_links=False)

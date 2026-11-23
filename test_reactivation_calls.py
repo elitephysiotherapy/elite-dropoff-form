@@ -175,5 +175,31 @@ check("list at 10:00", rc.list_due_now(dt("2026-11-23 10:02"), None))
 check("post window closed at night", not rc.in_post_window(dt("2026-11-23 21:00")))
 check("post window open mid-morning", rc.in_post_window(dt("2026-11-23 11:00")))
 
+# --- 23 Nov fixes: notes already on the sheet, more phrases, untapped cards --
+FRI, NEXTMON = date(2026, 11, 27), date(2026, 11, 30)
+check("'check in with sean at end of week' (Mon) -> Fri", P("check in with sean at end of week", MON) == FRI)
+check("'call later in week' (Mon) -> Thu", P("call later in week", MON) == date(2026, 11, 26))
+check("'f/up by end of next week' -> Fri next week", P("f/up by end of next week", MON) == date(2026, 12, 4))
+check("'he's working away for a week' -> +7", P("reactivate - he's working away for a week", MON) == NEXTMON)
+check("'18/11/26 - SR check in 2/12 how NHS physio going' -> 2 Dec",
+      P("18/11/26 - SR check in 2/12  how NHS physio going", MON) == date(2026, 12, 2))
+check("leading date is when it was written: '19/11 - ring tomorrow' -> 20/11 (past)",
+      P("19/11 - ring tomorrow", MON) == date(2026, 11, 20))
+check("'19/11- awaiting Xray' -> nothing", P("19/11- Sean awaiting Xray before being able to attend", MON) is None)
+check("'ring next month' -> 1 Dec", P("ring next month", MON) == date(2026, 12, 1))
+d, note = rc.note_hold(["call later in week", "f/up by end of next week"], MON)
+check("hold = earliest future date", d == date(2026, 11, 26) and note == "call later in week", (d, note))
+check("no dated note -> no hold", rc.note_hold(["reactivate"], MON) == (None, ""))
+st_today = {"Owner": "Reception to call", "Attempts": "0", "Slack TS": "1", "Posted At": "2026-11-23 09:04:16"}
+check("card posted this morning, untapped -> not a 'try again'",
+      rc.decide(row(**{"Next Action Step": "Reception to call"}), st_today, MON) is None)
+d = rc.decide(row(**{"Next Action Step": "Reception to call"}), st_today, TUE)
+check("still untapped next day -> on the list again", d and d["kind"] == "retry", d)
+check("held card waits for its day",
+      rc.decide(row(**{"Next Action Step": "Reception to call"}),
+                {**st_today, "Scheduled For": "2026-11-27"}, TUE) is None)
+d = rc.decide(row(**{"Next Action Step": "Reception to call"}), {**st_today, "Scheduled For": "2026-11-27"}, FRI)
+check("held card comes back on the day as a new card", d and d["kind"] == "scheduled" and d["new_card"], d)
+
 print(f"\n{'ALL PASS' if not failures else f'{failures} FAILED'}")
 sys.exit(1 if failures else 0)
