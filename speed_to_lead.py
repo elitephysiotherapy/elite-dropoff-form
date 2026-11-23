@@ -1127,6 +1127,123 @@ def build_report(rows: list[dict], since: datetime, now: datetime) -> str:
     return "\n".join(out)
 
 
+# ---------------------------------------------------------------------------
+# Daily health check (Martin 2026-11-23): Martin and Julie aren't in #leads,
+# so the end-of-day DM says whether each automation ran and whether the desk
+# is tapping the cards. Reads the bots' own state tabs; never the channels.
+# ---------------------------------------------------------------------------
+HEALTH_JOBS = {"speed_to_lead": "Speed-to-lead", "save_calls": "Save-call alerts",
+               "reactivation_calls": "Reactivation cards", "not_now_reminders": "Not-now reminders",
+               "day_before_calls": "Day-before list", "team_sheet": "Team sheet sync"}
+
+
+def _tab_dicts(sheet_id: str, tab: str) -> list[dict] | None:
+    try:
+        vals = _retry(lambda: _gspread().open_by_key(sheet_id).worksheet(tab).get_all_values(),
+                      f"read {tab}")
+    except Exception:
+        return None
+    if not vals:
+        return []
+    head = vals[0]
+    return [dict(zip(head, r + [""] * (len(head) - len(r)))) for r in vals[1:] if r and r[0]]
+
+
+def build_health(stl_rows: list[dict], save_rows, react_rows, notnow_rows,
+                 job_fails: dict, now: datetime) -> list[str]:
+    """Health lines for the end-of-day DM (pure; tested). Lists may be None
+    when a tab couldn't be read."""
+    t = now.astimezone(LONDON)
+    today, ddmm, long = t.date(), t.strftime("%d/%m"), t.strftime("%a %d %b")
+    iso = today.isoformat()
+    ok, warn = ":white_check_mark:", ":warning:"
+    out = ["*Health check*"]
+
+    # #leads: taps today and the due-a-call lists
+    leads = [r for r in stl_rows if not r.get("Lead Key", "").startswith(("__", "test:"))
+             and r.get("Closed") != "test"]
+    taps = sum(str(r.get("Attempt Log") or "").count(long) for r in leads)
+    untapped = [r for r in leads if not r.get("Outcome") and not r.get("Closed")
+                and (_parse(r.get("Clock Start", "")) or now) <= now - timedelta(hours=1)]
+    out.append(f"{ok if not untapped else warn} #leads: {taps} call tap{'s' if taps != 1 else ''} today"
+               + (f" · *{len(untapped)} lead{'s' if len(untapped) != 1 else ''} with no tap at all*"
+                  if untapped else " · every lead tapped"))
+    slots = config.STL_DUE_LIST_TIMES.get(t.weekday(), []) if today not in config.CLINIC_CLOSED_DAYS else []
+    if slots and t >= _at(t, slots[0]) + timedelta(minutes=config.STL_DUE_LIST_GRACE_MIN):
+        last = next((_parse(r.get("Seen At", "")) for r in stl_rows
+                     if r.get("Lead Key") == DUE_LIST_KEY), None)
+        out.append(f"{ok} Due-a-call lists ran today" if last and last.date() == today
+                   else f"{warn} *No due-a-call list ran today*")
+
+    # Save calls
+    if save_rows is None:
+        out.append(f"{warn} Save calls: couldn't read the Save Calls tab")
+    else:
+        alerts = [r for r in save_rows if str(r.get("Alerted At", "")).startswith(iso)]
+        open_ = [r for r in save_rows if r.get("Alerted At") and not r.get("Outcome")]
+        line = (f"Save calls: {len(alerts)} alert{'s' if len(alerts) != 1 else ''} today"
+                + (f" · *{len(open_)} not tapped*" if open_ else ""))
+        out.append(f"{warn if open_ else ok} {line}")
+
+    # Reactivation cards
+    if react_rows is None:
+        out.append(f"{warn} Reactivation: couldn't read the Reactivation Calls tab")
+    else:
+        cards = [r for r in react_rows if not r.get("Appt ID", "").startswith("__")]
+        posted = sum(1 for r in cards if str(r.get("Posted At", "")).startswith(iso))
+        rtaps = sum(1 for r in cards for e in str(r.get("Attempt Log") or "").split("; ")
+                    if e.startswith(ddmm + " "))
+        untapped_r = [r for r in cards if r.get("Slack TS") and not r.get("Outcome")
+                      and str(r.get("Attempts") or "0") in ("", "0")
+                      and not (r.get("Scheduled For") and not r.get("Sched Posted")
+                               and r["Scheduled For"] > iso)]
+        held = sum(1 for r in cards if r.get("Scheduled For") and not r.get("Sched Posted")
+                   and r["Scheduled For"] > iso)
+        out.append(f"{warn if untapped_r else ok} Reactivation: {posted} card"
+                   f"{'s' if posted != 1 else ''} posted, {rtaps} tap{'s' if rtaps != 1 else ''} today"
+                   + (f" · *{len(untapped_r)} card{'s' if len(untapped_r) != 1 else ''} never tapped*"
+                      if untapped_r else "")
+                   + (f" · {held} on hold for a later date" if held else ""))
+        if t.weekday() == 0 or today == next_working_monday(today):
+            rv = next((r for r in react_rows if r.get("Appt ID") == "__review__"), None)
+            out.append(f"{ok} Monday review posted" if rv and str(rv.get("Posted At", "")).startswith(iso)
+                       else f"{warn} *Monday review didn't post*")
+
+    # Not-now reminders
+    if notnow_rows is not None:
+        sent = sum(1 for r in notnow_rows if str(r.get("Reminded At", "")).startswith(iso))
+        if sent:
+            out.append(f"{ok} Not-now reminders: {sent} sent to Sinéad Rocks today")
+
+    # Jobs failing right now
+    bad = [f"{HEALTH_JOBS.get(k, k)} ({n} runs)" for k, n in job_fails.items() if n]
+    out.append(f"{warn} *Failing:* " + ", ".join(bad) if bad else f"{ok} No automation errors")
+    return out
+
+
+def next_working_monday(d) -> object:
+    """The first working day of d's week (Tuesday after a bank holiday)."""
+    m = d - timedelta(days=d.weekday())
+    while m.weekday() < 5 and m in config.CLINIC_CLOSED_DAYS:
+        m += timedelta(days=1)
+    return m
+
+
+def health_text(state: dict, now: datetime) -> str:
+    import bot_state
+    fails = {}
+    for job in HEALTH_JOBS:
+        try:
+            fails[job] = int(bot_state.load(job).get("fails", 0))
+        except Exception:
+            fails[job] = 0
+    rows = [v for v in state.values()]
+    save = _tab_dicts(config.LEADS_SPREADSHEET_ID, config.SAVE_CALL_STATE_TAB)
+    react = _tab_dicts(config.REACT_DROPOFF_SHEET_ID, config.REACT_STATE_TAB)
+    notnow = _tab_dicts(config.LEADS_SPREADSHEET_ID, "Not Now Reminders")
+    return "\n".join(build_health(rows, save, react, notnow, fails, now))
+
+
 def maybe_send_report(ws, state: dict, now: datetime, log=print) -> bool:
     due = report_due_at(now)
     if not due or now < due:
@@ -1137,6 +1254,10 @@ def maybe_send_report(ws, state: dict, now: datetime, log=print) -> bool:
         return False                         # already sent today
     since = last or datetime.fromisoformat(config.STL_START_AT).astimezone(LONDON)
     text = build_report(list(state.values()), since, now)
+    try:
+        text += "\n\n" + health_text(state, now)
+    except Exception as exc:  # noqa: BLE001  never block the report
+        text += f"\n\n:warning: Health check couldn't run: `{exc}`"
     if not config.STL_LIVE:
         text = "_[SAFE MODE]_\n" + text
         emails = [config.CEO_SLACK_EMAIL]
