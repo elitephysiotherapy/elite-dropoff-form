@@ -900,13 +900,29 @@ def tick(now: datetime | None = None, dry_run: bool = False, log=print) -> dict:
     return stats
 
 
+class CacheWarming(Exception):
+    """The patient-phone cache is still filling; try again next run."""
+
+
+PHONE_CACHE_NAME = "stl_patient_phones"
+PHONE_LOOKUP_BUDGET = 30     # seconds of Cliniko lookups per run (kill limit is 50)
+
+
 def cliniko_booked_phones(since: datetime, now: datetime) -> set:
     """Last-10-digit phones of patients who BOOKED any live appointment since
     `since` (most Meta leads never become Cliniko patients, so the Leads tab
     status alone can't be trusted). Raises if Cliniko can't be read — the
-    caller then sends nothing this tick rather than risk texting a patient."""
+    caller then sends nothing this tick rather than risk texting a patient.
+
+    Each patient fetch is throttled to ~3/s (Cliniko's rate limit), so a
+    multi-day window used to take 40-50 s and the 50 s run limit killed it,
+    over and over (25 Nov 2026). Patient id -> phone is now remembered between
+    runs (bot_state; numbers rarely change), so a run only fetches patients it
+    hasn't seen, and stops at PHONE_LOOKUP_BUDGET with its progress saved.
+    Raises CacheWarming in that case; the next run carries on."""
     if cliniko_api is None:
         raise RuntimeError("Cliniko client unavailable")
+    import bot_state
     utc = ZoneInfo("UTC")
     appts = cliniko_api.appointments_created_between(
         since.astimezone(utc) - timedelta(days=1), now.astimezone(utc))
@@ -915,16 +931,23 @@ def cliniko_booked_phones(since: datetime, now: datetime) -> set:
         if not cliniko_api.is_cancelled(a):
             pid = cliniko_api.patient_id_of(a)
             if pid:
-                ids.add(pid)
-    phones = set()
-    for pid in ids:
+                ids.add(str(pid))
+    cache = bot_state.load(PHONE_CACHE_NAME)
+    deadline = time.time() + PHONE_LOOKUP_BUDGET
+    fetched = 0
+    for pid in sorted(ids - set(cache)):
+        if time.time() > deadline:
+            if fetched:
+                bot_state.save(PHONE_CACHE_NAME, cache)
+            raise CacheWarming(f"{len(ids - set(cache))} patient(s) still to look up")
         pat = cliniko_api.get_patient(pid)
         if pat is None:
             raise RuntimeError(f"could not read Cliniko patient {pid}")
-        p = norm_phone(pat.get("mobile", ""))
-        if p:
-            phones.add(p)
-    return phones
+        cache[pid] = norm_phone(pat.get("mobile", "")) or ""
+        fetched += 1
+    if fetched:
+        bot_state.save(PHONE_CACHE_NAME, cache)
+    return {cache[pid] for pid in ids if cache.get(pid)}
 
 
 def send_final_texts(ws, state: dict, now: datetime, log=print) -> int:
@@ -1009,6 +1032,9 @@ def maybe_post_due_list(ws, state: dict, now: datetime, log=print) -> bool:
         try:
             since = min(_parse(s["Lead Created"]) for s in cands)
             booked = cliniko_booked_phones(since, now)
+        except CacheWarming as exc:       # next run (1 min) carries on; slot stays due
+            log(f"  due list: waiting for patient-phone cache ({exc})")
+            return False
         except Exception as exc:          # list still goes; just can't drop these
             log(f"  due list: Cliniko check failed ({exc})")
             booked = set()
