@@ -110,6 +110,7 @@ check("no pressure words",
 check("blank name -> Hi there",
       stl.compose_final_text(name="", video="v", discovery="d").startswith("Hi there, "))
 check("tells them which service to pick", "Free Discovery Call" in body)
+check("one video, so it never promises a specific physio", "who you'd see" not in body)
 check("held until the video link is set (discovery link is preset)",
       config.FINAL_TEXT_VIDEO_LINK == ""
       and config.FINAL_TEXT_DISCOVERY_LINK == "https://elitephysiocookstown.co.uk/contact/")

@@ -351,8 +351,8 @@ def compose_final_text(*, name: str, video: str, discovery: str) -> str:
     fn = first_name(name)
     hello = f"Hi {fn}" if fn else "Hi there"
     return (f"{hello}, it's Elite Physio. Sorry we keep missing each other, "
-            f"no pressure at all. Here's a short video of who you'd see and "
-            f"what to expect: {video} If you'd rather start with a 20 min "
+            f"no pressure at all. Here's a short video from one of our physios "
+            f"about how we help: {video} If you'd rather start with a 20 min "
             f"free chat with a physio (phone or video), book it here "
             f"and choose 'Free Discovery Call': {discovery} Or just reply "
             f"and we'll ring when suits. Reply STOP to opt out.")
